@@ -2,7 +2,12 @@ import { Component, OnDestroy, OnInit, inject, signal } from '@angular/core';
 import { ChatSummary } from '../../services/api';
 import { ConfigStore } from '../../services/config-store';
 import { ChatStore } from '../../services/chat-store';
-import { chatLabelOf, chatTimeOf, chatUserLabelOf, messageCountLabel } from '../../services/helpers';
+import {
+  chatLabelOf,
+  chatTimeOf,
+  chatUserLabelOf,
+  messageCountLabel,
+} from '../../services/helpers';
 
 // The header: character / persona (dropdown menus), date and model, the "⋮" menu.
 // Opening/closing the menus — local state of the header: a click away
@@ -12,24 +17,24 @@ import { chatLabelOf, chatTimeOf, chatUserLabelOf, messageCountLabel } from '../
   selector: 'app-top-bar',
   template: `
     <header class="topbar">
-      <div class="ident" [title]="chatStore.idShort() ? 'Chat ID: ' + chatStore.idShort() : undefined">
+      <div
+        class="ident"
+        [title]="chatStore.idShort() ? 'Chat ID: ' + chatStore.idShort() : undefined"
+      >
         <span class="who">
           <span class="name-wrap">
             <span
               class="char-name"
               data-testid="char-name"
               (click)="$event.stopPropagation(); toggleCharacterMenu()"
-              >{{ chatStore.participantsLabel() }}</span
             >
+              {{ chatStore.participantsLabel() }}
+            </span>
             @if (characterMenuOpen()) {
               <div class="dropdown">
                 <div class="dropdown-title">Characters in the chat · order = priority</div>
                 @for (c of configStore.characters(); track c.id) {
-                  <div
-                    class="opt-row"
-                    data-testid="char-option"
-                    [class.active]="inChat(c.id)"
-                  >
+                  <div class="opt-row" data-testid="char-option" [class.active]="inChat(c.id)">
                     <button
                       class="opt opt-toggle"
                       (click)="$event.stopPropagation(); chatStore.toggleCharacter(c.id)"
@@ -66,7 +71,11 @@ import { chatLabelOf, chatTimeOf, chatUserLabelOf, messageCountLabel } from '../
                   </div>
                 }
                 <div class="sep"></div>
-                <button class="opt" data-testid="new-character" (click)="configStore.openCharacterDialog()">
+                <button
+                  class="opt"
+                  data-testid="new-character"
+                  (click)="configStore.openCharacterDialog()"
+                >
                   + New character
                 </button>
               </div>
@@ -78,8 +87,9 @@ import { chatLabelOf, chatTimeOf, chatUserLabelOf, messageCountLabel } from '../
               class="user-name"
               data-testid="user-name"
               (click)="$event.stopPropagation(); toggleUserMenu()"
-              >{{ chatStore.chatUser()?.name ?? '—' }}</span
             >
+              {{ chatStore.chatUser()?.name ?? '—' }}
+            </span>
             @if (userMenuOpen()) {
               <div class="dropdown">
                 <div class="dropdown-title">Active persona</div>
@@ -91,7 +101,9 @@ import { chatLabelOf, chatTimeOf, chatUserLabelOf, messageCountLabel } from '../
                       [class.active]="chatStore.chat()?.userId === u.id"
                       (click)="chatStore.selectUser(u.id)"
                     >
-                      <span class="opt-mark">{{ chatStore.chat()?.userId === u.id ? '●' : '○' }}</span>
+                      <span class="opt-mark">{{
+                        chatStore.chat()?.userId === u.id ? '●' : '○'
+                      }}</span>
                       {{ u.name }}
                     </button>
                     <button
@@ -105,32 +117,38 @@ import { chatLabelOf, chatTimeOf, chatUserLabelOf, messageCountLabel } from '../
                   </div>
                 }
                 <div class="sep"></div>
-                <button class="opt" data-testid="new-persona" (click)="configStore.openUserDialog()">
+                <button
+                  class="opt"
+                  data-testid="new-persona"
+                  (click)="configStore.openUserDialog()"
+                >
                   + New persona
                 </button>
                 <div class="dropdown-hint">
-                  Switching the persona does not rewrite old messages — every message keeps
-                  its author.
+                  Switching the persona does not rewrite old messages — every message keeps its
+                  author.
                 </div>
               </div>
             }
           </span>
         </span>
         <!-- The chat ID is not shown — it is in the hint on the title (.ident);
-             the date and the model are separated by a middle dot, no parentheses.
-             The model chip opens the model menu (the pick + the item dialogs);
-             on mobile only the date is hidden — the chip stays the model picker. -->
-        <span class="chat-meta"
-          ><span class="chat-date"
-            >{{ chatStore.lastTime() ? chatStore.lastTime() + ' · ' : '' }}</span
-          >
+             middle dots separate the names, the date and the model, no
+             parentheses. The model chip opens the model menu (the pick + the
+             item dialogs); on mobile only the date is hidden — the chip stays
+             the model picker. -->
+        <span class="chat-meta">
+          <span class="chat-date">
+            {{ chatStore.lastTime() ? '· ' + chatStore.lastTime() + ' ·&nbsp;' : '' }}
+          </span>
           <span
             class="model-chip"
             data-testid="model-chip"
             title="Model"
             (click)="$event.stopPropagation(); toggleModelMenu()"
-            >{{ chatStore.modelLabel() }}</span
           >
+            {{ chatStore.modelLabel() }}
+          </span>
           @if (modelMenuOpen()) {
             <div class="dropdown model-dropdown">
               <div class="dropdown-title">Model</div>
@@ -142,7 +160,9 @@ import { chatLabelOf, chatTimeOf, chatUserLabelOf, messageCountLabel } from '../
                     [class.active]="chatStore.chat()?.modelId === m.name"
                     (click)="chatStore.selectModel(m.name)"
                   >
-                    <span class="opt-mark">{{ chatStore.chat()?.modelId === m.name ? '●' : '○' }}</span>
+                    <span class="opt-mark">{{
+                      chatStore.chat()?.modelId === m.name ? '●' : '○'
+                    }}</span>
                     {{ m.name }}
                     @if (m.supportsImages) {
                       (👁)
@@ -179,7 +199,11 @@ import { chatLabelOf, chatTimeOf, chatUserLabelOf, messageCountLabel } from '../
       @if (menuOpen()) {
         <div class="dropdown">
           <button class="opt" data-testid="new-chat" (click)="chatStore.newChat()">New chat</button>
-          <button class="opt danger" data-testid="delete-chat" (click)="chatStore.deleteCurrentChat()">
+          <button
+            class="opt danger"
+            data-testid="delete-chat"
+            (click)="chatStore.deleteCurrentChat()"
+          >
             Delete chat
           </button>
           <div class="dropdown-title">Chats</div>
@@ -196,9 +220,8 @@ import { chatLabelOf, chatTimeOf, chatUserLabelOf, messageCountLabel } from '../
                   <span class="chat-item-user">{{ chatUserLabel(cs) }}</span>
                 </span>
                 <span class="chat-item-meta"
-                  >{{ chatTime(cs) ? chatTime(cs) + ' · ' : '' }}{{
-                    messageCount(cs.messageCount)
-                  }}</span
+                  >{{ chatTime(cs) ? chatTime(cs) + ' · ' : ''
+                  }}{{ messageCount(cs.messageCount) }}</span
                 >
               </button>
             }

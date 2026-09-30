@@ -33,11 +33,11 @@ import { avatarLetter, imageHintFor, splitNarration as splitNarrationParts } fro
             (click)="chatStore.regenerate()"
             title="Regenerate the reply"
           >
-            🔄
+            ↻
           </button>
         }
         <button
-          class="msg-edit"
+          class="msg-edit edit"
           (click)="chatStore.startEdit(message())"
           title="Edit the message"
         >

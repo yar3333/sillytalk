@@ -76,12 +76,23 @@
 }
 .msg-edit.regen {
   right: 88px;
+  font-size: 24px;
+}
+.msg-edit.edit {
+  font-size: 24px;
+}
+.msg-edit.del {
+  font-size: 18px;
 }
 .msg-edit.regen:hover {
   color: var(--accent);
 }
 .msg-edit.del {
   right: 4px;
+  /* the 🗑 emoji sits 2.75px higher than the text glyphs — its font has a
+     taller line box, which lifts the baseline inside the button (measured
+     in Chromium on this system); the nudge aligns the visible icon */
+  transform: translateY(2.75px);
 }
 .msg-edit.del:hover {
   color: var(--err);
