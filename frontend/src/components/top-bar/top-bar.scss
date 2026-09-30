@@ -1,0 +1,293 @@
+/* The header: .topbar, the names, the dropdown menus. The palette CSS
+   variables — in the global src/styles.scss (in the component styles :root
+   does not match <html>). */
+
+.topbar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  z-index: 20;
+}
+
+.ident {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.char-name {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.who {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+}
+
+/* The name wrapper: the dropdown menu is positioned relative to it —
+   strictly under the name, without a shift to the right. */
+.name-wrap {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+}
+
+.name-wrap .dropdown {
+  left: 0;
+  right: auto;
+}
+
+.who-sep {
+  color: var(--muted);
+  flex: none;
+}
+
+.user-name {
+  color: var(--accent);
+  font-size: 15px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  cursor: pointer;
+}
+.user-name:hover {
+  text-decoration: underline;
+}
+
+/* The model line: the date + the chip. NO overflow:hidden here — the line is
+   the containing block of the model menu, and an overflow clip would cut the
+   dropdown (it is painted below/outside the line box). The chip ellipsizes
+   on its own; .chat-meta is a flex item of .ident, so min-width:0 lets it
+   shrink in a narrow header. */
+.chat-meta {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  /* the model menu is anchored to the right edge of this line */
+  position: relative;
+}
+.chat-meta .dropdown {
+  right: 0;
+}
+
+.model-chip {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.model-chip:hover {
+  text-decoration: underline;
+  color: var(--text);
+}
+/* the model names can be long — one line with an ellipsis */
+.model-dropdown .opt-toggle {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dots {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 24px;
+  line-height: 1;
+  padding: 0 8px;
+  border-radius: 8px;
+}
+.dots:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.dropdown {
+  position: absolute;
+  top: 100%;
+  right: 8px;
+  margin-top: 6px;
+  width: 260px;
+  max-height: 60vh;
+  overflow-y: auto;
+  background: var(--menu);
+  border: 1px solid var(--border-2);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.7);
+  padding: 6px;
+  z-index: 30;
+}
+
+.dropdown-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  padding: 6px 8px 2px;
+}
+
+.opt {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 14px;
+}
+.opt:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+/* The current pick is highlighted with a background — without changing the font color. */
+.opt.active {
+  background: rgba(79, 140, 255, 0.14);
+}
+/* a dangerous action — a muted (not bright) red */
+.opt.danger {
+  color: #fff;
+  background: #8f2727;
+}
+.opt.danger:hover {
+  background: #a53030;
+}
+
+/* The chat participant row: the on/off button + the priority shift buttons. */
+.opt-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: 8px;
+}
+.opt-row.active {
+  background: rgba(79, 140, 255, 0.14);
+}
+.opt-toggle {
+  flex: 1;
+  min-width: 0;
+}
+.opt-mark {
+  display: inline-block;
+  width: 14px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.opt-move {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+}
+.opt-move:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.09);
+  color: var(--text);
+}
+/* After a mouse click the focus box is not needed (we remove the focus anyway) */
+.opt-move:focus:not(:focus-visible) {
+  outline: none;
+}
+.opt-move:disabled {
+  opacity: 0.3;
+}
+/* The edit icon of a menu row (✎) — opens the item edit dialog. */
+.opt-edit {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+}
+.opt-edit:hover {
+  background: rgba(255, 255, 255, 0.09);
+  color: var(--text);
+}
+
+.dropdown-hint {
+  font-size: 11px;
+  color: var(--muted);
+  padding: 6px 8px 4px;
+  white-space: normal;
+}
+
+.chat-list {
+  max-height: 40vh;
+  overflow-y: auto;
+}
+/* A chat list item: "character / persona" + the meta line (the date, the
+   message count). Like in the header (.who): flex + gap — the spaces around
+   "/" do not depend on the template spaces. */
+.chat-item-name {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+}
+.chat-item-char {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.chat-item-user {
+  color: var(--accent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.chat-item-meta {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sep {
+  height: 1px;
+  background: var(--border);
+  margin: 6px 0;
+}
+
+/* ---------- responsive ---------- */
+@media (max-width: 640px) {
+  /* Only the date is hidden — the model chip stays: after the "⋮" submenu
+     was removed it is the only model picker (and entry to its dialogs). */
+  .chat-date {
+    display: none;
+  }
+}

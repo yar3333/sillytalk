@@ -1,0 +1,67 @@
+/* Global sillytalk styles: the dark theme, the black background */
+
+/*
+  The app palette. It must live in the GLOBAL stylesheet: in the component
+  styles Angular (the emulated encapsulation) rewrites :root into
+  [_ngcontent-*]:root, which never matches <html>, and the variables
+  silently stop resolving.
+*/
+:root {
+  --bg: #000;
+  --panel: #0e0e12;
+  --panel-2: #1a1a21;
+  /* the dropdown menus — above the content, noticeably lighter than the background, read as a layer */
+  --menu: #20202a;
+  --border: #2a2a33;
+  --border-2: #3a3a46;
+  --text: #e8e8ec;
+  --muted: #8a8a93;
+  --accent: #4f8cff;
+  --user: #1b2b4a;
+  --err: #ff6b6b;
+  --danger: #c22e2e;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  font-size: 15px;
+}
+
+body {
+  overflow: hidden;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+input,
+textarea,
+select {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #333;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}

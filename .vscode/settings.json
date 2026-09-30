@@ -1,0 +1,7 @@
+{
+  "files.exclude": {
+    "**/dist/**": true,
+    "backend/public": true
+  },
+  "angular.inlayHints.parameterHints.nameHints": "none"
+}

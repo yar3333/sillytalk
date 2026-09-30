@@ -1,0 +1,138 @@
+/* The settings dialog styles. IMPORTANT: they live here, not in app.scss —
+   under the emulated encapsulation the app.scss selectors get the App
+   _ngcontent and do not match the child component <app-settings> DOM
+   (the styles ended up dead). The palette variables (--bg, --panel-2 …)
+   — from the global src/styles.scss. */
+
+/* flex: 1 + min-height: 0 — the body takes the modal minus the header and
+   scrolls inside (the host <app-settings> — a flex container, see the fix
+   in app.scss). */
+.settings-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.settings-body h3 {
+  margin: 12px 0 4px;
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+}
+
+.field,
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.field span,
+.row > span {
+  min-width: 140px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.block {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+input,
+textarea,
+select {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: var(--text);
+  width: 140px;
+}
+input.grow,
+textarea,
+input.full,
+select {
+  width: 100%;
+}
+.grow {
+  flex: 1;
+  min-width: 60px;
+}
+.full {
+  width: 100%;
+}
+textarea {
+  resize: vertical;
+  line-height: 1.4;
+}
+input:focus,
+textarea:focus,
+select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.models,
+.args {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.chk {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.chk input {
+  width: auto;
+}
+
+.btn {
+  align-self: flex-start;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.btn:hover {
+  border-color: var(--accent);
+}
+.btn.danger {
+  color: var(--err);
+}
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.actions {
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+.hint {
+  font-size: 12px;
+  color: var(--muted);
+  opacity: 0.7;
+}
+
+/* ---------- responsive ---------- */
+@media (max-width: 640px) {
+  .field span,
+  .row > span {
+    min-width: 100px;
+  }
+}

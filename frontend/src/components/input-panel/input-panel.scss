@@ -1,0 +1,217 @@
+/* The input panel: the error banner, the editing, the generation, the
+   attached images, the input row. */
+
+.input-panel {
+  border-top: 1px solid var(--border);
+  padding: 10px 12px 14px;
+  background: var(--panel);
+}
+
+.error-banner {
+  position: relative;
+  /* The close button (40px) hangs over the text in the corner — the block
+     is no smaller than it with the paddings: 6 + 40 + 6 + 2px of the border. */
+  min-height: 54px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  border-radius: 8px;
+  background: rgba(255, 107, 107, 0.12);
+  border: 1px solid rgba(255, 107, 107, 0.4);
+  color: var(--err);
+  font-size: 13px;
+}
+.error-text {
+  display: block;
+  word-break: break-word;
+  white-space: pre-wrap;
+  /* The error can be long (the launch line + the program output) — the block
+     is no taller than half the viewport, the text scrolls inside. */
+  max-height: calc(50vh - 18px);
+  overflow-y: auto;
+}
+/* The close button — over the text in the corner of the block, not in a
+   separate column on the right: the text takes the full width. */
+.error-banner .icon-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+}
+
+/* the "editing the message" bar above the input field */
+.edit-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 10px;
+  margin-bottom: 8px;
+  border-radius: 8px;
+  background: rgba(79, 140, 255, 0.12);
+  border: 1px dashed var(--accent);
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.gen-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  margin-bottom: 8px;
+  background: var(--panel-2);
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  font-size: 12px;
+}
+.gen-label {
+  color: var(--muted);
+}
+.gen-hint {
+  color: var(--muted);
+  opacity: 0.7;
+}
+.gen-photos {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.gen-photos img {
+  width: 40px;
+  height: 40px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+.gen-photos img:hover {
+  border-color: var(--accent);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(79, 140, 255, 0.15);
+  color: var(--accent);
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.chip:hover {
+  background: rgba(79, 140, 255, 0.28);
+}
+
+.pending {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.pending-thumb {
+  position: relative;
+  display: inline-flex;
+}
+.pending-thumb img {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  display: block;
+}
+.pending-thumb img:hover {
+  border-color: var(--accent);
+}
+.thumb-x {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: #22222a;
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.thumb-x:hover {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+
+.input-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.icon-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  font-size: 18px;
+}
+.icon-btn:hover {
+  border-color: var(--accent);
+}
+.icon-btn.active {
+  background: rgba(79, 140, 255, 0.18);
+  border-color: var(--accent);
+}
+.icon-btn input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+textarea {
+  flex: 1;
+  min-width: 0;
+  resize: none;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: var(--text);
+  /* no taller than half the viewport: long messages and edits scroll inside */
+  max-height: 50vh;
+  overflow-y: auto;
+  line-height: 1.4;
+}
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.send {
+  flex: 0 0 auto;
+  height: 40px;
+  padding: 0 16px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 600;
+}
+.send:hover {
+  filter: brightness(1.1);
+}
+.send:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

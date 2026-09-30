@@ -1,0 +1,265 @@
+/* The message row: the avatar, the bubble, the hover buttons, the images. */
+
+.msg-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  max-width: 100%;
+}
+.msg-row.user {
+  flex-direction: row-reverse;
+}
+
+.avatar {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 600;
+  color: #cfe0ff;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  user-select: none;
+}
+.avatar.user {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 50%;
+  display: block;
+}
+
+.msg {
+  flex: 0 1 auto;
+  max-width: calc(100% - 44px);
+  padding: 8px 14px;
+  border-radius: 14px;
+  line-height: 1.5;
+  word-break: break-word;
+  background: #17171d;
+  border: 1px solid var(--border);
+  position: relative;
+}
+
+/* the message edit buttons — visible on hover over the bubble */
+.msg-edit {
+  position: absolute;
+  top: 0;
+  right: 46px;
+  width: 36px;
+  height: 36px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 20px;
+  cursor: pointer;
+}
+.msg:hover .msg-edit {
+  display: flex;
+}
+.msg-edit:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+}
+.msg-edit.regen {
+  right: 88px;
+}
+.msg-edit.regen:hover {
+  color: var(--accent);
+}
+.msg-edit.del {
+  right: 4px;
+}
+.msg-edit.del:hover {
+  color: var(--err);
+  background: rgba(255, 107, 107, 0.12);
+}
+
+/* A message with images: the bubble stretches to the full row width so the
+   images can take the whole chat column. */
+.msg.has-images {
+  flex: 1 1 auto;
+}
+.msg.user {
+  background: var(--user);
+  border-color: #2c4470;
+  border-bottom-right-radius: 4px;
+}
+.msg:not(.user) {
+  border-bottom-left-radius: 4px;
+}
+.msg.error {
+  background: rgba(255, 107, 107, 0.12);
+  border: 1px solid rgba(255, 107, 107, 0.4);
+}
+
+.msg-sender {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 3px;
+}
+.msg.user .msg-sender {
+  color: #9db8e6;
+}
+
+.msg-text {
+  white-space: pre-wrap;
+}
+/* The author descriptions (slash-star ... star-slash) — a muted italic,
+   not a hero line. */
+.msg-text .narration {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.msg-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.msg-images img {
+  /* The images: stretched to the full chat width (the bubble grows via
+     .has-images), never taller than two thirds of the viewport; when the
+     height cap kicks in and the image ends up narrower than the row,
+     object-fit: contain centers it. Block layout — the text is above and
+     below the images, never beside (a UI invariant). */
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: calc(100vh * 2 / 3);
+  object-fit: contain;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+
+/* the message image regeneration button */
+.msg-img-wrap {
+  position: relative;
+  display: flex;
+  width: 100%;
+}
+.img-regen {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  width: 34px;
+  height: 34px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 17px;
+  cursor: pointer;
+}
+.msg-img-wrap:hover .img-regen {
+  display: flex;
+}
+.img-regen:hover {
+  background: rgba(79, 140, 255, 0.85);
+}
+.img-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: img-spin 0.8s linear infinite;
+}
+@keyframes img-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* The placeholders of the background image generation: the spinner while the
+   job runs, the broken image after a failure or a cancel (the Regenerate
+   button is always visible — no hover needed). */
+.img-placeholder {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  aspect-ratio: 3 / 2;
+  max-height: 220px;
+  padding: 14px;
+  border-radius: 8px;
+  border: 1px dashed var(--border-2);
+  background: rgba(255, 255, 255, 0.03);
+  text-align: center;
+}
+.img-spinner-lg {
+  width: 26px;
+  height: 26px;
+  border-width: 3px;
+}
+.img-placeholder-label {
+  font-size: 13px;
+  color: var(--muted);
+}
+.img-cancel {
+  padding: 4px 14px;
+  border: 1px solid var(--border-2);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  font-size: 13px;
+}
+.img-cancel:hover {
+  border-color: var(--err);
+  background: rgba(255, 107, 107, 0.15);
+}
+.img-broken {
+  border-color: rgba(255, 107, 107, 0.5);
+}
+.img-broken-icon {
+  font-size: 26px;
+  opacity: 0.7;
+}
+.img-error-text {
+  font-size: 12px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.img-regen-btn {
+  padding: 5px 14px;
+  border: none;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+}
+.img-regen-btn:hover {
+  filter: brightness(1.15);
+}
+
+/* ---------- responsive ---------- */
+@media (max-width: 640px) {
+  .msg {
+    max-width: 92%;
+  }
+}
