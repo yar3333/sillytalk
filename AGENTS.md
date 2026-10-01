@@ -102,12 +102,25 @@ Run from the repo root unless noted.
 | Frontend unit tests (vitest via `ng test`) | `cd frontend && npm test` |
 | Frontend production build | `cd frontend && npm run build` |
 | E2E (auto-starts an isolated server on :3211; backend must be built) | `cd e2e && npx playwright test` |
+| Pack the npm release (after `npm run build`) | `npm run package` |
 
 Production: `npm run build && npm run start`, then open http://localhost:3210 — the backend serves both
 the API and the built frontend.
 
 The E2E suite does **not** start the server itself (no `webServer` in the Playwright config). Start it
 first (`npm run start`, in the background), then run the suite.
+
+## CI / npm publish
+
+`.github/workflows/publish.yml` (mirrors the aiservermanager setup): on push/PR to master it installs
+backend + frontend deps, runs the jest suite, builds, and packs the release; on a `v*` tag or a manual
+run it additionally publishes to npm (environment `NPM`, secret `NPM_TOKEN`).
+
+`npm run package` (`scripts/package-npm.mjs`) builds `release/sillytalk/` — the publishable package:
+`bin/sillytalk.js` (the `npx sillytalk` entry), `backend/dist/`, and the built frontend at
+`frontend/dist/frontend/browser/` (the FIRST candidate `index.ts` looks for — keep the package layout
+in sync with those candidates), plus a runtime-only `package.json` and `scripts/npm-package/README.md`
+as the package README. `release/` is gitignored.
 
 ## Configuration
 

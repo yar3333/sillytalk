@@ -63,65 +63,80 @@ afterAll(() => {
   fs.rmSync(failFile, { force: true });
 });
 
-it('runs a .cmd and substitutes the prompt and the absolute output path', async () => {
-  const names = await generateImages([cmdGen], chatId, 'hello world test', []);
-  expect(names).toHaveLength(1);
-  const file = path.join(chatFilesDir(chatId), names[0]);
-  expect(fs.existsSync(file)).toBe(true);
-  const content = fs.readFileSync(file, 'utf-8');
-  expect(content).toContain('hello world test');
-});
+// The .cmd/.ps1 launch tests run the platform machine service for real, so
+// they only pass on Windows: the POSIX service refuses .bat/.cmd by design
+// and powershell.exe is not available there.
+const describeWindows = process.platform === 'win32' ? describe : describe.skip;
+describeWindows('.cmd/.ps1 generator launch (Windows only)', () => {
+  it('runs a .cmd and substitutes the prompt and the absolute output path', async () => {
+    const names = await generateImages([cmdGen], chatId, 'hello world test', []);
+    expect(names).toHaveLength(1);
+    const file = path.join(chatFilesDir(chatId), names[0]);
+    expect(fs.existsSync(file)).toBe(true);
+    const content = fs.readFileSync(file, 'utf-8');
+    expect(content).toContain('hello world test');
+  });
 
-it('passes absolute reference paths to the batch file', async () => {
-  fs.mkdirSync(chatFilesDir(chatId), { recursive: true });
-  const refPath = path.join(chatFilesDir(chatId), 'ref.png');
-  fs.writeFileSync(refPath, 'x');
-  const names = await generateImages([cmdGen], chatId, 'hello', ['ref.png']);
-  const file = path.join(chatFilesDir(chatId), names[0]);
-  const content = fs.readFileSync(file, 'utf-8');
-  expect(content).toContain(refPath);
-});
+  it('passes absolute reference paths to the batch file', async () => {
+    fs.mkdirSync(chatFilesDir(chatId), { recursive: true });
+    const refPath = path.join(chatFilesDir(chatId), 'ref.png');
+    fs.writeFileSync(refPath, 'x');
+    const names = await generateImages([cmdGen], chatId, 'hello', ['ref.png']);
+    const file = path.join(chatFilesDir(chatId), names[0]);
+    const content = fs.readFileSync(file, 'utf-8');
+    expect(content).toContain(refPath);
+  });
 
-it('runs a .ps1 through powershell.exe and substitutes the arguments', async () => {
-  const names = await generateImages([ps1Gen], chatId, 'ps prompt test', []);
-  expect(names).toHaveLength(1);
-  const file = path.join(chatFilesDir(chatId), names[0]);
-  expect(fs.existsSync(file)).toBe(true);
-  const content = fs.readFileSync(file, 'utf-8');
-  expect(content).toContain('ps prompt test');
-});
+  it('runs a .ps1 through powershell.exe and substitutes the arguments', async () => {
+    const names = await generateImages([ps1Gen], chatId, 'ps prompt test', []);
+    expect(names).toHaveLength(1);
+    const file = path.join(chatFilesDir(chatId), names[0]);
+    expect(fs.existsSync(file)).toBe(true);
+    const content = fs.readFileSync(file, 'utf-8');
+    expect(content).toContain('ps prompt test');
+  });
 
-it('passes comma-joined references to the ps1', async () => {
-  fs.mkdirSync(chatFilesDir(chatId), { recursive: true });
-  const refPath = path.join(chatFilesDir(chatId), 'ref.png');
-  fs.writeFileSync(refPath, 'x');
-  const names = await generateImages([ps1Gen], chatId, 'hello', ['ref.png']);
-  const file = path.join(chatFilesDir(chatId), names[0]);
-  const content = fs.readFileSync(file, 'utf-8');
-  expect(content).toContain(refPath);
-});
+  it('passes comma-joined references to the ps1', async () => {
+    fs.mkdirSync(chatFilesDir(chatId), { recursive: true });
+    const refPath = path.join(chatFilesDir(chatId), 'ref.png');
+    fs.writeFileSync(refPath, 'x');
+    const names = await generateImages([ps1Gen], chatId, 'hello', ['ref.png']);
+    const file = path.join(chatFilesDir(chatId), names[0]);
+    const content = fs.readFileSync(file, 'utf-8');
+    expect(content).toContain(refPath);
+  });
 
-it('the launch error carries the code, the full command line and the whole program output', async () => {
-  const gen: ImageGenerator = {
-    command: failFile,
-    args: ['--prompt', '{prompt}', '--output', '{absolutePathToOutputImage}'],
-    maxInputImages: 0,
-  };
-  let err: Error | null = null;
-  try {
-    await generateImages([gen], chatId, 'fail test', []);
-  } catch (e) {
-    err = e as Error;
-  }
-  expect(err).not.toBeNull();
-  const msg = err!.message;
-  expect(msg).toContain('exited with code 3');
-  // the full command line — with the cmd.exe wrapper and the file itself
-  expect(msg).toContain('cmd.exe /d /s /c');
-  expect(msg).toContain(failFile);
-  // and the whole program output: both stderr and stdout
-  expect(msg).toContain('stderr line from failing script');
-  expect(msg).toContain('stdout line from failing script');
+  it('the launch error carries the code, the full command line and the whole program output', async () => {
+    const gen: ImageGenerator = {
+      command: failFile,
+      args: ['--prompt', '{prompt}', '--output', '{absolutePathToOutputImage}'],
+      maxInputImages: 0,
+    };
+    let err: Error | null = null;
+    try {
+      await generateImages([gen], chatId, 'fail test', []);
+    } catch (e) {
+      err = e as Error;
+    }
+    expect(err).not.toBeNull();
+    const msg = err!.message;
+    expect(msg).toContain('exited with code 3');
+    // the full command line — with the cmd.exe wrapper and the file itself
+    expect(msg).toContain('cmd.exe /d /s /c');
+    expect(msg).toContain(failFile);
+    // and the whole program output: both stderr and stdout
+    expect(msg).toContain('stderr line from failing script');
+    expect(msg).toContain('stdout line from failing script');
+  });
+
+  it('an unlimited generator (maxInputImages 0) accepts all references', async () => {
+    fs.mkdirSync(chatFilesDir(chatId), { recursive: true });
+    for (const n of ['a.png', 'b.png', 'c.png']) {
+      fs.writeFileSync(path.join(chatFilesDir(chatId), n), 'x');
+    }
+    // 0 = unlimited: three references pass through (the batch file receives them)
+    await generateImages([cmdGen], chatId, 'hello', ['a.png', 'b.png', 'c.png']);
+  });
 });
 
 it('rejects more references than the generator supports', async () => {
@@ -133,8 +148,6 @@ it('rejects more references than the generator supports', async () => {
   await expect(
     generateImages([limited], chatId, 'hello', ['a.png', 'b.png', 'c.png']),
   ).rejects.toThrow(/at most 2/);
-  // 0 = unlimited: three references pass through (the batch file receives them)
-  await generateImages([cmdGen], chatId, 'hello', ['a.png', 'b.png', 'c.png']);
 });
 
 it('does not generate without an available generator', async () => {
