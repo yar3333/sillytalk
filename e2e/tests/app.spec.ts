@@ -1,4 +1,5 @@
 import fs from 'fs';
+import http from 'http';
 import os from 'os';
 import path from 'path';
 import { test, expect } from '@playwright/test';
@@ -94,6 +95,92 @@ test('sending a message and the model reply', async ({ page }) => {
   const text = (await assistant.first().locator('.msg-text').textContent())?.trim() ?? '';
   expect(text.length).toBeGreaterThan(0);
   await page.screenshot({ path: `${SHOTS}/02b-conversation-desktop.png` });
+});
+
+// The send button turns into the cancel (✕) while a reply is generating.
+// A "hanging" model (accepts the connection, never answers) makes the cancel
+// deterministic: the reply stays "generating" until it is aborted, the abort
+// is visible on the server side, and no message is saved for the cancelled
+// reply. Does not depend on the real models at all.
+test('the send button becomes the cancel while a reply is generating', async ({ page }) => {
+  let abortedConnections = 0;
+  const hanging = http.createServer((req) => {
+    // Never write a response; count the connections that get aborted.
+    req.socket.on('close', () => {
+      abortedConnections += 1;
+    });
+  });
+  await new Promise<void>((r) => hanging.listen(0, '127.0.0.1', r));
+  const port = (hanging.address() as { port: number }).port;
+
+  // Add the hanging model and create a chat that uses it.
+  const cfg = (await (await fetch(`${API}/config`)).json()) as {
+    llmModels: Record<string, unknown>;
+    [key: string]: unknown;
+  };
+  await fetch(`${API}/config`, {
+    method: 'PUT',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({
+      ...cfg,
+      llmModels: {
+        ...cfg.llmModels,
+        'hanging model': {
+          id: 'hanging',
+          baseUrl: `http://127.0.0.1:${port}/v1`,
+          contextSize: 8192,
+          supportsImages: false,
+        },
+      },
+    }),
+  });
+  await fetch(`${API}/chats`, {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({
+      characterIds: ['alice'],
+      modelId: 'hanging model',
+      userId: 'carol',
+    }),
+  });
+
+  try {
+    await page.goto('/');
+    await expect(page.getByTestId('input')).toBeVisible();
+    await page.getByTestId('input').fill('Write a long story about a cat');
+    await page.getByTestId('send').click();
+    await expect(page.locator('.msg.user').first()).toBeVisible();
+    // The reply is generating — the send button is the cancel (✕).
+    await expect(page.getByTestId('typing')).toBeVisible({ timeout: 30000 });
+    await expect(page.getByTestId('send')).toHaveText('✕');
+    await page.screenshot({ path: `${SHOTS}/12a-cancel-button.png` });
+
+    await page.getByTestId('send').click();
+    // The generation is over right away.
+    await expect(page.getByTestId('typing')).toBeHidden();
+    await expect(page.getByTestId('send')).toHaveText('➤');
+    // No assistant message (and no error message) was saved.
+    await expect(page.locator('.msg:not(.user):not(.error)')).toHaveCount(0);
+    await expect(page.locator('.msg.error')).toHaveCount(0);
+    await page.screenshot({ path: `${SHOTS}/12b-cancelled.png` });
+
+    // The server aborted the model call (the hanging connection closed).
+    await expect.poll(() => abortedConnections, { timeout: 15000 }).toBeGreaterThanOrEqual(1);
+  } finally {
+    // Restore the config (the other tests use the real models) and stop the
+    // hanging server.
+    const restored = (await (await fetch(`${API}/config`)).json()) as {
+      llmModels: Record<string, unknown>;
+      [key: string]: unknown;
+    };
+    delete restored.llmModels['hanging model'];
+    await fetch(`${API}/config`, {
+      method: 'PUT',
+      headers: JSON_HEADERS,
+      body: JSON.stringify(restored),
+    });
+    hanging.close();
+  }
 });
 
 test('adding and removing a participant via the characters menu', async ({ page }) => {

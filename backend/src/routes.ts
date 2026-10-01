@@ -336,6 +336,7 @@ async function appendAssistantReply(
   chat: Chat,
   model: Model,
   characterId: string,
+  signal?: AbortSignal,
 ): Promise<ChatMessage | null> {
   const character = getCharacter(characterId);
   if (!character) return null;
@@ -393,6 +394,7 @@ async function appendAssistantReply(
       'do not write for the other characters or for the user. ' +
       'If you have absolutely nothing to add to the conversation, output exactly [SILENT] instead of a reply. ' +
       'Keep the reply short: 2–5 sentences, one paragraph.',
+    signal,
   );
 
   // The character may have stayed silent (exactly [SILENT]) — no chat message.
@@ -724,34 +726,51 @@ apiRouter.post('/chats/:id/messages', (req, res) => {
   res.json({ chat });
 });
 
+// The in-flight reply per chat (the frontend asks for the replies one at a
+// time): POST /chats/:id/cancel aborts the model call, and the /reply handler
+// saves no message for a cancelled run.
+const inFlightReplies = new Map<string, AbortController>();
+
 // The reply of a SINGLE chat character. The frontend calls it for each
 // participant in turn (in priority order, starting with the one mentioned by
 // name): between the calls it shows whose line is being generated, and the
 // silent ones (reply === null) are skipped.
 apiRouter.post('/chats/:id/reply', async (req, res) => {
   const characterId = typeof req.body?.characterId === 'string' ? req.body.characterId : '';
+  const chat = getChat(req.params.id);
+  if (!chat) {
+    res.status(404).json({ error: 'Chat not found' });
+    return;
+  }
+  if (!characterId || !chat.characterIds.includes(characterId)) {
+    res.status(400).json({ error: 'The character is not a participant of the chat' });
+    return;
+  }
+  const config = loadConfig();
+  const model = resolveModel(config, chat);
+  if (!model) {
+    res.status(400).json({ error: 'No model configured for the chat' });
+    return;
+  }
+  const ctrl = new AbortController();
+  inFlightReplies.set(chat.id, ctrl);
   try {
-    const chat = getChat(req.params.id);
-    if (!chat) {
-      res.status(404).json({ error: 'Chat not found' });
-      return;
-    }
-    if (!characterId || !chat.characterIds.includes(characterId)) {
-      res.status(400).json({ error: 'The character is not a participant of the chat' });
-      return;
-    }
-    const config = loadConfig();
-    const model = resolveModel(config, chat);
-    if (!model) {
-      res.status(400).json({ error: 'No model configured for the chat' });
-      return;
-    }
-    const reply = await appendAssistantReply(chat, model, characterId);
+    const reply = await appendAssistantReply(chat, model, characterId, ctrl.signal);
     res.json({ chat, reply });
   } catch (err) {
-    const chat = getChat(req.params.id);
-    if (chat) {
-      chat.messages.push({
+    if (ctrl.signal.aborted) {
+      // The user cancelled: no error message is saved, the chat stays as it
+      // was. The client is already gone (it aborted its own fetch too).
+      try {
+        res.json({ chat: getChat(chat.id) ?? chat, reply: null });
+      } catch {
+        /* the connection is closed */
+      }
+      return;
+    }
+    const fresh = getChat(req.params.id);
+    if (fresh) {
+      fresh.messages.push({
         id: newId(),
         role: 'assistant',
         characterId: characterId || undefined,
@@ -760,12 +779,29 @@ apiRouter.post('/chats/:id/reply', async (req, res) => {
         timestamp: Date.now(),
         error: true,
       });
-      saveChat(chat);
-      res.json({ chat, reply: null });
+      saveChat(fresh);
+      res.json({ chat: fresh, reply: null });
     } else {
       res.status(500).json({ error: (err as Error).message });
     }
+  } finally {
+    if (inFlightReplies.get(chat.id) === ctrl) inFlightReplies.delete(chat.id);
   }
+});
+
+// Cancels the in-flight reply of the chat: the model call is aborted and no
+// message is saved for it. A no-op when nothing is generating. Returns the
+// current chat so the client can re-sync (a reply that landed in the last
+// moment is already saved and stays).
+apiRouter.post('/chats/:id/cancel', (req, res) => {
+  const chat = getChat(req.params.id);
+  if (!chat) {
+    res.status(404).json({ error: 'Chat not found' });
+    return;
+  }
+  const ctrl = inFlightReplies.get(chat.id);
+  if (ctrl) ctrl.abort();
+  res.json({ chat });
 });
 
 // Edits an existing message: the text and/or the image list

@@ -238,11 +238,23 @@ export class ApiService {
 
   // The line of one chat character; reply === null — the character stayed
   // silent ([SILENT]). The frontend calls it in turn for each participant.
-  nextReply(id: string, characterId: string): Promise<{ chat: Chat; reply: ChatMessage | null }> {
+  // The signal lets the caller abort the request (canceling the generation).
+  nextReply(
+    id: string,
+    characterId: string,
+    signal?: AbortSignal,
+  ): Promise<{ chat: Chat; reply: ChatMessage | null }> {
     return this.req<{ chat: Chat; reply: ChatMessage | null }>('/chats/' + id + '/reply', {
       method: 'POST',
       body: JSON.stringify({ characterId }),
+      signal,
     });
+  }
+
+  // Cancels the in-flight reply of the chat: the model call is aborted on the
+  // server and no message is saved for it. Returns the current chat (re-sync).
+  cancelReply(id: string): Promise<{ chat: Chat }> {
+    return this.req(`/chats/${id}/cancel`, { method: 'POST' });
   }
 
   // Message edit: the text and the image list (a data URL — a new image,

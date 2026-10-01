@@ -95,10 +95,10 @@ import { UiStore } from '../../services/ui-store';
         <button
           class="send"
           data-testid="send"
-          [disabled]="chatStore.sending()"
+          [class.cancel]="chatStore.sending()"
           (click)="onSend(ta)"
         >
-          {{ chatStore.editTargetId() ? '✓' : imageStore.genMode() ? 'Draw' : '➤' }}
+          {{ chatStore.sending() ? '✕' : chatStore.editTargetId() ? '✓' : imageStore.genMode() ? 'Draw' : '➤' }}
         </button>
       </div>
     </div>
@@ -169,6 +169,12 @@ export class InputPanel {
   // generation mode (Draw) draws an image, otherwise it is a normal message.
   // Keeping it here (not in a store) is what lets the store graph stay acyclic.
   onSend(ta: HTMLTextAreaElement): void {
+    // While a reply is generating the button is the cancel (✕) — clicking
+    // it (or pressing Enter) aborts the generation instead of sending.
+    if (this.chatStore.sending()) {
+      this.chatStore.cancelGeneration();
+      return;
+    }
     const text = ta.value;
     let ok: boolean;
     if (this.chatStore.editTargetId()) {

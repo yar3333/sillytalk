@@ -257,6 +257,13 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   from the same primitives — delete the last message (`DELETE /messages/:id`, kept visible locally
   until the reply arrives) + one `/reply` call as its author — there is no separate
   `/regenerate` route.
+  **Canceling the generation** — while a reply is being generated the send button is a cancel
+  (✕, Enter does the same): the in-flight `POST /reply` fetch is aborted and
+  `POST /api/chats/:id/cancel` aborts the model call on the server (one in-flight controller per
+  chat in `inFlightReplies`, the signal goes through `appendAssistantReply` into
+  `chatCompletion`); a cancelled reply saves NO message (no error one either). The queue itself
+  stops via the generation session in `ChatStore` (`cancelGeneration()` + `generationSeq`) —
+  silently, without the error banner.
   The header character menu toggles participants (last one cannot be removed) and reorders them
   with ↑/↓; there is no legacy single-`characterId` format — old chats were converted once by a
   one-off script.
@@ -295,6 +302,8 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
 - Message list is anchored to the bottom (grows upward); a "typing…" indicator shows while the model is
   generating — in reply queues it names the character being asked ("Alice is typing") with their
   avatar/letter, falling back to a neutral glyph when the author is unknown.
+- While a reply is generating the send button is a red cancel (✕) — clicking it (or Enter) aborts
+  the generation (see "Canceling the generation" above); it is NOT disabled.
 - User and assistant messages are visually distinct (avatar + sender label + colored bubble).
 - **Images**: stretched to the full chat width — the bubble of a message with images grows to the row
   width via the `has-images` class — and capped at two thirds of the viewport height
@@ -395,7 +404,8 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   `char-edit`/`user-edit`/`model-edit` (the ✎ row icons), `new-character`/`new-persona`/`new-model`
   (the "+ New" buttons), `user-option-row`/`model-option-row` (a row wrapper), `chat-date` (the
   "Chat: <date>" label that opens the chat menu), `new-chat`,
-  `settings`, `delete-chat`, `history`, `message`, `msg-sender`, `input`, `send`, `attach`,
+  `settings`, `delete-chat`, `history`, `message`, `msg-sender`, `input`, `send` (➤ normally; ✕
+  while a reply is generating — it is the cancel then), `attach`,
   `gen-toggle`, `error-banner`, `typing`. The entity dialogs: `character-dialog`/`user-dialog`/
   `model-dialog` + `char-name-input`/`user-name-input`/`model-name-input`/`model-id-input` and
   `char-save`/`char-clone`/`char-delete` (the `user-*`/`model-*` analogues).

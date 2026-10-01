@@ -430,6 +430,111 @@ describe('ChatStore — empty send ("another message from the AI")', () => {
   });
 });
 
+describe('ChatStore — canceling the generation', () => {
+  const baseChat: Chat = {
+    id: 'chat-1',
+    characterIds: ['char-1', 'char-2'],
+    userId: 'user-1',
+    modelId: 'model-1',
+    messages: [{ id: 'msg-1', role: 'user', text: 'hello', images: [], timestamp: 1 }],
+  };
+
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+
+  async function setup(
+    nextReply: (
+      id: string,
+      characterId: string,
+      signal?: AbortSignal,
+    ) => Promise<{ chat: Chat; reply: ChatMessage | null }>,
+  ) {
+    await TestBed.resetTestingModule();
+    await TestBed.configureTestingModule({
+      providers: [
+        {
+          provide: ApiService,
+          useValue: {
+            nextReply,
+            postMessage: () => Promise.resolve({ chat: baseChat }),
+            cancelReply: () => Promise.resolve({ chat: baseChat }),
+            getChat: () => Promise.resolve(baseChat),
+            getConfig: () => Promise.resolve({ llmModels: {} }),
+            imageStatus: () => Promise.resolve({ available: false }),
+            getCharacters: () => Promise.resolve([]),
+            getUsers: () => Promise.resolve([]),
+            getChats: () => Promise.resolve<ChatSummary[]>([]),
+          },
+        },
+      ],
+    }).compileComponents();
+    const store = TestBed.inject(ChatStore);
+    store.chat.set(baseChat);
+    return store;
+  }
+
+  it('cancelGeneration aborts the in-flight reply, stops the queue, no error banner', async () => {
+    const signals: AbortSignal[] = [];
+    const store = await setup((id, characterId, signal) => {
+      if (signal) signals.push(signal);
+      return new Promise(() => {}); // the reply never comes (a slow model)
+    });
+
+    expect(store.send('hello')).toBe(true);
+    expect(store.sending()).toBe(true);
+    await tick();
+    expect(store.typingCharacterId()).toBe('char-1');
+    expect(signals).toHaveLength(1);
+
+    store.cancelGeneration();
+
+    expect(store.sending()).toBe(false);
+    expect(store.typingCharacterId()).toBeNull();
+    expect(signals[0].aborted).toBe(true);
+
+    // The queue is over: no request for the second character was started,
+    // and a cancel is not an error (no banner).
+    await tick();
+    expect(signals).toHaveLength(1);
+    expect(TestBed.inject(UiStore).error()).toBe('');
+  });
+
+  it('a send after a cancel starts a fresh generation', async () => {
+    let call = 0;
+    const reply: ChatMessage = {
+      id: 'msg-2',
+      role: 'assistant',
+      characterId: 'char-1',
+      text: 'hi',
+      images: [],
+      timestamp: 2,
+    };
+    const replyChat: Chat = { ...baseChat, messages: [...baseChat.messages, reply] };
+    const store = await setup((id, characterId) => {
+      call += 1;
+      if (call === 1) return new Promise(() => {}); // the first one hangs
+      // the second send: char-1 answers, char-2 stays silent — the queue ends
+      return Promise.resolve({
+        chat: replyChat,
+        reply: characterId === 'char-1' ? reply : null,
+      });
+    });
+
+    store.send('hello');
+    await tick();
+    expect(store.sending()).toBe(true);
+    store.cancelGeneration();
+    await tick();
+    expect(store.sending()).toBe(false);
+
+    expect(store.send('again')).toBe(true);
+    await tick();
+    // the whole queue (2 participants) is done
+    expect(store.sending()).toBe(false);
+    expect(store.typingCharacterId()).toBeNull();
+    expect(store.chat()?.messages.at(-1)).toEqual(reply);
+  });
+});
+
 describe('ConfigStore — the entity CRUD (models / characters / users)', () => {
   // The requests are recorded; the fake answers with the sent payload, so the
   // store signals mirror the last request (like the real server).

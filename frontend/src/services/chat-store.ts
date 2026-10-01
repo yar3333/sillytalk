@@ -27,6 +27,17 @@ export class ChatStore {
   // "Alice is typing" indicator). null — no queue / the author is unknown.
   readonly typingCharacterId = signal<string | null>(null);
 
+  // ---- the generation (reply-queue) session ----
+  // One generation session = one reply queue (a send, an empty send, a
+  // regeneration). The seq is bumped when a queue starts and on cancel, so a
+  // cancelled queue stops quietly and can never clobber the new one.
+  private generationSeq = 0;
+  // The in-flight POST /reply fetch (one at a time) — aborted on cancel.
+  private replyAbort: AbortController | null = null;
+  // The chat the running queue belongs to: the user may switch chats while a
+  // reply is generating, and the cancel must reach THAT chat's model call.
+  private replyChatId: string | null = null;
+
   // ---- input ----
   // The 📎 attachments of the message being composed (data URLs / file names).
   // Part of the message composition (send/edit), so it stays here, not in
@@ -187,6 +198,7 @@ export class ChatStore {
     if (!c || this.sending()) return false;
     const trimmed = text.trim();
     const images = this.pendingImages();
+    const seq = ++this.generationSeq;
 
     // Neither text nor images — the user wants another message from the AI.
     if (!trimmed && images.length === 0) {
@@ -195,7 +207,7 @@ export class ChatStore {
         return false;
       }
       this.pendingImages.set([]);
-      this.runReplyQueue(c, this.nextTurnIndex(c));
+      this.runReplyQueue(c, this.nextTurnIndex(c), c.characterIds.length, seq);
       return true;
     }
 
@@ -207,16 +219,30 @@ export class ChatStore {
     this.api
       .postMessage(c.id, trimmed, images)
       .then((res) => {
+        // The user cancelled while the message was being saved: the message
+        // is on the server — show it, but do not start the reply queue.
+        if (this.generationSeq !== seq) {
+          this.setChat(res.chat);
+          return;
+        }
         this.setChat(res.chat);
         // The reply queue starts with the character mentioned by name,
         // otherwise — in turn order.
-        return this.runReplyQueue(res.chat, this.mentionStartIndex(res.chat, trimmed));
+        return this.runReplyQueue(
+          res.chat,
+          this.mentionStartIndex(res.chat, trimmed),
+          res.chat.characterIds.length,
+          seq,
+        );
       })
       .catch((e) => {
+        if (this.generationSeq !== seq) return; // cancelled
         this.ui.error.set(String((e as Error).message));
         this.refreshChat(c.id);
       })
-      .finally(() => this.sending.set(false));
+      .finally(() => {
+        if (this.generationSeq === seq) this.sending.set(false);
+      });
     return true;
   }
 
@@ -255,26 +281,73 @@ export class ChatStore {
   // (count participants). Lines come one by one (POST /reply) and appear
   // in the chat immediately; typingCharacterId between the calls shows who
   // is generating. A silent one ([SILENT]) is simply skipped, a model error
-  // breaks the queue.
-  private async runReplyQueue(c: Chat, startIndex: number, count = c.characterIds.length): Promise<void> {
+  // breaks the queue. `seq` is the generation session (see cancelGeneration):
+  // when it is no longer the current one the queue stops quietly.
+  private async runReplyQueue(
+    c: Chat,
+    startIndex: number,
+    count = c.characterIds.length,
+    seq: number,
+  ): Promise<void> {
     this.sending.set(true);
+    this.replyChatId = c.id;
     try {
       for (let i = 0; i < count; i++) {
+        if (this.generationSeq !== seq) return; // cancelled / superseded
         const ids = this.chat()?.characterIds ?? c.characterIds;
         const characterId = ids[(startIndex + i) % ids.length];
         this.typingCharacterId.set(characterId);
-        const res = await this.api.nextReply(c.id, characterId);
-        this.setChat(res.chat);
-        const lastMsg = res.chat.messages[res.chat.messages.length - 1];
-        if (lastMsg?.error) break;
+        const ctrl = new AbortController();
+        this.replyAbort = ctrl;
+        try {
+          const res = await this.api.nextReply(c.id, characterId, ctrl.signal);
+          this.setChat(res.chat);
+          const lastMsg = res.chat.messages[res.chat.messages.length - 1];
+          if (lastMsg?.error) break;
+        } finally {
+          if (this.replyAbort === ctrl) this.replyAbort = null;
+        }
       }
     } catch (e) {
+      if (this.generationSeq !== seq) return; // cancelled — no error banner
       this.ui.error.set(String((e as Error).message));
       this.refreshChat(c.id);
     } finally {
-      this.typingCharacterId.set(null);
-      this.sending.set(false);
+      // A cancelled (or superseded) session is already cleaned up by
+      // cancelGeneration / the new session — only the current one resets here.
+      if (this.generationSeq === seq) {
+        this.typingCharacterId.set(null);
+        this.sending.set(false);
+      }
     }
+  }
+
+  // Cancels the in-flight generation — the send button is the ✕ while a
+  // reply is being generated. The in-flight POST /reply fetch is aborted,
+  // the server is told to abort the model call (no message is saved for a
+  // cancelled reply), and the generation session is invalidated, so the
+  // running queue stops quietly. A fresh send starts a new session.
+  cancelGeneration(): void {
+    if (!this.sending()) return;
+    this.generationSeq += 1;
+    this.replyAbort?.abort();
+    this.replyAbort = null;
+    this.typingCharacterId.set(null);
+    this.sending.set(false);
+    // The cancel goes to the chat the queue runs in — not necessarily the
+    // one on screen (the user may have switched while the reply generates).
+    const chatId = this.replyChatId ?? this.chat()?.id ?? null;
+    this.replyChatId = null;
+    if (!chatId) return;
+    // The server aborts the model call; the answer re-syncs the chat (a
+    // reply that landed in the last moment is already saved and stays).
+    // Skip the re-sync when a new generation has started in the meantime.
+    this.api
+      .cancelReply(chatId)
+      .then((res) => {
+        if (this.chat()?.id === res.chat.id && !this.sending()) this.applyChat(res.chat);
+      })
+      .catch(() => undefined);
   }
 
   // The index of the participant addressed by name in the text ("Alice, …").
@@ -367,15 +440,22 @@ export class ChatStore {
     // visible one, and it looked like an author swap).
     const characterId = last.characterId ?? c.characterIds[0] ?? '';
     const startIndex = Math.max(0, c.characterIds.indexOf(characterId));
+    const seq = ++this.generationSeq;
     this.sending.set(true);
     this.api
       .deleteMessageFrom(c.id, last.id)
-      .then(() => this.runReplyQueue(c, startIndex, 1))
+      .then(() => {
+        if (this.generationSeq !== seq) return; // cancelled
+        return this.runReplyQueue(c, startIndex, 1, seq);
+      })
       .catch((e) => {
+        if (this.generationSeq !== seq) return; // cancelled
         this.ui.error.set(String((e as Error).message));
         this.refreshChat(c.id);
       })
-      .finally(() => this.sending.set(false));
+      .finally(() => {
+        if (this.generationSeq === seq) this.sending.set(false);
+      });
   }
 
   // ---- chat management ----

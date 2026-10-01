@@ -338,4 +338,31 @@ describe('chatCompletion', () => {
     );
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
+
+  it('passes the abort signal to the provider and does not retry on cancel', async () => {
+    // The provider accepts the request and never answers until it is
+    // aborted — like a slow model during a user cancel.
+    const fetchMock = jest.fn().mockImplementation((_url: string, init?: RequestInit) => {
+      const signal = init?.signal;
+      if (!signal) return Promise.reject(new Error('the signal must be passed to the provider'));
+      return new Promise((_resolve, reject) => {
+        const fail = () => {
+          const err = new Error('This operation was aborted');
+          err.name = 'AbortError';
+          reject(err);
+        };
+        if (signal.aborted) fail();
+        else signal.addEventListener('abort', fail, { once: true });
+      });
+    });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const ctrl = new AbortController();
+    const pending = chatCompletion(model, 'system', [msg('hi')], 'chat-test', undefined, ctrl.signal);
+    ctrl.abort();
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    // the signal reached the provider, and a cancel is not retried
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][1]).toHaveProperty('signal', ctrl.signal);
+  });
 });

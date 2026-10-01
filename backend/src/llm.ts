@@ -201,6 +201,7 @@ const IMAGE_REJECT_RE = /image input|images? (?:are |is )?not supported|mmproj|m
 async function requestCompletion(
   model: Model,
   messages: Array<{ role: string; content: string | ContentPart[] }>,
+  signal?: AbortSignal,
 ): Promise<string> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   const apiKey = resolveApiKey(model);
@@ -214,6 +215,9 @@ async function requestCompletion(
       messages,
       max_tokens: Math.max(256, Math.floor(model.contextSize / 4)),
     }),
+    // The reply can be cancelled by the user (POST /chats/:id/cancel): the
+    // abort rejects this fetch, the caller decides what to do with it.
+    signal,
   });
 
   if (!response.ok) {
@@ -237,6 +241,7 @@ export async function chatCompletion(
   history: ChatMessage[],
   chatId: string,
   closingNote?: string,
+  signal?: AbortSignal,
 ): Promise<string> {
   const toMessages = (withImages: boolean) => {
     const msgs: Array<{ role: string; content: string | ContentPart[] }> = [
@@ -265,14 +270,15 @@ export async function chatCompletion(
   };
 
   try {
-    return await requestCompletion(model, toMessages(true));
+    return await requestCompletion(model, toMessages(true), signal);
   } catch (err) {
     // A model without an mmproj rejects the image — retry with text only so
-    // the dialogue is not aborted with a 500 error.
+    // the dialogue is not aborted with a 500 error. A cancel (an aborted
+    // signal) is never retried: its error does not look like an image reject.
     const sentImages = history.some((m) => (m.images?.length ?? 0) > 0);
     if (!sentImages || !IMAGE_REJECT_RE.test((err as Error).message)) throw err;
     try {
-      const reply = await requestCompletion(model, toMessages(false));
+      const reply = await requestCompletion(model, toMessages(false), signal);
       return `⚠️ The model rejected the image — the message was sent without it.\n\n${reply}`;
     } catch {
       throw err;
