@@ -274,9 +274,12 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   "+ New character" button), active persona (opens the persona menu — click switches the active
   persona, ✎ edit icon per item, "+ New persona"), model chip (opens the **model menu** — the model
   pick, ✎ edit icon per item, "+ New model"; the chip is the ONLY model picker — the "⋮" menu has no
-  model submenu anymore, and on mobile the chip stays visible without the date), last-message date,
-  and a "⋮" menu (new chat, delete chat, chat list, settings). Opening any one of
-  these menus closes the others — they must never overlap.
+  model submenu), a "Chat: <last-message date>" label (clickable — opens the **chat menu**: new chat,
+  delete chat, the chat list; wider than the usual dropdown, centered under the label, always
+  visible), and a "⋮" menu (settings only now). Opening any one of these menus closes the others —
+  they must never overlap. The persona/model menus are single-select (the active row is highlighted,
+  no ●/○ mark); the character menu keeps the ●/○ mark (membership is a multi-select toggle) and its
+  rows are ordered by reply priority, so the ↑/↓ arrows reorder the menu itself.
 - **Entity edit dialogs** (character-dialog / user-dialog / model-dialog): one per item, opened from
   the ✎ icons / "+ New" buttons above. They carry **Save/Cancel**, **Delete** (a confirm; only in
   edit mode) and **Clone** (only in edit mode). Models are saved through the config (a rename
@@ -390,7 +393,8 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   `char-option` (a participants-menu row: `.opt-toggle` toggles membership, `.opt-mark` shows
   ● in-chat / ○ out), `model-option` (a model-menu row opened by the chip),
   `char-edit`/`user-edit`/`model-edit` (the ✎ row icons), `new-character`/`new-persona`/`new-model`
-  (the "+ New" buttons), `user-option-row`/`model-option-row` (a row wrapper), `new-chat`,
+  (the "+ New" buttons), `user-option-row`/`model-option-row` (a row wrapper), `chat-date` (the
+  "Chat: <date>" label that opens the chat menu), `new-chat`,
   `settings`, `delete-chat`, `history`, `message`, `msg-sender`, `input`, `send`, `attach`,
   `gen-toggle`, `error-banner`, `typing`. The entity dialogs: `character-dialog`/`user-dialog`/
   `model-dialog` + `char-name-input`/`user-name-input`/`model-name-input`/`model-id-input` and

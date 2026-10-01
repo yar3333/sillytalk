@@ -32,8 +32,8 @@ import {
             </span>
             @if (characterMenuOpen()) {
               <div class="dropdown">
-                <div class="dropdown-title">Characters in the chat · order = priority</div>
-                @for (c of configStore.characters(); track c.id) {
+                <div class="dropdown-title">Characters in the chat</div>
+                @for (c of menuCharacters(); track c.id) {
                   <div class="opt-row" data-testid="char-option" [class.active]="inChat(c.id)">
                     <button
                       class="opt opt-toggle"
@@ -101,9 +101,6 @@ import {
                       [class.active]="chatStore.chat()?.userId === u.id"
                       (click)="chatStore.selectUser(u.id)"
                     >
-                      <span class="opt-mark">{{
-                        chatStore.chat()?.userId === u.id ? '●' : '○'
-                      }}</span>
                       {{ u.name }}
                     </button>
                     <button
@@ -132,15 +129,54 @@ import {
             }
           </span>
         </span>
-        <!-- The chat ID is not shown — it is in the hint on the title (.ident);
-             middle dots separate the names, the date and the model, no
-             parentheses. The model chip opens the model menu (the pick + the
-             item dialogs); on mobile only the date is hidden — the chip stays
-             the model picker. -->
-        <span class="chat-meta">
-          <span class="chat-date">
-            {{ chatStore.lastTime() ? '· ' + chatStore.lastTime() + ' ·&nbsp;' : '' }}
-          </span>
+      </div>
+
+      <!-- The chat menu: the "Chat: <date>" label opens it (the chat-management
+           items moved out of the ⋮ menu). It is wider than the usual dropdown. -->
+      <span
+        class="chat-date"
+        data-testid="chat-date"
+        title="Chat menu"
+        (click)="$event.stopPropagation(); toggleChatMenu()"
+      >
+        {{ chatStore.lastTime() ? 'Chat: ' + chatStore.lastTime() : 'Chat' }}
+        @if (chatMenuOpen()) {
+          <div class="dropdown chat-dropdown">
+            <button class="opt" data-testid="new-chat" (click)="chatStore.newChat()">New chat</button>
+            <button
+              class="opt danger"
+              data-testid="delete-chat"
+              (click)="chatStore.deleteCurrentChat()"
+            >
+              Delete chat
+            </button>
+            <div class="dropdown-title">Chats</div>
+            <div class="chat-list">
+              @for (cs of chatStore.chats(); track cs.id) {
+                <button
+                  class="opt"
+                  [class.active]="chatStore.chat()?.id === cs.id"
+                  (click)="chatStore.openChat(cs.id)"
+                >
+                  <span class="chat-item-name">
+                    <span class="chat-item-char">{{ chatLabel(cs) }}</span>
+                    <span class="who-sep">/</span>
+                    <span class="chat-item-user">{{ chatUserLabel(cs) }}</span>
+                  </span>
+                  <span class="chat-item-meta"
+                    >{{ chatTime(cs) ? chatTime(cs) + ' · ' : '' }}{{
+                      messageCount(cs.messageCount)
+                    }}</span
+                  >
+                </button>
+              }
+            </div>
+          </div>
+        }
+      </span>
+
+      <div class="top-right">
+        <span class="model-wrap">
           <span
             class="model-chip"
             data-testid="model-chip"
@@ -160,9 +196,6 @@ import {
                     [class.active]="chatStore.chat()?.modelId === m.name"
                     (click)="chatStore.selectModel(m.name)"
                   >
-                    <span class="opt-mark">{{
-                      chatStore.chat()?.modelId === m.name ? '●' : '○'
-                    }}</span>
                     {{ m.name }}
                     @if (m.supportsImages) {
                       (👁)
@@ -185,53 +218,25 @@ import {
             </div>
           }
         </span>
-      </div>
-      <button
-        class="dots"
-        data-testid="menu"
-        (click)="$event.stopPropagation(); toggleMenu()"
-        title="Menu"
-      >
-        ⋮
-      </button>
+        <button
+          class="dots"
+          data-testid="menu"
+          (click)="$event.stopPropagation(); toggleMenu()"
+          title="Menu"
+        >
+          ⋮
+        </button>
 
-      <!-- Main menu (the model pick lives in the chip menu) -->
-      @if (menuOpen()) {
-        <div class="dropdown">
-          <button class="opt" data-testid="new-chat" (click)="chatStore.newChat()">New chat</button>
-          <button
-            class="opt danger"
-            data-testid="delete-chat"
-            (click)="chatStore.deleteCurrentChat()"
-          >
-            Delete chat
-          </button>
-          <div class="dropdown-title">Chats</div>
-          <div class="chat-list">
-            @for (cs of chatStore.chats(); track cs.id) {
-              <button
-                class="opt"
-                [class.active]="chatStore.chat()?.id === cs.id"
-                (click)="chatStore.openChat(cs.id)"
-              >
-                <span class="chat-item-name">
-                  <span class="chat-item-char">{{ chatLabel(cs) }}</span>
-                  <span class="who-sep">/</span>
-                  <span class="chat-item-user">{{ chatUserLabel(cs) }}</span>
-                </span>
-                <span class="chat-item-meta"
-                  >{{ chatTime(cs) ? chatTime(cs) + ' · ' : ''
-                  }}{{ messageCount(cs.messageCount) }}</span
-                >
-              </button>
-            }
-          </div>
-          <div class="sep"></div>
+        <!-- Main menu: only Settings now (the chat-management items moved to
+             the "Chat: <date>" menu) -->
+        @if (menuOpen()) {
+          <div class="dropdown">
           <button class="opt" data-testid="settings" (click)="configStore.openSettings()">
             Settings
           </button>
         </div>
       }
+      </div>
     </header>
   `,
   styleUrl: './top-bar.scss',
@@ -244,6 +249,7 @@ export class TopBar implements OnInit, OnDestroy {
   readonly characterMenuOpen = signal(false);
   readonly userMenuOpen = signal(false);
   readonly modelMenuOpen = signal(false);
+  readonly chatMenuOpen = signal(false);
   private onDocClick = () => this.closeMenus();
 
   ngOnInit(): void {
@@ -259,6 +265,7 @@ export class TopBar implements OnInit, OnDestroy {
     this.characterMenuOpen.set(false);
     this.userMenuOpen.set(false);
     this.modelMenuOpen.set(false);
+    this.chatMenuOpen.set(false);
   }
 
   // Opening one menu closes the others so they do not overlap.
@@ -269,6 +276,7 @@ export class TopBar implements OnInit, OnDestroy {
       this.characterMenuOpen.set(false);
       this.userMenuOpen.set(false);
       this.modelMenuOpen.set(false);
+      this.chatMenuOpen.set(false);
     }
   }
   toggleCharacterMenu(): void {
@@ -278,6 +286,7 @@ export class TopBar implements OnInit, OnDestroy {
       this.menuOpen.set(false);
       this.userMenuOpen.set(false);
       this.modelMenuOpen.set(false);
+      this.chatMenuOpen.set(false);
     }
   }
   toggleUserMenu(): void {
@@ -287,6 +296,7 @@ export class TopBar implements OnInit, OnDestroy {
       this.menuOpen.set(false);
       this.characterMenuOpen.set(false);
       this.modelMenuOpen.set(false);
+      this.chatMenuOpen.set(false);
     }
   }
   toggleModelMenu(): void {
@@ -296,6 +306,19 @@ export class TopBar implements OnInit, OnDestroy {
       this.menuOpen.set(false);
       this.characterMenuOpen.set(false);
       this.userMenuOpen.set(false);
+      this.chatMenuOpen.set(false);
+    }
+  }
+  // The chat menu (New chat / Delete / the chat list) opens on the "Chat:
+  // <date>" label in the header.
+  toggleChatMenu(): void {
+    const open = !this.chatMenuOpen();
+    this.chatMenuOpen.set(open);
+    if (open) {
+      this.menuOpen.set(false);
+      this.characterMenuOpen.set(false);
+      this.userMenuOpen.set(false);
+      this.modelMenuOpen.set(false);
     }
   }
 
@@ -307,6 +330,25 @@ export class TopBar implements OnInit, OnDestroy {
     ev.stopPropagation();
     this.chatStore.moveCharacter(id, dir);
     (ev.currentTarget as HTMLElement).blur();
+  }
+
+  // The menu rows, in the chat's reply-priority order: the participants come
+  // first (in that order), the characters not in the chat follow. So the
+  // ↑/↓ arrows reorder the menu itself, not just the header.
+  menuCharacters() {
+    const ids = this.chatStore.chat()?.characterIds ?? [];
+    const chars = this.configStore.characters();
+    const byId = new Map<string, (typeof chars)[number]>();
+    for (const c of chars) byId.set(c.id, c);
+    const out: (typeof chars)[number][] = [];
+    for (const id of ids) {
+      const c = byId.get(id);
+      if (c) out.push(c);
+    }
+    for (const c of chars) {
+      if (!ids.includes(c.id)) out.push(c);
+    }
+    return out;
   }
 
   // The chat labels in the list — pure functions from helpers.ts.

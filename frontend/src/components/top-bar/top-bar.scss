@@ -12,21 +12,23 @@
   border-bottom: 1px solid var(--border);
   background: var(--panel);
   z-index: 20;
+  /* one size for every header label (the app base font) */
+  font-size: 15px;
 }
 
 .ident {
-  flex: 1;
   min-width: 0;
   display: flex;
   align-items: baseline;
   gap: 8px;
-  /* one size for every header label (the app base font) */
-  font-size: 15px;
 }
 
 .char-name {
   font-weight: 600;
   color: var(--text);
+  /* names cap at 1/4 of the viewport each, then ellipsis — the header keeps
+     room for the date and the model */
+  max-width: 25vw;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -61,32 +63,54 @@
 
 .user-name {
   color: var(--accent);
+  /* cap like the character row: 1/4 of the viewport, then ellipsis */
+  max-width: 25vw;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
   cursor: pointer;
 }
-.user-name:hover {
-  text-decoration: underline;
-}
 
-/* The model line: the date + the chip. NO overflow:hidden here — the line is
-   the containing block of the model menu, and an overflow clip would cut the
-   dropdown (it is painted below/outside the line box). The chip ellipsizes
-   on its own; .chat-meta is a flex item of .ident, so min-width:0 lets it
-   shrink in a narrow header. */
-.chat-meta {
+/* The right-hand cluster: the model chip + the "⋮" menu, pushed to the right
+   edge of the header (space-between on .topbar). */
+.top-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  min-width: 0;
+}
+/* The model chip anchors its own dropdown (the menu is a containing block;
+   no overflow clip here — it would cut the dropdown). A flex container so
+   the chip can shrink and ellipsize in a narrow header. */
+.model-wrap {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+.model-wrap .dropdown {
+  right: 0;
+}
+/* The chat date — an ordinary flex item that opens the chat menu. It stays
+   near the center and shifts right when the names take up more room. */
+.chat-date {
+  position: relative;
   color: var(--muted);
   white-space: nowrap;
-  min-width: 0;
-  display: flex;
-  align-items: baseline;
-  /* the model menu is anchored to the right edge of this line */
-  position: relative;
+  flex: none;
+  cursor: pointer;
 }
-.chat-meta .dropdown {
-  right: 0;
+.chat-date:hover {
+  color: var(--text);
+}
+/* The chat menu — wider than the usual dropdown, centered under the label. */
+.chat-dropdown {
+  left: 50%;
+  right: auto;
+  transform: translateX(-50%);
+  width: 320px;
+  max-width: 90vw;
 }
 
 .model-chip {
@@ -95,10 +119,18 @@
   overflow: hidden;
   text-overflow: ellipsis;
   cursor: pointer;
+  /* a clickable control, not muted text like the date: pill + border so the
+     affordance is obvious without a hover */
+  padding: 1px 9px;
+  margin-left: 2px;
+  border: 1px solid var(--border-2);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--text);
 }
 .model-chip:hover {
-  text-decoration: underline;
-  color: var(--text);
+  border-color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
 }
 /* the model names can be long — one line with an ellipsis */
 .model-dropdown .opt-toggle {
@@ -282,11 +314,5 @@
   margin: 6px 0;
 }
 
-/* ---------- responsive ---------- */
-@media (max-width: 640px) {
-  /* Only the date is hidden — the model chip stays: after the "⋮" submenu
-     was removed it is the only model picker (and entry to its dialogs). */
-  .chat-date {
-    display: none;
-  }
-}
+/* The "Chat: <date>" label is the chat-menu trigger, so it stays visible on
+   every screen size (the names and the model ellipsize instead). */

@@ -100,7 +100,7 @@ test('adding and removing a participant via the characters menu', async ({ page 
   await page.goto('/');
   await expect(page.getByTestId('char-name')).toBeVisible();
   const before = (await page.getByTestId('char-name').textContent())?.trim() ?? '';
-  await page.getByTestId('menu').click();
+  await page.getByTestId('chat-date').click();
   await expect(page.getByTestId('new-chat')).toBeVisible();
   // Open the participants menu and add the first character outside the chat (○).
   // A click on the name does NOT close the menu — the participant can be removed
@@ -145,7 +145,7 @@ test('the model menu and the settings dialog', async ({ page }) => {
 test('a new chat from the menu', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByTestId('char-name')).toBeVisible();
-  await page.getByTestId('menu').click();
+  await page.getByTestId('chat-date').click();
   await page.getByTestId('new-chat').click();
   // The new chat dialog: pick the persona and the character, confirm
   await expect(page.getByTestId('new-chat-dialog')).toBeVisible();
@@ -163,7 +163,7 @@ test('a new chat from the menu', async ({ page }) => {
 test('a group chat: two characters reply in turn', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByTestId('char-name')).toBeVisible();
-  await page.getByTestId('menu').click();
+  await page.getByTestId('chat-date').click();
   await page.getByTestId('new-chat').click();
   await expect(page.getByTestId('new-chat-dialog')).toBeVisible();
   const charOpts = page.getByTestId('new-char-option');
@@ -213,14 +213,14 @@ test('switching the active persona keeps the authors of the old messages', async
   const sender1 = (await userMsgs.first().textContent())?.trim() ?? '';
   expect(sender1).toBe(persona1);
 
-  // Switch the persona to another one (○ — not active)
+  // Switch the persona to another one (the active row carries .active)
   await page.getByTestId('user-name').click();
   await expect(userOpts.first()).toBeVisible({ timeout: 5000 });
   let persona2 = '';
   for (let i = 0; i < (await userOpts.count()); i++) {
-    const mark = (await userOpts.nth(i).textContent()) ?? '';
-    if (mark.includes('○')) {
-      persona2 = mark.replace(/[○●]/g, '').trim();
+    const cls = (await userOpts.nth(i).getAttribute('class')) ?? '';
+    if (!cls.includes('active')) {
+      persona2 = (await userOpts.nth(i).textContent())?.trim() ?? '';
       await userOpts.nth(i).click();
       break;
     }
@@ -257,7 +257,7 @@ test('a group chat with the editing of the old messages', async ({ page }) => {
   test.setTimeout(240000);
   await page.goto('/');
   await expect(page.getByTestId('char-name')).toBeVisible();
-  await page.getByTestId('menu').click();
+  await page.getByTestId('chat-date').click();
   await page.getByTestId('new-chat').click();
   await expect(page.getByTestId('new-chat-dialog')).toBeVisible();
   const charOpts = page.getByTestId('new-char-option');
@@ -490,9 +490,11 @@ test('the header menus: exclusivity, the model pick, the new character', async (
   if ((await modelOptions.count()) >= 2) {
     let target = '';
     for (let i = 0; i < (await modelOptions.count()); i++) {
-      const txt = (await modelOptions.nth(i).textContent()) ?? '';
-      if (!txt.includes('●')) {
-        target = txt.replace(/[○●]/g, '').replace('(👁)', '').trim();
+      const cls = (await modelOptions.nth(i).getAttribute('class')) ?? '';
+      if (!cls.includes('active')) {
+        target = ((await modelOptions.nth(i).textContent()) ?? '')
+          .replace('(👁)', '')
+          .trim();
         await modelOptions.nth(i).click();
         break;
       }
@@ -523,7 +525,7 @@ test('the participants menu: the reorder arrows', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByTestId('char-name')).toBeVisible();
   // a group chat: the preselected first character + the second one
-  await page.getByTestId('menu').click();
+  await page.getByTestId('chat-date').click();
   await page.getByTestId('new-chat').click();
   await expect(page.getByTestId('new-chat-dialog')).toBeVisible();
   const charOpts = page.getByTestId('new-char-option');
@@ -544,14 +546,14 @@ test('the participants menu: the reorder arrows', async ({ page }) => {
   await page.screenshot({ path: `${SHOTS}/11b-participant-order.png` });
 });
 
-// Mobile: the date is hidden, the model chip stays — after the "⋮" submenu
-// was removed the chip is the only model picker (and dialog entry).
+// Mobile: the "Chat: <date>" label (the chat-menu trigger) and the model
+// chip are both visible; the chip is the model picker (and dialog entry).
 test('the model chip on mobile', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/');
   await expect(page.getByTestId('input')).toBeVisible();
   await expect(page.getByTestId('model-chip')).toBeVisible();
-  await expect(page.locator('.chat-date')).toBeHidden();
+  await expect(page.locator('.chat-date')).toBeVisible();
   await page.getByTestId('model-chip').click();
   await expect(page.getByTestId('model-option').first()).toBeVisible();
   await page.screenshot({ path: `${SHOTS}/11c-mobile-model-chip.png` });
