@@ -207,14 +207,18 @@ async function requestCompletion(
   const apiKey = resolveApiKey(model);
   if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
 
+  // The model id may be left empty in the config — then the provider picks the
+  // default model itself, so the `model` field is simply not sent.
+  const payload: Record<string, unknown> = {
+    messages,
+    max_tokens: Math.max(256, Math.floor(model.contextSize / 4)),
+  };
+  if (model.id) payload.model = model.id;
+
   const response = await fetch(`${model.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
     method: "POST",
     headers,
-    body: JSON.stringify({
-      model: model.id,
-      messages,
-      max_tokens: Math.max(256, Math.floor(model.contextSize / 4)),
-    }),
+    body: JSON.stringify(payload),
     // The reply can be cancelled by the user (POST /chats/:id/cancel): the
     // abort rejects this fetch, the caller decides what to do with it.
     signal,

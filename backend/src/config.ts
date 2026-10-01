@@ -155,7 +155,7 @@ function normalizeLlmModels(raw: unknown, def: Config): Record<string, LlmModel>
     if (!val || typeof val !== 'object') continue;
     const v = val as Partial<LlmModel>;
     result[name] = {
-      id: typeof v.id === 'string' && v.id ? v.id : name,
+      id: typeof v.id === 'string' ? v.id : '',
       baseUrl: typeof v.baseUrl === 'string' ? v.baseUrl : '',
       apiKey: typeof v.apiKey === 'string' ? v.apiKey : undefined,
       envKey: typeof v.envKey === 'string' ? v.envKey : undefined,

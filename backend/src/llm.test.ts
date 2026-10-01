@@ -312,6 +312,18 @@ describe('chatCompletion', () => {
     expect(body.messages[2].content).toBe('[reminder]');
   });
 
+  it('omits the model field when the model id is empty', async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(jsonRes({ choices: [{ message: { content: 'ok' } }] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await chatCompletion({ ...model, id: '' }, 'system', [msg('hi')], 'chat-test');
+    const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
+    const body = JSON.parse(init.body) as Record<string, unknown>;
+    expect(body).not.toHaveProperty('model');
+  });
+
   it('does not retry the request on an ordinary provider error', async () => {
     const fetchMock = jest
       .fn()
