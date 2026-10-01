@@ -86,9 +86,9 @@ export interface ChatMessage {
   imageRefs?: Record<string, string[]>;
   // Generation status of the message's images (file name -> status): only
   // the images still being generated ("pending") or whose generation failed
-  // or was cancelled ("failed") are listed — a name absent from the map is a
-  // ready image.
-  imageStatus?: Record<string, 'pending' | 'failed'>;
+  // ("failed") or was cancelled ("cancelled") are listed — a name absent from
+  // the map is a ready image.
+  imageStatus?: Record<string, 'pending' | 'failed' | 'cancelled'>;
   // The reason a generated image is "failed" (file name -> error text).
   imageErrors?: Record<string, string>;
 }
@@ -239,14 +239,18 @@ export class ApiService {
   // The line of one chat character; reply === null — the character stayed
   // silent ([SILENT]). The frontend calls it in turn for each participant.
   // The signal lets the caller abort the request (canceling the generation).
+  // `replaceLast` (regeneration): the backend replaces the last assistant
+  // message with the new reply, removing it only after the new one is saved
+  // — so a cancel keeps the original reply.
   nextReply(
     id: string,
     characterId: string,
     signal?: AbortSignal,
+    replaceLast = false,
   ): Promise<{ chat: Chat; reply: ChatMessage | null }> {
     return this.req<{ chat: Chat; reply: ChatMessage | null }>('/chats/' + id + '/reply', {
       method: 'POST',
-      body: JSON.stringify({ characterId }),
+      body: JSON.stringify({ characterId, replaceLast }),
       signal,
     });
   }

@@ -30,6 +30,19 @@ export class ImageStore {
   // generation continues in the background and is shown by the placeholder.
   readonly generating = signal(false);
 
+  // ---- lightbox ----
+  // The image shown enlarged (a media URL) — set when the user clicks an
+  // image in the chat. null = closed. Clicking an image adds a generation
+  // reference (when the gen mode is relevant) AND opens the lightbox, so the
+  // user sees the image larger and is not left wondering what a click did.
+  readonly lightbox = signal<string | null>(null);
+  openLightbox(url: string): void {
+    this.lightbox.set(url);
+  }
+  closeLightbox(): void {
+    this.lightbox.set(null);
+  }
+
   // ---- derived ----
   // The first participant's photos (reference candidates in the gen bar).
   readonly characterPhotos = computed<string[]>(() => this.chatStore.character()?.photos ?? []);

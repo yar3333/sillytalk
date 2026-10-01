@@ -1,4 +1,12 @@
-import { Component, ElementRef, ViewChild, effect, inject } from '@angular/core';
+import {
+  Component,
+  ElementRef,
+  HostListener,
+  ViewChild,
+  effect,
+  inject,
+  signal,
+} from '@angular/core';
 import { ChatStore } from '../../services/chat-store';
 import { ImageStore } from '../../services/image-store';
 import { avatarLetter } from '../../services/helpers';
@@ -26,7 +34,7 @@ import { MessageRow } from '../message-row/message-row';
       @for (m of chatStore.chat()?.messages; track m.id; let last = $last) {
         <app-message-row [message]="m" [isLast]="last" />
       }
-      @if (chatStore.sending() || imageStore.generating()) {
+      @if ((chatStore.sending() && !chatStore.regenerating()) || imageStore.generating()) {
         <!-- The row is deliberately without the .msg class: the e2e selector for
              the model's reply is .msg:not(.user):not(.error), and "typing…"
              must not fall under it. -->
@@ -53,6 +61,11 @@ export class MessageList {
   readonly chatStore = inject(ChatStore);
   readonly imageStore = inject(ImageStore);
   private lastScrollKey = '';
+  // Whether the history is at the bottom (within 80 px). The auto-scroll only
+  // happens when the user is already at the bottom, so reading an earlier
+  // part of the history is not yanked to the new message. The user scrolls
+  // the history back to the bottom to resume auto-following.
+  private atBottom = true;
 
   constructor() {
     // Auto-scroll to the bottom: only when the feed really grew (a chat or
@@ -65,15 +78,40 @@ export class MessageList {
       const key = chat ? chat.id + ':' + chat.messages.length : '';
       if (key !== this.lastScrollKey || sending || generating) {
         this.lastScrollKey = key;
-        this.scrollToBottom();
+        if (this.atBottom) this.scrollToBottom();
       }
     });
+  }
+
+  // The history container's scroll state: the user scrolls the feed up/down —
+  // we update atBottom so the auto-scroll knows whether to follow.
+  @HostListener('wheel', ['$event'])
+  onWheel(e: WheelEvent): void {
+    this.updateAtBottom();
+    void e;
+  }
+  @HostListener('touchmove')
+  onTouchMove(): void {
+    this.updateAtBottom();
+  }
+  @HostListener('scroll')
+  onScroll(): void {
+    this.updateAtBottom();
+  }
+
+  private updateAtBottom(): void {
+    const el = this.historyEl?.nativeElement;
+    if (!el) return;
+    this.atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   }
 
   scrollToBottom(): void {
     setTimeout(() => {
       const el = this.historyEl?.nativeElement;
-      if (el) el.scrollTop = el.scrollHeight;
+      if (el) {
+        el.scrollTop = el.scrollHeight;
+        this.atBottom = true;
+      }
     }, 0);
   }
 

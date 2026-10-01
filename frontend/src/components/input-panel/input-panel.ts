@@ -172,6 +172,10 @@ export class InputPanel {
     // While a reply is generating the button is the cancel (✕) — clicking
     // it (or pressing Enter) aborts the generation instead of sending.
     if (this.chatStore.sending()) {
+      // A typed message + Enter would silently cancel the generation; confirm
+      // first so the user doesn't lose the in-flight reply by accident.
+      const text = ta.value.trim();
+      if (text && !confirm('Cancel the generation in progress?')) return;
       this.chatStore.cancelGeneration();
       return;
     }

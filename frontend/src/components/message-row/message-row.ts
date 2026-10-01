@@ -26,6 +26,7 @@ import { avatarLetter, imageHintFor, splitNarration as splitNarrationParts } fro
         [class.user]="message().role === 'user'"
         [class.error]="message().error"
         [class.has-images]="message().images.length > 0"
+        [class.regenerating]="isRegenerating()"
       >
         @if (isLast() && message().role === 'assistant') {
           <button
@@ -56,6 +57,15 @@ import { avatarLetter, imageHintFor, splitNarration as splitNarrationParts } fro
             <span [class.narration]="p.narration">{{ p.text }}</span>
           }
         </div>
+        @if (isRegenerating()) {
+          <!-- In-place "Regenerating…" state: the old reply stays visible (dimmed)
+               while the new one is being generated, instead of a separate
+               "typing…" row below it. -->
+          <div class="regen-inline" data-testid="regen-inline">
+            <span class="regen-spinner" aria-hidden="true"></span>
+            <span>Regenerating…</span>
+          </div>
+        }
         @if (message().images.length) {
           <div class="msg-images">
             @for (img of message().images; track img) {
@@ -91,11 +101,25 @@ import { avatarLetter, imageHintFor, splitNarration as splitNarrationParts } fro
                     </button>
                   </span>
                 }
+                @case ('cancelled') {
+                  <span class="img-placeholder img-cancelled" data-testid="img-cancelled">
+                    <span class="img-broken-icon" aria-hidden="true">🖼️</span>
+                    <span class="img-placeholder-label">Image generation cancelled</span>
+                    <button
+                      class="img-regen-btn"
+                      data-testid="img-regen"
+                      (click)="imageStore.regenerateImage(message().id, img)"
+                      title="Regenerate the image"
+                    >
+                      🔄 Regenerate
+                    </button>
+                  </span>
+                }
                 @default {
                   <span class="msg-img-wrap">
                     <img
                       [src]="mediaUrl(img)"
-                      (click)="imageStore.addChatRef(img)"
+                      (click)="onImageClick(img)"
                       [title]="imageHint(img)"
                     />
                     @if (message().role === 'assistant') {
@@ -134,9 +158,17 @@ export class MessageRow {
     return imageHintFor(this.configStore.config(), this.message(), img);
   }
   // The generation status of one image: absent from imageStatus — the ready
-  // image, "pending" — the spinner placeholder, "failed" — the broken one.
-  imgStatus(img: string): 'pending' | 'failed' | null {
+  // image, "pending" — the spinner placeholder, "failed" — the broken one,
+  // "cancelled" — the one the user cancelled (its own placeholder, not an error).
+  imgStatus(img: string): 'pending' | 'failed' | 'cancelled' | null {
     return this.message().imageStatus?.[img] ?? null;
+  }
+  // Clicking a ready image: add it as a generation reference AND open it in
+  // the lightbox (enlarged), so the action is visible and the user can see
+  // the image larger.
+  onImageClick(img: string): void {
+    this.imageStore.addChatRef(img);
+    this.imageStore.openLightbox(this.mediaUrl(img));
   }
   imageError(img: string): string {
     return this.message().imageErrors?.[img] ?? '';
@@ -161,6 +193,16 @@ export class MessageRow {
   }
   letter(): string {
     return avatarLetter(this.senderName());
+  }
+  // The in-place "Regenerating…" state: only for the last assistant message
+  // while a regeneration is running (the old reply stays visible, dimmed,
+  // with a spinner instead of a separate "typing…" row below).
+  isRegenerating(): boolean {
+    return (
+      this.isLast() &&
+      this.message().role === 'assistant' &&
+      this.chatStore.regenerating()
+    );
   }
 
   // The lines and the author descriptions /* ... */ separately — for highlighting.

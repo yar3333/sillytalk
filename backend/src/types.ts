@@ -85,10 +85,11 @@ export type ChatMessage = {
   imageRefs?: Record<string, string[]>;
   // Generation status of the message's images (file name -> status). Only the
   // images that are still being generated ("pending") or whose generation
-  // failed or was cancelled ("failed") are listed — a name that is absent
-  // from the map is a ready image. The generation runs in the background:
-  // the reply is saved with the reserved file names BEFORE the files exist.
-  imageStatus?: Record<string, 'pending' | 'failed'>;
+  // failed ("failed") or was cancelled ("cancelled") are listed — a name that
+  // is absent from the map is a ready image. The generation runs in the
+  // background: the reply is saved with the reserved file names BEFORE the
+  // files exist.
+  imageStatus?: Record<string, 'pending' | 'failed' | 'cancelled'>;
   // The reason a generated image is "failed" (file name -> error text) —
   // shown on the broken-image placeholder.
   imageErrors?: Record<string, string>;

@@ -1,36 +1,28 @@
-import fs from 'fs';
 import http from 'http';
-import os from 'os';
 import path from 'path';
 import { test, expect } from '@playwright/test';
+import { MockLlm, setupMockGenerator, startMockLlm } from '../helpers/mocks';
 
 // The server is started by the webServer from playwright.config.ts on
 // isolated data (SILLYTALK_DATA_DIR); the real chats and catalogs are
-// not touched.
+// not touched. The model calls go to the shared mock LLM (helpers/mocks.ts)
+// and the image generation to a mock local program, so the run is fast and
+// does not depend on the user's real models.
 const API = 'http://localhost:3211/api';
 const SHOTS = 'screenshots';
+const DATA = path.resolve(__dirname, '..', 'test-data');
+const ASSETS = path.join(DATA, 'app-assets');
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
-// The working models — from the user's real config (the default test model
-// leads nowhere). Enough to run it once.
+let llm: MockLlm | null = null;
+
 test.beforeAll(async () => {
-  try {
-    const raw = fs.readFileSync(
-      path.join(os.homedir(), '.config', 'sillytalk', 'config.json'),
-      'utf8',
-    );
-    const parsed = JSON.parse(raw) as { llmModels?: Record<string, unknown> };
-    if (parsed.llmModels && Object.keys(parsed.llmModels).length > 0) {
-      const current = (await (await fetch(`${API}/config`)).json()) as Record<string, unknown>;
-      await fetch(`${API}/config`, {
-        method: 'PUT',
-        headers: JSON_HEADERS,
-        body: JSON.stringify({ ...current, llmModels: parsed.llmModels }),
-      });
-    }
-  } catch {
-    // no real config — the default model remains (the model tests will fail)
-  }
+  llm = await startMockLlm(300);
+});
+
+test.afterAll(() => {
+  llm?.close();
+  llm = null;
 });
 
 // The characters and the personas are created by the tests in the isolated
@@ -68,6 +60,29 @@ async function clearChats(): Promise<void> {
 
 test.beforeEach(async () => {
   await setupCatalog();
+  // Point the config at the mock LLM and the mock image generator so every
+  // model-backed test is deterministic and fast. The hanging-model test adds
+  // its own model on top (and restores the mock afterwards).
+  if (llm) {
+    const cfg = (await (await fetch(`${API}/config`)).json()) as Record<string, unknown>;
+    const gen = setupMockGenerator(ASSETS);
+    await fetch(`${API}/config`, {
+      method: 'PUT',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({
+        ...cfg,
+        llmModels: {
+          'mock model': {
+            id: 'mock',
+            baseUrl: llm.baseUrl,
+            contextSize: 8192,
+            supportsImages: true,
+          },
+        },
+        imageGenerators: [gen.generator],
+      }),
+    });
+  }
   await clearChats();
 });
 

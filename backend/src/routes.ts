@@ -262,7 +262,7 @@ function setMessageImageStatus(
   chatId: string,
   messageId: string,
   image: string,
-  status: 'pending' | 'failed' | undefined,
+  status: 'pending' | 'failed' | 'cancelled' | undefined,
   error?: string,
 ): void {
   const chat = getChat(chatId);
@@ -321,8 +321,8 @@ function startChatImageJob(
       chatId,
       messageId,
       name,
-      'failed',
-      res.status === 'cancelled' ? 'Generation cancelled' : res.error,
+      res.status === 'cancelled' ? 'cancelled' : 'failed',
+      res.status === 'failed' ? res.error : undefined,
     );
   });
 }
@@ -332,11 +332,16 @@ function startChatImageJob(
 // The common part of a normal send, "another message from the AI" (empty
 // send) and regeneration: system prompt, history, the model call, parsing of
 // self-requested images, saving. The author (characterId) is stored on the message.
+// `replaceLast` (regeneration): the last assistant message is being replaced —
+// it is excluded from the history (the model writes a fresh line) and removed
+// from the chat ONLY after the new reply is saved, so a cancel or a model error
+// keeps the original reply.
 async function appendAssistantReply(
   chat: Chat,
   model: Model,
   characterId: string,
   signal?: AbortSignal,
+  replaceLast = false,
 ): Promise<ChatMessage | null> {
   const character = getCharacter(characterId);
   if (!character) return null;
@@ -365,9 +370,19 @@ async function appendAssistantReply(
   // is left as-is. The chat's personas are derived from message authors;
   // there is no Chat.userIds.
   const multi = chat.characterIds.length > 1 || new Set(chat.messages.map((m) => m.userId)).size > 1;
+  // The message being regenerated stays in the chat (visible to the user) but
+  // is not part of the history the model sees — it is being replaced.
+  const replacedIndex =
+    replaceLast && chat.messages.length > 0
+      ? chat.messages.length - 1
+      : -1;
+  const replacedMessage =
+    replacedIndex !== -1 && chat.messages[replacedIndex]?.role === 'assistant'
+      ? chat.messages[replacedIndex]
+      : null;
   const history = trimHistory(
     labelHistory(
-      chat.messages.filter((m) => !m.error),
+      chat.messages.filter((m) => m !== replacedMessage && !m.error),
       Object.fromEntries(
         chat.characterIds
           .map((id) => [id, getCharacter(id)?.name ?? id] as const)
@@ -417,7 +432,7 @@ async function appendAssistantReply(
   const images: string[] = photoIdx.length > 0 ? resolveInventoryRefs(chat.id, photoIdx, inventory) : [];
   const imagePrompts: Record<string, string> = {};
   const imageRefs: Record<string, string[]> = {};
-  const imageStatus: Record<string, 'pending' | 'failed'> = {};
+  const imageStatus: Record<string, 'pending' | 'failed' | 'cancelled'> = {};
   const pendingJobs: Array<{ name: string; prompt: string; refs: string[] }> = [];
   if (canGenerateImages) {
     for (const reqItem of parsed.requests) {
@@ -442,6 +457,11 @@ async function appendAssistantReply(
     imageStatus: Object.keys(imageStatus).length > 0 ? imageStatus : undefined,
     timestamp: Date.now(),
   };
+  // Regeneration: remove the replaced message now that the new reply is
+  // confirmed (a cancel or an error never reaches here — the original stays).
+  if (replacedMessage && chat.messages[replacedIndex] === replacedMessage) {
+    chat.messages.splice(replacedIndex, 1);
+  }
   chat.messages.push(assistantMsg);
   // Save the reply (with the reserved "pending" names) BEFORE starting the
   // jobs, so the client already sees the placeholders when the response
@@ -737,6 +757,9 @@ const inFlightReplies = new Map<string, AbortController>();
 // silent ones (reply === null) are skipped.
 apiRouter.post('/chats/:id/reply', async (req, res) => {
   const characterId = typeof req.body?.characterId === 'string' ? req.body.characterId : '';
+  // `replaceLast` (regeneration): the last assistant message is being replaced —
+  // the backend removes it only after the new reply is saved.
+  const replaceLast = req.body?.replaceLast === true;
   const chat = getChat(req.params.id);
   if (!chat) {
     res.status(404).json({ error: 'Chat not found' });
@@ -755,7 +778,7 @@ apiRouter.post('/chats/:id/reply', async (req, res) => {
   const ctrl = new AbortController();
   inFlightReplies.set(chat.id, ctrl);
   try {
-    const reply = await appendAssistantReply(chat, model, characterId, ctrl.signal);
+    const reply = await appendAssistantReply(chat, model, characterId, ctrl.signal, replaceLast);
     res.json({ chat, reply });
   } catch (err) {
     if (ctrl.signal.aborted) {
@@ -932,7 +955,7 @@ apiRouter.post('/chats/:id/messages/:messageId/cancel-image', (req, res) => {
   }
   if (msg.imageStatus?.[image] === 'pending') {
     cancelJob(chat.id, image);
-    setMessageImageStatus(chat.id, msg.id, image, 'failed', 'Generation cancelled');
+    setMessageImageStatus(chat.id, msg.id, image, 'cancelled', 'Generation cancelled');
   }
   res.json({ chat: getChat(chat.id) });
 });

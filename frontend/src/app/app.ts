@@ -7,13 +7,24 @@ import { Settings } from '../components/settings/settings';
 import { CharacterDialog } from '../components/character-dialog/character-dialog';
 import { UserDialog } from '../components/user-dialog/user-dialog';
 import { ModelDialog } from '../components/model-dialog/model-dialog';
+import { ImageLightbox } from '../components/image-lightbox/image-lightbox';
 import { ConfigStore } from '../services/config-store';
 import { ChatStore } from '../services/chat-store';
 import { ImageStore } from '../services/image-store';
 
 @Component({
   selector: 'app-root',
-  imports: [TopBar, MessageList, InputPanel, NewChatDialog, Settings, CharacterDialog, UserDialog, ModelDialog],
+  imports: [
+    TopBar,
+    MessageList,
+    InputPanel,
+    NewChatDialog,
+    Settings,
+    CharacterDialog,
+    UserDialog,
+    ModelDialog,
+    ImageLightbox,
+  ],
   template: `
     <div class="app" (click)="onSideClick($event)">
       <div class="column">
@@ -101,6 +112,9 @@ import { ImageStore } from '../services/image-store';
           }
         }
       }
+
+      <!-- The image lightbox: opened when the user clicks an image in the chat. -->
+      <app-image-lightbox />
     </div>
   `,
   styleUrl: './app.scss',

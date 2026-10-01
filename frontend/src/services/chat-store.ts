@@ -50,6 +50,9 @@ export class ChatStore {
   readonly newChatOpen = signal(false);
   readonly newChatUserDefault = signal('');
   readonly newChatCharsDefault = signal<string[]>([]);
+  // While the last assistant message is being regenerated (the in-place
+  // "Regenerating…" state in its bubble; the bottom typing row is hidden).
+  readonly regenerating = signal(false);
 
   // ---- derived (chat + catalog from ConfigStore) ----
   // The character participants of the chat in priority order (chat.characterIds).
@@ -283,11 +286,14 @@ export class ChatStore {
   // is generating. A silent one ([SILENT]) is simply skipped, a model error
   // breaks the queue. `seq` is the generation session (see cancelGeneration):
   // when it is no longer the current one the queue stops quietly.
+  // `replaceLast` (regeneration): the backend replaces the last assistant
+  // message with the new reply.
   private async runReplyQueue(
     c: Chat,
     startIndex: number,
     count = c.characterIds.length,
     seq: number,
+    replaceLast = false,
   ): Promise<void> {
     this.sending.set(true);
     this.replyChatId = c.id;
@@ -300,7 +306,7 @@ export class ChatStore {
         const ctrl = new AbortController();
         this.replyAbort = ctrl;
         try {
-          const res = await this.api.nextReply(c.id, characterId, ctrl.signal);
+          const res = await this.api.nextReply(c.id, characterId, ctrl.signal, replaceLast);
           this.setChat(res.chat);
           const lastMsg = res.chat.messages[res.chat.messages.length - 1];
           if (lastMsg?.error) break;
@@ -318,6 +324,7 @@ export class ChatStore {
       if (this.generationSeq === seq) {
         this.typingCharacterId.set(null);
         this.sending.set(false);
+        this.regenerating.set(false);
       }
     }
   }
@@ -334,6 +341,7 @@ export class ChatStore {
     this.replyAbort = null;
     this.typingCharacterId.set(null);
     this.sending.set(false);
+    this.regenerating.set(false);
     // The cancel goes to the chat the queue runs in — not necessarily the
     // one on screen (the user may have switched while the reply generates).
     const chatId = this.replyChatId ?? this.chat()?.id ?? null;
@@ -415,17 +423,30 @@ export class ChatStore {
     const c = this.chat();
     if (!c) return;
     if (this.editTargetId() === messageId) this.cancelEdit();
+    const idx = c.messages.findIndex((m) => m.id === messageId);
+    if (idx === -1) return;
+    // Deleting a message truncates the tail: warn when more than one message
+    // will be removed (the frequent "delete the last reply" stays one-click).
+    if (idx < c.messages.length - 1) {
+      const n = c.messages.length - idx;
+      if (!confirm(`Delete this message and ${n - 1} more after it?`)) return;
+    }
+    // Optimistic: the rows disappear right away (no pause waiting for the
+    // full-chat JSON round-trip); the server response replaces the chat,
+    // an error restores it via a re-read.
+    this.chat.set({ ...c, messages: c.messages.slice(0, idx) });
     this.api
       .deleteMessageFrom(c.id, messageId)
       .then((res) => this.setChat(res.chat))
       .catch((err) => {
         this.ui.error.set(String((err as Error).message));
+        this.refreshChat(c.id);
       });
   }
 
-  // Regenerates the last assistant reply (delete it + one line from its
-  // author). Guarded by `sending` only — image generation is in the background
-  // (ImageStore) and no longer blocks the dialogue.
+  // Regenerates the last assistant reply (one line from its author that
+  // replaces it). Guarded by `sending` only — image generation is in the
+  // background (ImageStore) and no longer blocks the dialogue.
   regenerate(): void {
     const c = this.chat();
     if (!c || this.sending()) return;
@@ -433,29 +454,16 @@ export class ChatStore {
     if (!last || last.role !== 'assistant') return;
     this.ui.error.set('');
     this.editTargetId.set(null);
-    // Regeneration from the primitives: delete the last message on the server,
-    // then one line from its author. The local chat is not touched: the old
-    // message stays on screen until the new one appears (it used to be removed
-    // right away — the previous message of another character became the last
-    // visible one, and it looked like an author swap).
+    // The backend replaces the last message itself (`replaceLast`): it removes
+    // the old one only after the new reply is saved, so a cancel or a model
+    // error keeps the original reply. The local chat is not touched — the old
+    // message stays on screen with an in-place "Regenerating…" state.
     const characterId = last.characterId ?? c.characterIds[0] ?? '';
     const startIndex = Math.max(0, c.characterIds.indexOf(characterId));
     const seq = ++this.generationSeq;
     this.sending.set(true);
-    this.api
-      .deleteMessageFrom(c.id, last.id)
-      .then(() => {
-        if (this.generationSeq !== seq) return; // cancelled
-        return this.runReplyQueue(c, startIndex, 1, seq);
-      })
-      .catch((e) => {
-        if (this.generationSeq !== seq) return; // cancelled
-        this.ui.error.set(String((e as Error).message));
-        this.refreshChat(c.id);
-      })
-      .finally(() => {
-        if (this.generationSeq === seq) this.sending.set(false);
-      });
+    this.regenerating.set(true);
+    this.runReplyQueue(c, startIndex, 1, seq, true);
   }
 
   // ---- chat management ----

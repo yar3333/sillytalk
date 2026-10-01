@@ -316,3 +316,24 @@
 
 /* The "Chat: <date>" label is the chat-menu trigger, so it stays visible on
    every screen size (the names and the model ellipsize instead). */
+
+/* Narrow screens: the participant / persona names must NOT collapse to zero
+   width — their menus are the only way to manage the chat on a phone. Give
+   each name a minimum width (with ellipsis) and let the chat date yield room
+   (it still opens the chat menu, just with a shorter label). */
+@media (max-width: 640px) {
+  .char-name,
+  .user-name {
+    max-width: 30vw;
+    min-width: 44px;
+  }
+  .chat-date {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 34vw;
+  }
+  .ident {
+    flex: 1 1 auto;
+  }
+}

@@ -405,11 +405,18 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   `127.0.0.1:3211` with `SILLYTALK_DATA_DIR=e2e/test-data` (gitignored) — the real
   `~/.config/sillytalk` is never touched, no manual backup/restore needed. The backend must be
   built (`npm run build` in `backend/`) before the run.
-- Uses **real model calls** — `beforeAll` copies `llmModels` from the user's real
-  `~/.config/sillytalk/config.json` into the test config; without it the default test model
-  (127.0.0.1:8000) leads nowhere and model-backed tests fail.
-- `beforeEach` creates the catalog via the API (`PUT /users`: Carol + Dave; `PUT /characters`:
-  Alice + Bob) and clears all chats so each test opens a fresh empty chat.
+- Uses **mocked model + image generation** — both suites share `e2e/helpers/mocks.ts`:
+  a deterministic OpenAI-compatible LLM (the delay before answering is controllable at
+  runtime via `MockLlm.setDelay`) and a mock local-program image generator (a bash script
+  that sleeps, fails on "fail" prompts, and is slow on "slow" ones). `beforeAll` starts the
+  mock LLM, `beforeEach` points the config's `llmModels`/`imageGenerators` at the mocks, so
+  the run is fast and does not depend on the user's real models. The mock LLM answers
+  "Mock reply from <character name>." (the name is read from the system prompt); the
+  ux-explore suite passes a `drawReplies` option so it can test the model-initiated
+  `[IMG:...]` / `[PHOTO:1]` tags. The "hanging model" cancel test in `app.spec.ts` still
+  spins up its own never-answering server (on top of the mocks).
+- `beforeEach` also creates the catalog via the API (`PUT /users`: Carol + Dave;
+  `PUT /characters`: Alice + Bob) and clears all chats so each test opens a fresh empty chat.
 - Selectors are `data-testid` attributes: `char-name` (joined participant names; click opens the
   participants menu), `model-chip` (click opens the model menu), `menu`,
   `char-option` (a participants-menu row: `.opt-toggle` toggles membership, `.opt-mark` shows
