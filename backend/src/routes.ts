@@ -859,19 +859,22 @@ apiRouter.patch('/chats/:id/messages/:messageId', (req, res) => {
   res.json({ chat });
 });
 
-// Deletes the message and all subsequent ones (trims the tail of the dialogue).
+// Deletes a message: by default the message and all subsequent ones (trims
+// the tail of the dialogue), or only the single message with ?single=1.
 apiRouter.delete('/chats/:id/messages/:messageId', (req, res) => {
   const chat = getChat(req.params.id);
   if (!chat) {
     res.status(404).json({ error: 'Chat not found' });
     return;
   }
+  const single = req.query.single === '1';
   const idx = chat.messages.findIndex((m) => m.id === req.params.messageId);
   if (idx === -1) {
     res.status(404).json({ error: 'Message not found' });
     return;
   }
-  chat.messages.splice(idx);
+  if (single) chat.messages.splice(idx, 1);
+  else chat.messages.splice(idx); // from here to the end
   saveChat(chat);
   res.json({ chat });
 });

@@ -402,12 +402,11 @@ test('a group chat with the editing of the old messages', async ({ page }) => {
   }
   await page.screenshot({ path: `${SHOTS}/09b-group-replies.png` });
 
-  // Editing the OLD user message: hover the first message, press ✎
-  // (the .msg-edit buttons without .regen — for the last reply the first
-  // button is the regeneration), change the text, save.
+  // Editing the OLD user message: hover the first message, press ✎,
+  // change the text, save.
   const firstUser = page.locator('.msg.user').first();
   await firstUser.hover();
-  await firstUser.locator('.msg-edit:not(.regen)').first().click();
+  await firstUser.locator('.msg-edit.edit').click();
   await expect(page.getByTestId('edit-bar')).toBeVisible();
   await expect(page.getByTestId('input')).toHaveValue(/ready/);
   await page.getByTestId('input').fill('Edited text of the first message.');
@@ -419,7 +418,7 @@ test('a group chat with the editing of the old messages', async ({ page }) => {
   // Editing the old character reply
   const firstAssistant = assistant.first();
   await firstAssistant.hover();
-  await firstAssistant.locator('.msg-edit:not(.regen)').first().click();
+  await firstAssistant.locator('.msg-edit.edit').click();
   await expect(page.getByTestId('edit-bar')).toBeVisible();
   await page.getByTestId('input').fill('A test edit of the reply.');
   await page.getByTestId('send').click();

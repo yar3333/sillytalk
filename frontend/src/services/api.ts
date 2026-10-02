@@ -279,6 +279,13 @@ export class ApiService {
     return this.req('/chats/' + chatId + '/messages/' + messageId, { method: 'DELETE' });
   }
 
+  // Deletes a single message (the rest of the chat is kept as is).
+  deleteMessage(chatId: string, messageId: string): Promise<{ chat: Chat }> {
+    return this.req('/chats/' + chatId + '/messages/' + messageId + '?single=1', {
+      method: 'DELETE',
+    });
+  }
+
   // Regenerates one message image from its stored prompt. The server marks
   // the image "pending" right away (the generation runs in the background)
   // and returns the updated chat; the result arrives with the next poll.

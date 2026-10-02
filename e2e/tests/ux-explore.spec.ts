@@ -227,7 +227,7 @@ test('UX 04: cancel during regeneration keeps the original reply', async ({ page
   await page.screenshot({ path: `${SHOTS}/ux-04-regen-cancel-kept.png` });
 });
 
-test('UX 05: delete — optimistic removal + confirm when truncating the tail', async ({
+test('UX 05: delete — single (arm, two clicks) and tail (confirm)', async ({
   page,
 }) => {
   await setDelay(0);
@@ -244,24 +244,53 @@ test('UX 05: delete — optimistic removal + confirm when truncating the tail', 
     else d.dismiss();
   });
 
-  // Delete the LAST message: no confirm (it only removes one row), and the
-  // row disappears right away (optimistic removal).
+  // ---- Single delete (🗑): the FIRST click only ARMS the button (it turns
+  // red) — nothing is removed and no dialog appears. The SECOND click within
+  // the ~2 s window deletes the row (optimistic removal). ----
   dialogMode = 'dismiss';
-  let last = allMsgs(page).last();
+  const last = allMsgs(page).last();
   await last.hover();
+  const delBtn = last.locator('.msg-edit.del');
+  await delBtn.click();
+  await expect(delBtn).toHaveClass(/armed/);
+  await expect(allMsgs(page)).toHaveCount(8); // armed, not deleted yet
+  expect(dialogs).toBe(0); // no confirm for the single delete
   const t0 = Date.now();
-  await last.locator('.msg-edit.del').click();
+  await delBtn.click(); // confirm
   await expect(allMsgs(page)).toHaveCount(7);
-  step('05 delete last message -> DOM updated', Date.now() - t0);
-  expect(dialogs).toBe(0); // no confirm for a single-row delete
-  await page.screenshot({ path: `${SHOTS}/ux-05a-delete-last.png` });
+  step('05 single delete (two clicks) -> DOM updated', Date.now() - t0);
+  await page.screenshot({ path: `${SHOTS}/ux-05a-delete-single.png` });
 
-  // Delete the FIRST message: a confirm appears (the tail is truncated),
-  // accepting it removes all 7 remaining rows at once.
+  // A single delete of a MIDDLE message removes only that row — the messages
+  // that follow it are kept (unlike the tail delete).
+  const midDel = allMsgs(page).nth(3);
+  await midDel.hover();
+  const midDelBtn = midDel.locator('.msg-edit.del');
+  await midDelBtn.click(); // arm
+  await midDelBtn.click(); // confirm
+  await expect(allMsgs(page)).toHaveCount(6);
+  await expect(allMsgs(page).filter({ hasText: 'Message 3' })).toHaveCount(1);
+  step('05 single delete (middle) keeps the later messages', 1);
+
+  // The armed state disarms on its own after the ~2 s window — a lone first
+  // click never deletes the message.
+  const next = allMsgs(page).last();
+  await next.hover();
+  const delBtn2 = next.locator('.msg-edit.del');
+  await delBtn2.click();
+  await expect(delBtn2).toHaveClass(/armed/);
+  await page.waitForTimeout(2500);
+  await expect(delBtn2).not.toHaveClass(/armed/);
+  await expect(allMsgs(page)).toHaveCount(6); // nothing removed by the lone click
+  step('05 armed state disarms after the window', 1);
+
+  // ---- Tail delete (🧹): a confirm() dialog; accepting it removes the
+  // message and everything after it at once. ----
   dialogMode = 'accept';
+  dialogs = 0;
   const first = allMsgs(page).first();
   await first.hover();
-  await first.locator('.msg-edit.del').click();
+  await first.locator('.msg-edit.del-more').click();
   await expect(allMsgs(page)).toHaveCount(0);
   expect(dialogs).toBe(1); // the confirm was shown
   await page.screenshot({ path: `${SHOTS}/ux-05b-delete-truncated-all.png` });
@@ -274,7 +303,7 @@ test('UX 05: delete — optimistic removal + confirm when truncating the tail', 
   dialogMode = 'dismiss';
   const mid = allMsgs(page).nth(1);
   await mid.hover();
-  await mid.locator('.msg-edit.del').click();
+  await mid.locator('.msg-edit.del-more').click();
   await page.waitForTimeout(300);
   expect(dialogs).toBe(1); // the confirm was shown
   await expect(allMsgs(page)).toHaveCount(6); // nothing removed
@@ -287,8 +316,10 @@ test('UX 06: delete in a long chat (60 messages) — latency', async ({ page }) 
   await expect(allMsgs(page)).toHaveCount(60);
   const last = allMsgs(page).last();
   await last.hover();
+  const delBtn = last.locator('.msg-edit.del');
+  await delBtn.click(); // arm
   const t0 = Date.now();
-  await last.locator('.msg-edit.del').click();
+  await delBtn.click(); // confirm -> optimistic removal
   await expect(allMsgs(page)).toHaveCount(59);
   step('06 delete in a 60-message chat -> DOM updated', Date.now() - t0);
   await page.screenshot({ path: `${SHOTS}/ux-06-delete-long-chat.png` });

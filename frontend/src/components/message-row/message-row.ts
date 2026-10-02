@@ -1,4 +1,4 @@
-import { Component, inject, input } from '@angular/core';
+import { Component, OnDestroy, inject, input, signal } from '@angular/core';
 import { ApiService, ChatMessage } from '../../services/api';
 import { ConfigStore } from '../../services/config-store';
 import { ChatStore } from '../../services/chat-store';
@@ -44,12 +44,24 @@ import { avatarLetter, imageHintFor, splitNarration as splitNarrationParts } fro
         >
           ✎
         </button>
+        <!-- Delete this message only: the first click arms the button (it
+             glows red), a second click within ~2 s deletes; it disarms after
+             the window. The confirm lives in the button, not a dialog. -->
         <button
           class="msg-edit del"
-          (click)="chatStore.deleteFrom(message().id)"
-          title="Delete the message and all subsequent ones"
+          [class.armed]="deleteArmed()"
+          (click)="onSingleDeleteClick()"
+          title="Delete this message (click again to confirm)"
         >
           🗑
+        </button>
+        <!-- Delete this message and everything after it: a confirm() dialog. -->
+        <button
+          class="msg-edit del-more"
+          (click)="chatStore.deleteFrom(message().id)"
+          title="Delete this message and all subsequent ones"
+        >
+          🧹
         </button>
         <div class="msg-sender" data-testid="msg-sender">{{ senderName() }}</div>
         <div class="msg-text">
@@ -142,7 +154,7 @@ import { avatarLetter, imageHintFor, splitNarration as splitNarrationParts } fro
   `,
   styleUrl: './message-row.scss',
 })
-export class MessageRow {
+export class MessageRow implements OnDestroy {
   private api = inject(ApiService);
   readonly chatStore = inject(ChatStore);
   readonly imageStore = inject(ImageStore);
@@ -150,6 +162,40 @@ export class MessageRow {
 
   readonly message = input.required<ChatMessage>();
   readonly isLast = input.required<boolean>();
+
+  // The "armed" state of the single-delete (🗑) button: the first click turns
+  // it red, a second click within ~2 s deletes the message, otherwise it
+  // disarms. Local to the row — each message has its own component instance
+  // (tracked by id), so the state never leaks between messages.
+  private deleteArmed = signal(false);
+  private deleteTimer: ReturnType<typeof setTimeout> | null = null;
+
+  onSingleDeleteClick(): void {
+    if (!this.deleteArmed()) {
+      // First click: arm the button (red) and start the ~2 s confirmation window.
+      this.deleteArmed.set(true);
+      if (this.deleteTimer) clearTimeout(this.deleteTimer);
+      this.deleteTimer = setTimeout(() => {
+        this.deleteArmed.set(false);
+        this.deleteTimer = null;
+      }, 2000);
+      return;
+    }
+    // Second click within the window: delete the message.
+    if (this.deleteTimer) {
+      clearTimeout(this.deleteTimer);
+      this.deleteTimer = null;
+    }
+    this.deleteArmed.set(false);
+    this.chatStore.deleteOne(this.message().id);
+  }
+
+  ngOnDestroy(): void {
+    if (this.deleteTimer) {
+      clearTimeout(this.deleteTimer);
+      this.deleteTimer = null;
+    }
+  }
 
   mediaUrl(img: string): string {
     return this.api.mediaUrl(this.chatStore.chat()?.id ?? '', img);

@@ -56,7 +56,6 @@
 .msg-edit {
   position: absolute;
   top: 0;
-  right: 46px;
   width: 36px;
   height: 36px;
   display: none;
@@ -78,29 +77,46 @@
   background: rgba(255, 255, 255, 0.08);
   color: var(--text);
 }
+/* Four action buttons, right to left: 🧹 (delete + subsequent), 🗑 (delete
+   this one), ✎ (edit), ↻ (regenerate — the last assistant reply only). */
 .msg-edit.regen {
-  right: 88px;
+  right: 130px;
   font-size: 24px;
 }
 .msg-edit.edit {
+  right: 88px;
   font-size: 24px;
 }
 .msg-edit.del {
+  right: 46px;
   font-size: 18px;
-}
-.msg-edit.regen:hover {
-  color: var(--accent);
-}
-.msg-edit.del {
-  right: 4px;
   /* the 🗑 emoji sits 2.75px higher than the text glyphs — its font has a
      taller line box, which lifts the baseline inside the button (measured
      in Chromium on this system); the nudge aligns the visible icon */
   transform: translateY(2.75px);
 }
+.msg-edit.del-more {
+  right: 4px;
+  font-size: 18px;
+  /* the 🧹 emoji shares the 🗑 baseline nudge — keep the pair aligned */
+  transform: translateY(2.75px);
+}
+.msg-edit.regen:hover {
+  color: var(--accent);
+}
 .msg-edit.del:hover {
   color: var(--err);
   background: rgba(255, 107, 107, 0.12);
+}
+.msg-edit.del-more:hover {
+  color: var(--err);
+  background: rgba(255, 107, 107, 0.12);
+}
+/* The armed (red) state of the single-delete (🗑): the first click, awaiting
+   the confirming second click within ~2 s. */
+.msg-edit.del.armed {
+  color: var(--err);
+  background: rgba(255, 107, 107, 0.22);
 }
 
 /* The in-place "Regenerating…" state of the last reply: the old text is
@@ -324,14 +340,19 @@
     background: rgba(0, 0, 0, 0.25);
   }
   .msg-edit.regen {
-    right: 60px;
+    right: 86px;
     font-size: 18px;
   }
   .msg-edit.edit {
-    right: 30px;
+    right: 58px;
     font-size: 18px;
   }
   .msg-edit.del {
+    right: 30px;
+    font-size: 14px;
+    transform: translateY(1.5px);
+  }
+  .msg-edit.del-more {
     right: 2px;
     font-size: 14px;
     transform: translateY(1.5px);

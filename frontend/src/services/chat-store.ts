@@ -444,6 +444,24 @@ export class ChatStore {
       });
   }
 
+  // Deletes a single message, keeping the rest of the chat as is (the 🗑
+  // button — the confirm for it is the two-click "armed" state in MessageRow,
+  // not a dialog). Optimistic like deleteFrom.
+  deleteOne(messageId: string): void {
+    const c = this.chat();
+    if (!c) return;
+    if (this.editTargetId() === messageId) this.cancelEdit();
+    if (!c.messages.some((m) => m.id === messageId)) return;
+    this.chat.set({ ...c, messages: c.messages.filter((m) => m.id !== messageId) });
+    this.api
+      .deleteMessage(c.id, messageId)
+      .then((res) => this.setChat(res.chat))
+      .catch((err) => {
+        this.ui.error.set(String((err as Error).message));
+        this.refreshChat(c.id);
+      });
+  }
+
   // Regenerates the last assistant reply (one line from its author that
   // replaces it). Guarded by `sending` only — image generation is in the
   // background (ImageStore) and no longer blocks the dialogue.
