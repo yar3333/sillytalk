@@ -96,3 +96,16 @@ export function imageHintFor(config: AppConfig | null, m: ChatMessage, img: stri
   }
   return `Prompt: ${prompt}\n${base}`;
 }
+
+// The default reasoning levels (mirrors the backend DEFAULT_REASONING_LEVELS).
+export const DEFAULT_REASONING_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+// Parses the comma-separated reasoning levels text; an empty list — the
+// default set (the model dialog shows it in the placeholder).
+export function parseReasoningLevels(text: string): string[] {
+  const levels = text
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  return levels.length > 0 ? levels : [...DEFAULT_REASONING_LEVELS];
+}

@@ -324,6 +324,33 @@ describe('chatCompletion', () => {
     expect(body).not.toHaveProperty('model');
   });
 
+  it('sends the reasoning level in both provider formats when it is set', async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(jsonRes({ choices: [{ message: { content: 'ok' } }] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await chatCompletion({ ...model, reasoning: 'high' }, 'system', [msg('hi')], 'chat-test');
+    const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
+    const body = JSON.parse(init.body) as Record<string, unknown>;
+    // reasoning_effort — OpenAI/llama.cpp, reasoning.effort — OpenRouter.
+    expect(body.reasoning_effort).toBe('high');
+    expect(body.reasoning).toEqual({ effort: 'high' });
+  });
+
+  it('does not send the reasoning fields when the level is off', async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(jsonRes({ choices: [{ message: { content: 'ok' } }] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await chatCompletion({ ...model, reasoning: false }, 'system', [msg('hi')], 'chat-test');
+    const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
+    const body = JSON.parse(init.body) as Record<string, unknown>;
+    expect(body).not.toHaveProperty('reasoning_effort');
+    expect(body).not.toHaveProperty('reasoning');
+  });
+
   it('does not retry the request on an ordinary provider error', async () => {
     const fetchMock = jest
       .fn()

@@ -114,10 +114,22 @@ export async function startMockLlm(
     req.on('data', (c) => (body += c));
     req.on('end', () => {
       try {
-        const parsed = JSON.parse(body || '{}') as { messages?: Array<Record<string, unknown>> };
+        const parsed = JSON.parse(body || '{}') as {
+          messages?: Array<Record<string, unknown>>;
+          reasoning_effort?: string;
+          reasoning?: { effort?: string };
+        };
         const messages = parsed.messages ?? [];
         const system = typeof messages[0]?.content === 'string' ? messages[0].content : '';
         const text = lastUserText(messages);
+        // The reasoning level the provider received (the config -> payload
+        // wiring check): reasoning_effort (OpenAI/llama.cpp) or
+        // reasoning.effort (OpenRouter).
+        const effort =
+          typeof parsed.reasoning_effort === 'string' && parsed.reasoning_effort
+            ? parsed.reasoning_effort
+            : parsed.reasoning?.effort;
+        const reasoningNote = effort ? ` (reasoning: ${effort})` : '';
         let content: string;
         if (system.startsWith('Translate')) {
           // translatePrompt: the words survive into the generator prompt and
@@ -128,7 +140,8 @@ export async function startMockLlm(
         } else {
           const who = /^You are ([A-Za-z]+)/.exec(system)?.[1] ?? 'Model';
           content =
-            responder?.({ system, text, name: who }) ?? `Mock reply from ${who}.`;
+            (responder?.({ system, text, name: who }) ?? `Mock reply from ${who}.`) +
+            reasoningNote;
         }
         setTimeout(() => {
           res.writeHead(200, { 'Content-Type': 'application/json' });

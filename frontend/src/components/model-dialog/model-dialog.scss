@@ -26,6 +26,7 @@
 }
 
 input,
+select,
 textarea {
   background: var(--panel-2);
   border: 1px solid var(--border);
@@ -34,11 +35,13 @@ textarea {
   color: var(--text);
   width: 100%;
 }
-input.grow {
+input.grow,
+select.grow {
   flex: 1;
   min-width: 60px;
 }
 input:focus,
+select:focus,
 textarea:focus {
   outline: none;
   border-color: var(--accent);

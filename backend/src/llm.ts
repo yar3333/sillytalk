@@ -214,6 +214,14 @@ async function requestCompletion(
     max_tokens: Math.max(256, Math.floor(model.contextSize / 4)),
   };
   if (model.id) payload.model = model.id;
+  // The reasoning level (when enabled) is sent in the two common
+  // OpenAI-compatible spellings: top-level reasoning_effort (OpenAI,
+  // llama.cpp) and reasoning.effort (OpenRouter). A provider ignores the
+  // field it does not know, so sending both is safe.
+  if (model.reasoning) {
+    payload.reasoning_effort = model.reasoning;
+    payload.reasoning = { effort: model.reasoning };
+  }
 
   const response = await fetch(`${model.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
     method: "POST",

@@ -112,6 +112,30 @@ test('sending a message and the model reply', async ({ page }) => {
   await page.screenshot({ path: `${SHOTS}/02b-conversation-desktop.png` });
 });
 
+// The model's reasoning level from the config (reasoning / reasoningLevels)
+// reaches the provider: the mock LLM echoes the received level in its reply.
+test('the model reasoning level is passed to the provider', async ({ page }) => {
+  const cfg = (await (await fetch(`${API}/config`)).json()) as Record<string, unknown>;
+  const llmModels = cfg.llmModels as Record<string, Record<string, unknown>>;
+  llmModels['mock model'] = {
+    ...llmModels['mock model'],
+    reasoning: 'high',
+    reasoningLevels: ['low', 'high'],
+  };
+  await fetch(`${API}/config`, {
+    method: 'PUT',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(cfg),
+  });
+  await page.goto('/');
+  await page.getByTestId('input').fill('Think about it');
+  await page.getByTestId('send').click();
+  const assistant = page.locator('.msg:not(.user):not(.error)');
+  await expect(assistant.first()).toBeVisible({ timeout: 60000 });
+  const text = (await assistant.first().locator('.msg-text').textContent())?.trim() ?? '';
+  expect(text).toContain('(reasoning: high)');
+});
+
 // The send button turns into the cancel (✕) while a reply is generating.
 // A "hanging" model (accepts the connection, never answers) makes the cancel
 // deterministic: the reply stays "generating" until it is aborted, the abort

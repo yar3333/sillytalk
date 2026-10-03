@@ -86,10 +86,24 @@ export function defaultConfig(): Config {
         apiKey: '',
         contextSize: 8192,
         supportsImages: false,
+        reasoning: false,
       },
     },
     imageGenerators: [],
   };
+}
+
+// The default reasoning levels for a model without a reasoningLevels list.
+export const DEFAULT_REASONING_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+// The model's reasoning levels: a non-empty list from the config, the
+// default set otherwise (non-string/empty entries are dropped).
+export function reasoningLevelsOf(model: Pick<LlmModel, 'reasoningLevels'>): string[] {
+  const levels = (model.reasoningLevels ?? [])
+    .filter((l): l is string => typeof l === 'string')
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+  return levels.length > 0 ? levels : [...DEFAULT_REASONING_LEVELS];
 }
 
 // The provider key: envKey (environment variable) takes priority over apiKey.
@@ -154,6 +168,10 @@ function normalizeLlmModels(raw: unknown, def: Config): Record<string, LlmModel>
   for (const [name, val] of Object.entries(raw)) {
     if (!val || typeof val !== 'object') continue;
     const v = val as Partial<LlmModel>;
+    const levels = reasoningLevelsOf({ reasoningLevels: v.reasoningLevels });
+    // A level outside the model's list (or not a string) is treated as off.
+    const reasoning =
+      typeof v.reasoning === 'string' && levels.includes(v.reasoning) ? v.reasoning : false;
     result[name] = {
       id: typeof v.id === 'string' ? v.id : '',
       baseUrl: typeof v.baseUrl === 'string' ? v.baseUrl : '',
@@ -161,6 +179,8 @@ function normalizeLlmModels(raw: unknown, def: Config): Record<string, LlmModel>
       envKey: typeof v.envKey === 'string' ? v.envKey : undefined,
       contextSize: typeof v.contextSize === 'number' ? v.contextSize : 8192,
       supportsImages: typeof v.supportsImages === 'boolean' ? v.supportsImages : false,
+      reasoning,
+      reasoningLevels: levels,
     };
   }
   return Object.keys(result).length > 0 ? result : def.llmModels;

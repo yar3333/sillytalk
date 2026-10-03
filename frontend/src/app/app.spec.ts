@@ -15,10 +15,12 @@ import { InputPanel } from '../components/input-panel/input-panel';
 import { ChatStore } from '../services/chat-store';
 import { ConfigStore } from '../services/config-store';
 import {
+  DEFAULT_REASONING_LEVELS,
   chatLabelOf,
   chatTimeOf,
   chatUserLabelOf,
   messageCountLabel,
+  parseReasoningLevels,
   splitNarration,
 } from '../services/helpers';
 import { UiStore } from '../services/ui-store';
@@ -92,6 +94,18 @@ describe('chat labels (helpers.ts)', () => {
     expect(splitNarration('broken /* tag')).toEqual([
       { text: 'broken /* tag', narration: false },
     ]);
+  });
+});
+
+describe('reasoning levels (helpers.ts)', () => {
+  it('an empty list falls back to the default set', () => {
+    expect(parseReasoningLevels('')).toEqual(DEFAULT_REASONING_LEVELS);
+    expect(parseReasoningLevels(' , , ')).toEqual(DEFAULT_REASONING_LEVELS);
+  });
+
+  it('parses the comma-separated levels, trimming whitespace', () => {
+    expect(parseReasoningLevels('low, medium, high')).toEqual(['low', 'medium', 'high']);
+    expect(parseReasoningLevels(' low ,, max ')).toEqual(['low', 'max']);
   });
 });
 

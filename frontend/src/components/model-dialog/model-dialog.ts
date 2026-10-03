@@ -1,6 +1,7 @@
-import { Component, OnInit, inject, signal } from '@angular/core';
+import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { ConfigStore } from '../../services/config-store';
 import { UiStore } from '../../services/ui-store';
+import { parseReasoningLevels } from '../../services/helpers';
 
 // The model edit dialog: one llmModels entry (the name — the entry key, the
 // display name and the internal id the chats reference). The item is taken
@@ -64,6 +65,26 @@ import { UiStore } from '../../services/ui-store';
           (input)="setContextSize($event)"
         />
       </label>
+      <label class="field">
+        <span>Reasoning levels</span>
+        <input
+          class="grow"
+          data-testid="model-reasoning-levels-input"
+          placeholder="low, medium, high, xhigh, max"
+          [value]="reasoningLevelsText()"
+          (input)="setReasoningLevelsText($event)"
+        />
+      </label>
+      <label class="field">
+        <span>Reasoning</span>
+        <!-- [selected] on the option: [value] on the <select> would be set
+             before the @for options exist and silently fail. -->
+        <select class="grow" data-testid="model-reasoning-select" (change)="setReasoning($event)">
+          @for (opt of reasoningOptions(); track opt.value) {
+            <option [value]="opt.value" [selected]="opt.value === reasoningValue()">{{ opt.label }}</option>
+          }
+        </select>
+      </label>
       <label class="chk">
         <input type="checkbox" [checked]="supportsImages()" (change)="setSupportsImages($event)" />
         sees images
@@ -94,8 +115,21 @@ export class ModelDialog implements OnInit {
   readonly envKey = signal('');
   readonly contextSize = signal(8192);
   readonly supportsImages = signal(false);
+  // The reasoning levels as typed (comma separated); empty — the default set.
+  readonly reasoningLevelsText = signal('');
+  // The selected reasoning level; false — off.
+  readonly reasoning = signal<string | false>(false);
   readonly isNew = signal(true);
   private oldName = '';
+
+  // The <select> options: "Off" + the levels from the text input.
+  readonly reasoningOptions = computed(() => [
+    { value: 'off', label: 'Off' },
+    ...parseReasoningLevels(this.reasoningLevelsText()).map((l) => ({ value: l, label: l })),
+  ]);
+
+  // The <select>/<option> value of the current level ('off' when disabled).
+  readonly reasoningValue = computed(() => (this.reasoning() === false ? 'off' : this.reasoning()));
 
   ngOnInit(): void {
     const dlg = this.configStore.entityDialog();
@@ -111,6 +145,8 @@ export class ModelDialog implements OnInit {
         this.envKey.set(m.envKey ?? '');
         this.contextSize.set(m.contextSize);
         this.supportsImages.set(m.supportsImages);
+        this.reasoningLevelsText.set((m.reasoningLevels ?? []).join(', '));
+        this.reasoning.set(m.reasoning ?? false);
       }
     }
   }
@@ -137,6 +173,18 @@ export class ModelDialog implements OnInit {
   setSupportsImages(e: Event): void {
     this.supportsImages.set((e.target as HTMLInputElement).checked);
   }
+  setReasoningLevelsText(e: Event): void {
+    this.reasoningLevelsText.set((e.target as HTMLInputElement).value);
+    // A level that disappeared from the list cannot stay selected.
+    const level = this.reasoning();
+    if (level !== false && !parseReasoningLevels(this.reasoningLevelsText()).includes(level)) {
+      this.reasoning.set(false);
+    }
+  }
+  setReasoning(e: Event): void {
+    const value = (e.target as HTMLSelectElement).value;
+    this.reasoning.set(value === 'off' ? false : value);
+  }
 
   save(): void {
     const nm = this.name().trim();
@@ -149,6 +197,8 @@ export class ModelDialog implements OnInit {
       this.ui.error.set('A model with this name already exists');
       return;
     }
+    const levels = parseReasoningLevels(this.reasoningLevelsText());
+    const level = this.reasoning();
     this.configStore.saveModel(this.isNew() ? null : this.oldName, nm, {
       id: this.id().trim(),
       baseUrl: this.baseUrl().trim(),
@@ -156,6 +206,9 @@ export class ModelDialog implements OnInit {
       envKey: this.envKey().trim() || undefined,
       contextSize: this.contextSize(),
       supportsImages: this.supportsImages(),
+      reasoning: level !== false && levels.includes(level) ? level : false,
+      // An empty list is omitted — the backend applies the default set.
+      reasoningLevels: this.reasoningLevelsText().trim() ? levels : undefined,
     });
     this.configStore.closeEntityDialog();
   }

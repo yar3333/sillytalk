@@ -141,7 +141,9 @@ or through the in-app **Settings** dialog. Paths may use `~` (resolved by `expan
       "apiKey": "",                     // literal key, OR
       "envKey": "OPENROUTER_API_KEY",   // name of an env var holding the key (takes priority)
       "contextSize": 200000,
-      "supportsImages": true
+      "supportsImages": true,
+      "reasoning": false,               // current reasoning level, false = off
+      "reasoningLevels": ["low", "medium", "high", "xhigh", "max"]  // optional
     }
   },
   // generation backends: every enabled + available one is used in parallel,
@@ -178,6 +180,12 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
 
 - `llmModels[].supportsImages: true` — the model accepts images; sent/reference images are passed into the
   prompt as `image_url` data-URIs.
+- `llmModels[].reasoning` — the reasoning level: `false`/absent = off (nothing is sent), a string = the
+  level, sent to the provider in both common OpenAI-compatible spellings at once — top-level
+  `reasoning_effort` (OpenAI, llama.cpp) and `reasoning.effort` (OpenRouter); a provider ignores the
+  field it does not know. `llmModels[].reasoningLevels` — the possible levels (a string list); when
+  absent the default set `low, medium, high, xhigh, max` applies (and a level outside the model's list
+  is normalized to off on load). Edited in the model dialog ("Reasoning levels" + "Reasoning" pick).
 - **Image generation has no `auto` toggle anymore.** `imageGenerators` is a list of
   generators (SD API by presence of `url`, local program by presence of `command`), each with an
   `enabled` flag (defaults to `true` — a disabled generator is never used). At startup

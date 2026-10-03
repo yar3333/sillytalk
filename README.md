@@ -96,6 +96,8 @@ Example:
       "envKey": "OPENROUTER_API_KEY", // the name of an env var holding the key (takes priority)
       "contextSize": 200000,
       "supportsImages": true,
+      "reasoning": false, // the reasoning level (false = off), one of reasoningLevels
+      "reasoningLevels": ["low", "medium", "high", "xhigh", "max"], // optional (the default set)
     },
   },
   "imageGenerators": [
@@ -135,6 +137,12 @@ resolved by `resolveApiKey()`: `envKey` (an environment variable) takes priority
 
 - `llmModels[].supportsImages: true` — the model can receive images in the chat (then the sent/
   reference images are passed into the prompt as `image_url`).
+- `llmModels[].reasoning` — the reasoning level: `false` = off (nothing is sent to the provider), a
+  string — the level. It is sent in both common OpenAI-compatible spellings at once: top-level
+  `reasoning_effort` (OpenAI, llama.cpp) and `reasoning.effort` (OpenRouter) — a provider ignores
+  the field it does not know. `llmModels[].reasoningLevels` — the possible levels; when absent the
+  default set `low, medium, high, xhigh, max` applies. Edited in the model dialog (the "Reasoning
+  levels" input + the "Reasoning" pick).
 - Characters are **not stored in the config**: each one is a separate folder
   `~/.config/sillytalk/characters/<id>/`, where the folder name is the character ID and
   `character.json` holds the name and the description (created/edited in **Settings**). The old

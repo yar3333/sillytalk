@@ -8,6 +8,11 @@ export interface LlmModel {
   envKey?: string; // the name of an env var holding the key (takes priority over apiKey)
   contextSize: number;
   supportsImages: boolean;
+  // Reasoning level: false/absent — off, a string — the level (one of
+  // reasoningLevels). Sent to the provider as reasoning_effort / reasoning.effort.
+  reasoning?: string | false;
+  // The possible reasoning levels; absent — the default set.
+  reasoningLevels?: string[];
 }
 
 // The flat model for templates: the llmModels key becomes name
