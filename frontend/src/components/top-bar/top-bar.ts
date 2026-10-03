@@ -34,9 +34,10 @@ import {
               <div class="dropdown">
                 <div class="dropdown-title">Characters in the chat</div>
                 @for (c of menuCharacters(); track c.id) {
-                  <div class="opt-row" data-testid="char-option" [class.active]="inChat(c.id)">
+                  <div class="opt-row" data-testid="char-option">
                     <button
                       class="opt opt-toggle"
+                      [class.active]="inChat(c.id)"
                       (click)="$event.stopPropagation(); chatStore.toggleCharacter(c.id)"
                     >
                       <span class="opt-mark">{{ inChat(c.id) ? '●' : '○' }}</span>
