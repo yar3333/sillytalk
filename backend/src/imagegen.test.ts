@@ -211,6 +211,7 @@ describe('startImageJob (background generation)', () => {
       fs.writeFileSync(okFile, '#!/bin/sh\necho job ok > "$1"\n');
       fs.writeFileSync(slowFile, '#!/bin/sh\nsleep 30\necho job ok > "$1"\n');
       fs.writeFileSync(failFile, '#!/bin/sh\necho fail line from the job >&2\nexit 2\n');
+      for (const f of [okFile, slowFile, failFile]) fs.chmodSync(f, 0o755);
       for (const f of [logFileA, logFileB]) {
         fs.writeFileSync(f, '#!/bin/sh\necho start >> "$1"\nsleep 2\necho end >> "$1"\necho job ok > "$2"\n');
         fs.chmodSync(f, 0o755);
