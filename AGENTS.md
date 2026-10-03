@@ -18,10 +18,23 @@ Think of it as a simpler, modern take on SillyTavern / Agnai.
 ```
 backend/               Express API; also serves the built frontend
   src/
-    index.ts           bootstrap: API + static frontend + SPA fallback
-    routes.ts          REST API (config, users, characters, chats, messages, avatars, image, files)
+    index.ts           bootstrap: API + static frontend + SPA fallback;
+                       the DI composition root (registers + resolves services)
+    di.ts              minimal DI container: typed tokens (createToken<T>) +
+                       lazy singletons (register/resolve)
+    routes.ts          REST API (config, users, characters, chats, messages, avatars, image, files);
+                       createApiRouter(imageGeneration) — the service is injected
     llm.ts             OpenAI-compatible /chat/completions (text + image_url), history trimming
-    imagegen.ts        image generation: SD API / local program, background jobs
+    image_generating/  image generation: the driver interface
+                       (IImageGeneratorDriver.ts; the job model — ImageJob.ts /
+                       ImageJobResult.ts), the backends
+                       (drivers/SdApiDriver.ts / drivers/LocalProgramDriver.ts),
+                       the driver factory (DriverFactory.ts), and the top-level
+                       service class (ImageGenerationService.ts —
+                       ImageGenerationService: availability cache, one-shot
+                       generateImages, the background job registry);
+                       ImageGenerationService.test.ts —
+                       jest unit tests (local program, background image jobs)
     machine.ts         MachineService: OS-specific launch/kill of the local
                        generator program (interface + platform selection)
     machine-win32.ts   Windows impl (cmd.exe / powershell wrappers, taskkill)
@@ -32,7 +45,6 @@ backend/               Express API; also serves the built frontend
     config.ts          config load/save, path helpers
     types.ts           shared backend types
     llm.test.ts        jest unit tests (system prompt + history trimming)
-    imagegen.test.ts   jest unit tests (local program, background image jobs)
     machine.test.ts    jest unit tests (platform selection, command lines)
     characters.test.ts jest unit tests (character folders: CRUD, sync, migration)
     users.test.ts      jest unit tests (user folders: CRUD, sync)
@@ -189,7 +201,8 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
 - **Image generation has no `auto` toggle anymore.** `imageGenerators` is a list of
   generators (SD API by presence of `url`, local program by presence of `command`), each with an
   `enabled` flag (defaults to `true` — a disabled generator is never used). At startup
-  (`refreshAvailableGenerators` in `imagegen.ts`) all generators are probed (in parallel); the
+  (`refreshAvailableGenerators` in `image_generating/ImageGenerationService.ts`) all generators are probed
+  (in parallel); the
   SD API availability is checked via `GET {url}/sdapi/v1/sd-models`, a local program is
   available if `command` is set (and, for an absolute path, if that file exists). **Every
   enabled and available generator is used**: jobs of different generators run in PARALLEL
@@ -213,20 +226,23 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   spawn directly in their own process group (`detached`) and cancelling kills the whole
   group (`kill(-pid)`), while `.bat`/`.cmd` are refused with a clear error. Keep new
   OS-specific behavior in the platform impls (`machine-win32.ts` / `machine-posix.ts`), not in
-  `imagegen.ts`. A generator's `maxInputImages` caps how many reference images it accepts
+  the image-generation code. A generator's `maxInputImages` caps how many reference images it accepts
   (0 = unlimited; the backend rejects the request with a clear error before spawning).
 - **Self-initiated image generation.** When a generator is available, `systemPromptFor`
   adds an instruction letting the model insert `[IMG:description]` tags into its replies; it may
   also pass reference images by index: `[IMG:description | 1,3]`. The index list ("inventory") is
-  built per request in `routes.ts` (`imageInventory`): the character's photos first, then every
+  built per request by `ImageGenerationService.imageInventory` (`image_generating/ImageGenerationService.ts`):
+  the character's photos first, then every
   image already in the chat, oldest first; it is appended to the system prompt so the model knows
   what the numbers mean. The backend strips the tags (`extractImageRequests`) and resolves indices
-  to files (character photos are copied into the chat via `importCharacterPhoto`).
+  to files (`ImageGenerationService.resolveInventoryRefs`; character photos are copied into the
+  chat via `importCharacterPhoto`).
 - **Image generation runs in the BACKGROUND.** Each `[IMG:…]` (or a manual gen-mode draw, or a
   regeneration) gets a reserved file name that is stored in the message RIGHT AWAY with
   `ChatMessage.imageStatus[name] = 'pending'` (`imagePrompts`/`imageRefs` alongside), the reply is
   saved and returned to the client without waiting, and the generation runs as a background job
-  (`startImageJob` in `imagegen.ts`). The job writes to a temp file and renames it to the reserved
+  (`startImageJob` in `image_generating/ImageGenerationService.ts`). The job writes to a temp file and renames it
+  to the reserved
   name only on success (so a name is never left with a partial image); the jobs of one
   generator are **queued** (one run at a time — a local program / the GPU must not be hit
   concurrently) while jobs of different generators run in parallel. When the job
@@ -246,13 +262,15 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   (when the inventory is non-empty) instructs the model it can attach an inventory image as-is with a
   `[PHOTO:1,3]` tag (same numbering as `[IMG]` refs). `extractPhotoRequests` in `llm.ts` strips the
   tags (strict format: numbers only — a bare `[PHOTO]` stays literal text); `appendAssistantReply`
-  resolves the indices through `resolveInventoryRefs` (character photos are copied into the chat's
+  resolves the indices through `ImageGenerationService.resolveInventoryRefs` (character photos are
+  copied into the chat's
   `files/`) and attaches the files to the message like any other image. The inventory itself is now
   built for every reply, generator or not.
 - **Generation prompts are always English.** The `[IMG:...]` instruction requires English scene
   descriptions. Manually typed prompts (gen mode) and stored Russian prompts (regeneration) are
-  translated to English via the chat's model (`translatePrompt` in `llm.ts`, `ensureEnglishPrompt`
-  in `routes.ts`) before hitting the generator; on translation failure the original text is used.
+  translated to English via the chat's model (`translatePrompt` in `llm.ts`, called by
+  `ImageGenerationService.ensureEnglishPrompt`) before hitting the generator; on translation
+  failure the original text is used.
   The final prompt is stored in `ChatMessage.imagePrompts`, so image hover hints show it.
 - **Characters are NOT in the config.** Each character is a folder
   `~/.config/sillytalk/characters/<id>/`: the folder name IS the character id, `character.json` holds
@@ -345,6 +363,47 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
 
 ## Architecture notes
 
+- **DI is a minimal hand-rolled container** (`backend/src/di.ts`, no framework): typed tokens
+  (`createToken<T>()`) registered as lazy singletons. The composition root is `index.ts` — it
+  registers `MACHINE_SERVICE` and `IMAGE_GENERATION` and resolves them once; `routes.ts` receives
+  `ImageGenerationService` through `createApiRouter(imageGeneration)`. Consumers take dependencies
+  via constructors and never import the container themselves.
+- **General backend patterns (established by the `image_generating/` refactor).** When a domain
+  grows logic of its own, structure it like `image_generating/` does — these rules generalize it:
+  - **A domain = a folder + one top-level service class.** `service.ts`-style module globals
+    (plain functions + `let`-state) are replaced by a class (`ImageGenerationService`) whose name
+    names the file; every cache, registry and map is a private instance field, never a
+    module-scoped variable. Pure helpers dissolve into private methods / private statics of the
+    class that uses them; a piece used by several classes becomes its own class
+    (`DriverFactory.ts`). Interfaces get their own file named after the type
+    (`IImageGeneratorDriver.ts`, `ImageJob.ts`); no barrel `index.ts` — consumers import from
+    concrete files.
+  - **Dependencies are injected through the constructor** (`MachineService`, `() => Config`);
+    the class is registered in the container under a token defined next to it (`IMAGE_GENERATION`)
+    and resolved once at the composition root. Tests instantiate the class directly
+    (`new ImageGenerationService(...)`) instead of resetting module state.
+  - **The service stays persistence- and HTTP-agnostic.** It speaks in ids and primitives
+    (`chatId`, reserved file name), returns results the caller applies (`ImageJob.result`),
+    and never imports express or touches `ChatMessage` persistence. The glue "a job finished →
+    update the message in the chat" (`startChatImageJob` / `setMessageImageStatus` in
+    `routes.ts`) stays in the routes layer; likewise file serving (`sendImage`) and upload
+    normalization (`normalizeChatImages`) are routes'/persistence concerns, not the domain's.
+  - **Keep the dependency graph one-way and acyclic** (`routes → service → drivers/machine/
+    config/chats/llm`): the service may call lower-level module functions (e.g.
+    `importCharacterPhoto`, `translatePrompt`), but nothing below it may import the domain back.
+    When pulling code into the service, grep the rest of the project for logic that belongs to
+    the domain and move what fits (`ensureEnglishPrompt`, `imageInventory`,
+    `resolveInventoryRefs` moved from `routes.ts`); leave HTTP/persistence glue behind, but
+    be able to say why.
+  - **OS/program specifics go behind an interface** selected once at startup
+    (`MachineService` + `machine-win32.ts` / `machine-posix.ts`); the domain code never
+    branches on `process.platform`.
+  - **Planned migration (not done yet):** the remaining modules (`characters.ts`, `users.ts`,
+    `chats.ts`, `llm.ts`, `config.ts`) are still function-style and are to be converted to this
+    service-class pattern in the future (a class per module, DI through the container, state on
+    the instance, routes keep only HTTP glue). Until a module is converted, keep the two styles
+    separate — do not add new module-level state to them; new domains must start as service
+    classes right away.
 - **Single port in production** — `backend/src/index.ts` mounts the API at `/api`, serves the built
   frontend as static files, and falls back to `index.html` for non-`/api` GETs (SPA).
 - **LLM call** (`llm.ts`) — `chatCompletion()` posts to `${baseUrl}/chat/completions`. `trimHistory()`

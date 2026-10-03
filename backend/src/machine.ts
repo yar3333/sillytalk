@@ -1,6 +1,10 @@
 import { ChildProcess } from 'child_process';
+import { createToken } from './di';
 import { PosixMachineService } from './machine-posix';
 import { WindowsMachineService } from './machine-win32';
+
+// The DI token for the platform machine service (registered in index.ts).
+export const MACHINE_SERVICE = createToken<MachineService>('MachineService');
 
 // The OS-specific machine operations used by the local image generation: how
 // a generator program is LAUNCHED (shell wrappers, process groups, windows

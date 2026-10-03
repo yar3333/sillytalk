@@ -2,12 +2,13 @@ import express from "express";
 import cors from "cors";
 import fs from "fs";
 import path from "path";
-import { apiRouter } from "./routes";
+import { createApiRouter } from "./routes";
 import { CONFIG_FILE, ensureDirs, loadConfig, parseListen } from "./config";
 import { listCharacters, migrateCharacters, saveCharacter } from "./characters";
 import { listUsers, saveUser } from "./users";
-import { cancelAllJobs, refreshAvailableGenerators } from "./imagegen";
-import { initMachineService } from "./machine";
+import { Container } from "./di";
+import { initMachineService, MACHINE_SERVICE } from "./machine";
+import { IMAGE_GENERATION, ImageGenerationService } from "./image_generating/ImageGenerationService";
 
 // Migration: characters from the old config.json format (the characters field)
 // are moved into characters/<id>/character.json folders.
@@ -27,13 +28,21 @@ if (fs.existsSync(CONFIG_FILE)) {
 const config = loadConfig();
 ensureDirs();
 
-// The platform-specific machine service (Windows / POSIX) — selected once
-// here, at startup, for the current OS; everything else uses it lazily.
-initMachineService();
+// ---- DI: the composition root of the backend ----
+// Services are registered as lazy singletons on the container and resolved
+// here, once; consumers (e.g. the API router) receive them via constructors
+// and never touch the container themselves.
+const container = new Container();
+container.register(MACHINE_SERVICE, () => initMachineService());
+container.register(
+  IMAGE_GENERATION,
+  (c) => new ImageGenerationService(c.resolve(MACHINE_SERVICE), loadConfig),
+);
 
 // The available image generators (enabled and up) — every one of them can
 // run jobs in parallel; the jobs of a single generator are queued.
-void refreshAvailableGenerators(config.imageGenerators);
+const images = container.resolve(IMAGE_GENERATION);
+void images.refreshAvailableGenerators(config.imageGenerators);
 
 // First run (nothing exists yet): create the default character and user.
 if (listCharacters().length === 0) {
@@ -49,7 +58,7 @@ if (listUsers().length === 0) {
 
 const app = express();
 app.use(cors());
-app.use("/api", apiRouter);
+app.use("/api", createApiRouter(images));
 
 // Static built frontend (Angular) + SPA fallback
 const candidates = [
@@ -81,7 +90,7 @@ app.listen(port, host, () => {
 for (const sig of ["SIGTERM", "SIGINT"] as const) {
   process.on(sig, () => {
     try {
-      cancelAllJobs();
+      images.cancelAllJobs();
     } catch {
       // best effort — still exit
     }

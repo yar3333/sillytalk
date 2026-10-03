@@ -1,15 +1,15 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { chatDir, chatFilesDir } from './config';
-import {
-  cancelAllJobs,
-  generateImages,
-  hasAvailableGenerator,
-  refreshAvailableGenerators,
-  startImageJob,
-} from './imagegen';
-import { ImageGenerator } from './types';
+import { chatDir, chatFilesDir, loadConfig } from '../config';
+import { getMachineService } from '../machine';
+import { ImageGenerationService } from './ImageGenerationService';
+import { ImageGenerator } from '../types';
+
+// One service instance for the whole suite — the state (the availability
+// cache and the job registry) lives on the instance, and the tests recompute
+// the availability via refreshAvailableGenerators as needed.
+const images = new ImageGenerationService(getMachineService(), loadConfig);
 
 const chatId = 'jest-local-cmd-test';
 const cmdFile = path.join(os.tmpdir(), 'sillytalk-gen-test.cmd');
@@ -75,7 +75,7 @@ afterAll(() => {
 const describeWindows = process.platform === 'win32' ? describe : describe.skip;
 describeWindows('.cmd/.ps1 generator launch (Windows only)', () => {
   it('runs a .cmd and substitutes the prompt and the absolute output path', async () => {
-    const names = await generateImages([cmdGen], chatId, 'hello world test', []);
+    const names = await images.generateImages([cmdGen], chatId, 'hello world test', []);
     expect(names).toHaveLength(1);
     const file = path.join(chatFilesDir(chatId), names[0]);
     expect(fs.existsSync(file)).toBe(true);
@@ -87,14 +87,14 @@ describeWindows('.cmd/.ps1 generator launch (Windows only)', () => {
     fs.mkdirSync(chatFilesDir(chatId), { recursive: true });
     const refPath = path.join(chatFilesDir(chatId), 'ref.png');
     fs.writeFileSync(refPath, 'x');
-    const names = await generateImages([cmdGen], chatId, 'hello', ['ref.png']);
+    const names = await images.generateImages([cmdGen], chatId, 'hello', ['ref.png']);
     const file = path.join(chatFilesDir(chatId), names[0]);
     const content = fs.readFileSync(file, 'utf-8');
     expect(content).toContain(refPath);
   });
 
   it('runs a .ps1 through powershell.exe and substitutes the arguments', async () => {
-    const names = await generateImages([ps1Gen], chatId, 'ps prompt test', []);
+    const names = await images.generateImages([ps1Gen], chatId, 'ps prompt test', []);
     expect(names).toHaveLength(1);
     const file = path.join(chatFilesDir(chatId), names[0]);
     expect(fs.existsSync(file)).toBe(true);
@@ -106,7 +106,7 @@ describeWindows('.cmd/.ps1 generator launch (Windows only)', () => {
     fs.mkdirSync(chatFilesDir(chatId), { recursive: true });
     const refPath = path.join(chatFilesDir(chatId), 'ref.png');
     fs.writeFileSync(refPath, 'x');
-    const names = await generateImages([ps1Gen], chatId, 'hello', ['ref.png']);
+    const names = await images.generateImages([ps1Gen], chatId, 'hello', ['ref.png']);
     const file = path.join(chatFilesDir(chatId), names[0]);
     const content = fs.readFileSync(file, 'utf-8');
     expect(content).toContain(refPath);
@@ -120,7 +120,7 @@ describeWindows('.cmd/.ps1 generator launch (Windows only)', () => {
     };
     let err: Error | null = null;
     try {
-      await generateImages([gen], chatId, 'fail test', []);
+      await images.generateImages([gen], chatId, 'fail test', []);
     } catch (e) {
       err = e as Error;
     }
@@ -141,7 +141,7 @@ describeWindows('.cmd/.ps1 generator launch (Windows only)', () => {
       fs.writeFileSync(path.join(chatFilesDir(chatId), n), 'x');
     }
     // 0 = unlimited: three references pass through (the batch file receives them)
-    await generateImages([cmdGen], chatId, 'hello', ['a.png', 'b.png', 'c.png']);
+    await images.generateImages([cmdGen], chatId, 'hello', ['a.png', 'b.png', 'c.png']);
   });
 });
 
@@ -152,13 +152,13 @@ it('rejects more references than the generator supports', async () => {
   }
   const limited: ImageGenerator = { ...ps1Gen, maxInputImages: 2 };
   await expect(
-    generateImages([limited], chatId, 'hello', ['a.png', 'b.png', 'c.png']),
+    images.generateImages([limited], chatId, 'hello', ['a.png', 'b.png', 'c.png']),
   ).rejects.toThrow(/at most 2/);
 });
 
 it('does not generate without an available generator', async () => {
-  await refreshAvailableGenerators([]);
-  await expect(generateImages([], chatId, 'hello', [])).rejects.toThrow(/not configured/);
+  await images.refreshAvailableGenerators([]);
+  await expect(images.generateImages([], chatId, 'hello', [])).rejects.toThrow(/not configured/);
 });
 
 // ---- background image jobs (startImageJob) ----
@@ -223,15 +223,15 @@ describe('startImageJob (background generation)', () => {
   });
 
   afterAll(async () => {
-    await refreshAvailableGenerators([]);
+    await images.refreshAvailableGenerators([]);
     fs.rmSync(chatDir(jobChatId), { recursive: true, force: true });
     for (const f of [okFile, slowFile, failFile, logFileA, logFileB]) fs.rmSync(f, { force: true });
   });
 
   it('writes the image to the reserved file name', async () => {
-    await refreshAvailableGenerators([genOf(okFile)]);
+    await images.refreshAvailableGenerators([genOf(okFile)]);
     const name = 'job-ready.png';
-    const job = startImageJob({ chatId: jobChatId, name, prompt: 'p', refFilenames: [] });
+    const job = images.startImageJob({ chatId: jobChatId, name, prompt: 'p', refFilenames: [] });
     const r = await job.result;
     expect(r.status).toBe('ok');
     const file = path.join(chatFilesDir(jobChatId), name);
@@ -240,9 +240,9 @@ describe('startImageJob (background generation)', () => {
   });
 
   it('a failed program resolves to "failed" with the program error, no file left', async () => {
-    await refreshAvailableGenerators([genOf(failFile, false)]);
+    await images.refreshAvailableGenerators([genOf(failFile, false)]);
     const name = 'job-fail.png';
-    const job = startImageJob({ chatId: jobChatId, name, prompt: 'p', refFilenames: [] });
+    const job = images.startImageJob({ chatId: jobChatId, name, prompt: 'p', refFilenames: [] });
     const r = await job.result;
     expect(r.status).toBe('failed');
     if (r.status === 'failed') {
@@ -254,9 +254,9 @@ describe('startImageJob (background generation)', () => {
   });
 
   it('a cancel stops the run and resolves to "cancelled", no file left', async () => {
-    await refreshAvailableGenerators([genOf(slowFile)]);
+    await images.refreshAvailableGenerators([genOf(slowFile)]);
     const name = 'job-cancel.png';
-    const job = startImageJob({ chatId: jobChatId, name, prompt: 'p', refFilenames: [] });
+    const job = images.startImageJob({ chatId: jobChatId, name, prompt: 'p', refFilenames: [] });
     setTimeout(() => job.cancel(), 500);
     const r = await job.result;
     expect(r.status).toBe('cancelled');
@@ -265,10 +265,10 @@ describe('startImageJob (background generation)', () => {
   });
 
   it('cancelAllJobs cancels a running job (the server-shutdown path)', async () => {
-    await refreshAvailableGenerators([genOf(slowFile)]);
+    await images.refreshAvailableGenerators([genOf(slowFile)]);
     const name = 'job-shutdown.png';
-    const job = startImageJob({ chatId: jobChatId, name, prompt: 'p', refFilenames: [] });
-    setTimeout(() => cancelAllJobs(), 500);
+    const job = images.startImageJob({ chatId: jobChatId, name, prompt: 'p', refFilenames: [] });
+    setTimeout(() => images.cancelAllJobs(), 500);
     // The run would otherwise take 30s; the shutdown cancel must settle it
     // promptly, which also proves the whole process group is killed (the
     // "close" event fires only once every pipe holder is gone).
@@ -278,12 +278,12 @@ describe('startImageJob (background generation)', () => {
   });
 
   it('a failed regeneration keeps the older image (hadOld)', async () => {
-    await refreshAvailableGenerators([genOf(failFile, false)]);
+    await images.refreshAvailableGenerators([genOf(failFile, false)]);
     const name = 'job-keepold.png';
     const file = path.join(chatFilesDir(jobChatId), name);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, 'old image');
-    const job = startImageJob({ chatId: jobChatId, name, prompt: 'p', refFilenames: [] });
+    const job = images.startImageJob({ chatId: jobChatId, name, prompt: 'p', refFilenames: [] });
     const r = await job.result;
     expect(r.status).toBe('failed');
     if (r.status === 'failed') expect(r.hadOld).toBe(true);
@@ -291,25 +291,25 @@ describe('startImageJob (background generation)', () => {
   });
 
   it('enabled defaults to true: a generator without the field is available', async () => {
-    await refreshAvailableGenerators([genOf(okFile)]);
-    expect(hasAvailableGenerator()).toBe(true);
+    await images.refreshAvailableGenerators([genOf(okFile)]);
+    expect(images.hasAvailableGenerator()).toBe(true);
   });
 
   it('skips a disabled generator (enabled: false)', async () => {
     const disabled = genOf(okFile, false, { enabled: false });
-    await refreshAvailableGenerators([disabled]);
-    expect(hasAvailableGenerator()).toBe(false);
-    await expect(generateImages([disabled], chatId, 'p', [])).rejects.toThrow(/not configured/);
+    await images.refreshAvailableGenerators([disabled]);
+    expect(images.hasAvailableGenerator()).toBe(false);
+    await expect(images.generateImages([disabled], chatId, 'p', [])).rejects.toThrow(/not configured/);
   });
 
   it('runs the jobs in parallel on different generators', async () => {
-    await refreshAvailableGenerators([logGen(logFileA), logGen(logFileB)]);
+    await images.refreshAvailableGenerators([logGen(logFileA), logGen(logFileB)]);
     const log = path.join(os.tmpdir(), `sillytalk-job-parallel-${process.pid}.log`);
     fs.writeFileSync(log, '');
     const t0 = Date.now();
     const [r1, r2] = await Promise.all([
-      startImageJob({ chatId: jobChatId, name: 'par-1.png', prompt: log, refFilenames: [] }).result,
-      startImageJob({ chatId: jobChatId, name: 'par-2.png', prompt: log, refFilenames: [] }).result,
+      images.startImageJob({ chatId: jobChatId, name: 'par-1.png', prompt: log, refFilenames: [] }).result,
+      images.startImageJob({ chatId: jobChatId, name: 'par-2.png', prompt: log, refFilenames: [] }).result,
     ]);
     const totalMs = Date.now() - t0;
     expect(r1.status).toBe('ok');
@@ -331,12 +331,12 @@ describe('startImageJob (background generation)', () => {
   }, 30000);
 
   it('queues the jobs of one generator (one run at a time, in order)', async () => {
-    await refreshAvailableGenerators([logGen(logFileA)]);
+    await images.refreshAvailableGenerators([logGen(logFileA)]);
     const log = path.join(os.tmpdir(), `sillytalk-job-queue-${process.pid}.log`);
     fs.writeFileSync(log, '');
     const [r1, r2] = await Promise.all([
-      startImageJob({ chatId: jobChatId, name: 'q-1.png', prompt: log, refFilenames: [] }).result,
-      startImageJob({ chatId: jobChatId, name: 'q-2.png', prompt: log, refFilenames: [] }).result,
+      images.startImageJob({ chatId: jobChatId, name: 'q-1.png', prompt: log, refFilenames: [] }).result,
+      images.startImageJob({ chatId: jobChatId, name: 'q-2.png', prompt: log, refFilenames: [] }).result,
     ]);
     expect(r1.status).toBe('ok');
     expect(r2.status).toBe('ok');

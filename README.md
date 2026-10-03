@@ -181,7 +181,9 @@ backend/
     index.ts       # the express server: the API + the frontend statics
     routes.ts      # the REST API (config, characters, chats, image, files)
     llm.ts         # the OpenAI-compatible chat/completions call (text + images)
-    imagegen.ts    # generation: the SD API / a local program
+    image_generating/ # generation: the driver interface, the SD API / local
+                      # program backends, the top-level service class
+                      # (background jobs); di.ts — the minimal DI container
     chats.ts       # the chat and the file storage
     characters.ts  # the character storage in the characters/<id>/ folders
     users.ts       # the user storage in the users/<id>/ folders
