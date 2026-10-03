@@ -69,15 +69,6 @@ import { avatarLetter, imageHintFor, splitNarration as splitNarrationParts } fro
             <span [class.narration]="p.narration">{{ p.text }}</span>
           }
         </div>
-        @if (isRegenerating()) {
-          <!-- In-place "Regenerating…" state: the old reply stays visible (dimmed)
-               while the new one is being generated, instead of a separate
-               "typing…" row below it. -->
-          <div class="regen-inline" data-testid="regen-inline">
-            <span class="regen-spinner" aria-hidden="true"></span>
-            <span>Regenerating…</span>
-          </div>
-        }
         @if (message().images.length) {
           <div class="msg-images">
             @for (img of message().images; track img) {
@@ -242,7 +233,8 @@ export class MessageRow implements OnDestroy {
   }
   // The in-place "Regenerating…" state: only for the last assistant message
   // while a regeneration is running (the old reply stays visible, dimmed,
-  // with a spinner instead of a separate "typing…" row below).
+  // with a brightness wave sweeping across the bubble's border from left to
+  // right instead of a separate "typing…" row below).
   isRegenerating(): boolean {
     return (
       this.isLast() &&

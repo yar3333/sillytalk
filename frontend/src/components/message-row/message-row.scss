@@ -120,26 +120,53 @@
 }
 
 /* The in-place "Regenerating…" state of the last reply: the old text is
-   dimmed, a small spinner runs below it (the same img-spin animation). */
+   dimmed and a wave of brightness sweeps across the bubble's border from
+   left to right (an indeterminate-progress-bar feel). The wave is a soft
+   linear-gradient band on the ::after, masked to the 1px border line; it is
+   animated via background-position (a cheap paint, so the motion stays
+   smooth). The bubble geometry never changes. */
+@keyframes regen-sweep {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0% 0;
+  }
+}
 .msg.regenerating .msg-text {
   opacity: 0.45;
 }
-.regen-inline {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 6px;
-  color: var(--muted);
-  font-size: 13px;
-}
-.regen-spinner {
-  width: 14px;
-  height: 14px;
-  border: 2px solid rgba(255, 255, 255, 0.25);
-  border-top-color: var(--muted);
-  border-radius: 50%;
-  animation: img-spin 0.8s linear infinite;
-  flex: none;
+.msg.regenerating::after {
+  content: '';
+  position: absolute;
+  /* the pseudo box coincides with the element's border box: -1px from the
+     padding box (the containing block) + the 1px border */
+  inset: -1px;
+  border-radius: inherit;
+  /* ring thickness = the bubble's 1px border */
+  padding: 1px;
+  /* a soft bright band (~60% of the bubble wide); with a 300% background it
+     sits fully off-frame at both keyframe ends, so the loop never jumps */
+  background: linear-gradient(
+    90deg,
+    transparent 40%,
+    rgba(79, 140, 255, 0.3) 46%,
+    var(--accent) 50%,
+    rgba(79, 140, 255, 0.3) 54%,
+    transparent 60%
+  );
+  background-size: 300% 100%;
+  background-repeat: no-repeat;
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  animation: regen-sweep 1.6s linear infinite;
+  pointer-events: none;
 }
 
 /* A message with images: the bubble stretches to the full row width so the

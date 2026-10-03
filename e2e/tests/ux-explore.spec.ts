@@ -176,7 +176,7 @@ test('UX 02: baseline send — typing indicator, cancel button, reply', async ({
   await page.screenshot({ path: `${SHOTS}/ux-02b-reply.png` });
 });
 
-test('UX 03: regenerate — in-place spinner inside the old message', async ({ page }) => {
+test('UX 03: regenerate — in-place border wave on the old message', async ({ page }) => {
   await setDelay(400);
   await openApp(page);
   await page.getByTestId('input').fill('Hello Alice!');
@@ -190,10 +190,10 @@ test('UX 03: regenerate — in-place spinner inside the old message', async ({ p
   await assistantMsgs(page).last().hover();
   const t0 = Date.now();
   await regen.click();
-  // The old message stays visible (dimmed) with an in-place "Regenerating…" state.
+  // The old message stays visible (dimmed) with an in-place "Regenerating…"
+  // state — a wave of brightness runs around the bubble's border.
   await expect(assistantMsgs(page)).toHaveCount(1);
   await expect(page.locator('.msg.regenerating')).toBeVisible();
-  await expect(page.getByTestId('regen-inline')).toBeVisible();
   // No separate "typing" row below.
   await expect(page.getByTestId('typing')).toBeHidden();
   step('03 in-place indicator appeared after ↻', Date.now() - t0);
