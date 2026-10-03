@@ -6,7 +6,7 @@ import { apiRouter } from "./routes";
 import { CONFIG_FILE, ensureDirs, loadConfig, parseListen } from "./config";
 import { listCharacters, migrateCharacters, saveCharacter } from "./characters";
 import { listUsers, saveUser } from "./users";
-import { cancelAllJobs, refreshActiveGenerator } from "./imagegen";
+import { cancelAllJobs, refreshAvailableGenerators } from "./imagegen";
 import { initMachineService } from "./machine";
 
 // Migration: characters from the old config.json format (the characters field)
@@ -31,8 +31,9 @@ ensureDirs();
 // here, at startup, for the current OS; everything else uses it lazily.
 initMachineService();
 
-// The active image generator: the methods are tried in config order.
-void refreshActiveGenerator(config.imageGenerators);
+// The available image generators (enabled and up) — every one of them can
+// run jobs in parallel; the jobs of a single generator are queued.
+void refreshAvailableGenerators(config.imageGenerators);
 
 // First run (nothing exists yet): create the default character and user.
 if (listCharacters().length === 0) {

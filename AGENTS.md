@@ -144,17 +144,20 @@ or through the in-app **Settings** dialog. Paths may use `~` (resolved by `expan
       "supportsImages": true
     }
   },
-  // generation backends, tried in order at startup — first available is used
+  // generation backends: every enabled + available one is used in parallel,
+  // the jobs of one generator are queued (enabled defaults to true)
   "imageGenerators": [
     {
       "url": "http://127.0.0.1:7860",   // SD API / Stable Diffusion WebUI (has `url`)
       "steps": 30, "width": 768, "height": 768,
-      "denoisingStrength": 0.75, "negativePrompt": ""
+      "denoisingStrength": 0.75, "negativePrompt": "",
+      "enabled": true                   // generator toggle (default true)
     },
     {
       "command": "",                    // local program (has `command`)
       "args": ["--prompt", "{prompt}", "--input", "{absolutePathsToInputImages}", "--output", "{absolutePathToOutputImage}"],
-      "maxInputImages": 0
+      "maxInputImages": 0,
+      "enabled": true
     }
   ]
 }
@@ -175,13 +178,19 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
 
 - `llmModels[].supportsImages: true` — the model accepts images; sent/reference images are passed into the
   prompt as `image_url` data-URIs.
-- **Image generation has no `auto` toggle anymore.** `imageGenerators` is an ordered list of
-  generators (SD API by presence of `url`, local program by presence of `command`). At startup
-  (`refreshActiveGenerator` in `imagegen.ts`) they are iterated in order and the first available
-  one becomes the active generator (`activeGenerator`); availability of the SD API is probed via
-  `GET {url}/sdapi/v1/sd-models`, a local program is available if `command` is set (and, for an
-  absolute path, if that file exists). `GET /api/image/status` returns `{ available }` for the UI.
-  Config changes via `PUT /api/config` recompute the active generator.
+- **Image generation has no `auto` toggle anymore.** `imageGenerators` is a list of
+  generators (SD API by presence of `url`, local program by presence of `command`), each with an
+  `enabled` flag (defaults to `true` — a disabled generator is never used). At startup
+  (`refreshAvailableGenerators` in `imagegen.ts`) all generators are probed (in parallel); the
+  SD API availability is checked via `GET {url}/sdapi/v1/sd-models`, a local program is
+  available if `command` is set (and, for an absolute path, if that file exists). **Every
+  enabled and available generator is used**: jobs of different generators run in PARALLEL
+  (a new job is assigned to the least-loaded one), while the jobs of ONE generator are queued
+  (one run at a time — a local program / the GPU must not be hit concurrently; the queue is
+  keyed by the generator's command/URL, so two entries pointing at the same program share a
+  queue). `GET /api/image/status` returns `{ available }` (true when at least one generator
+  is available) for the UI. Config changes via `PUT /api/config` recompute the available
+  generators.
 - Local-program placeholders: `{prompt}` (prompt text), `{absolutePathsToInputImages}` (comma-joined
   absolute paths of the reference images, empty when there are none — matches
   `-InputImagePath a.jpg,b.jpg` style), `{absolutePathToOutputImage}` (absolute path of the output
@@ -198,7 +207,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   OS-specific behavior in the platform impls (`machine-win32.ts` / `machine-posix.ts`), not in
   `imagegen.ts`. A generator's `maxInputImages` caps how many reference images it accepts
   (0 = unlimited; the backend rejects the request with a clear error before spawning).
-- **Self-initiated image generation.** When an active generator is available, `systemPromptFor`
+- **Self-initiated image generation.** When a generator is available, `systemPromptFor`
   adds an instruction letting the model insert `[IMG:description]` tags into its replies; it may
   also pass reference images by index: `[IMG:description | 1,3]`. The index list ("inventory") is
   built per request in `routes.ts` (`imageInventory`): the character's photos first, then every
@@ -210,8 +219,9 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   `ChatMessage.imageStatus[name] = 'pending'` (`imagePrompts`/`imageRefs` alongside), the reply is
   saved and returned to the client without waiting, and the generation runs as a background job
   (`startImageJob` in `imagegen.ts`). The job writes to a temp file and renames it to the reserved
-  name only on success (so a name is never left with a partial image); jobs are **serialized**
-  (one run at a time — a local program / the GPU must not be hit concurrently). When the job
+  name only on success (so a name is never left with a partial image); the jobs of one
+  generator are **queued** (one run at a time — a local program / the GPU must not be hit
+  concurrently) while jobs of different generators run in parallel. When the job
   finishes, `routes.ts` updates the message: ok → the status is cleared (the image is ready);
   failed/cancelled → `imageStatus[name] = 'failed'` + `imageErrors[name]` (the "broken" image),
   UNLESS an older image existed at the name (a cancelled/failed regeneration) — then the old file

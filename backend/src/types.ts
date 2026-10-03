@@ -36,12 +36,14 @@ export type SdApiSettings = {
   height: number;
   denoisingStrength: number;
   negativePrompt: string;
+  enabled?: boolean; // generator toggle (default true) — a disabled one is never used
 };
 
 export type LocalProgramSettings = {
   command: string;
   args: string[];
   maxInputImages: number; // how many references the generator supports (0 = unlimited)
+  enabled?: boolean; // generator toggle (default true) — a disabled one is never used
 };
 
 // imageGenerators entry: the type is detected by which fields are present

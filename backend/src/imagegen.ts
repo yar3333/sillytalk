@@ -6,21 +6,49 @@ import { SdApiSettings, ImageGenerator, LocalProgramSettings, isLocalGenerator }
 import { chatDir, chatFilesDir, expandPath, loadConfig } from './config';
 import { getMachineService } from './machine';
 
-// ---- active generator ----
-// At startup (and after a config change) the generation methods are iterated
-// in the order they appear in imageGenerators — the first available one is used.
-let activeGenerator: ImageGenerator | null = null;
+// ---- available generators ----
+// Every enabled and available generator is used: jobs of different
+// generators run in PARALLEL, while the jobs of one generator are queued
+// (one run at a time per generator). At startup (and after a config change)
+// the imageGenerators entries are probed (in parallel) and the available
+// ones are cached here.
+let availableGenerators: ImageGenerator[] = [];
 
-export function getActiveGenerator(): ImageGenerator | null {
-  return activeGenerator;
+export function getAvailableGenerators(): ImageGenerator[] {
+  return availableGenerators;
 }
 
-// Recomputes the active generator; called at startup and when settings are saved.
-export async function refreshActiveGenerator(
+export function hasAvailableGenerator(): boolean {
+  return availableGenerators.length > 0;
+}
+
+// Recomputes the available generators; called at startup and when settings
+// are saved. The SD API probes run in parallel.
+export async function refreshAvailableGenerators(
   generators: ImageGenerator[],
-): Promise<ImageGenerator | null> {
-  activeGenerator = await resolveActiveGenerator(generators);
-  return activeGenerator;
+): Promise<ImageGenerator[]> {
+  const probed = await Promise.all(
+    generators.map(async (g) =>
+      generatorEnabled(g) && (await generatorAvailable(g)) ? g : null,
+    ),
+  );
+  availableGenerators = probed.filter((g): g is ImageGenerator => g !== null);
+  return availableGenerators;
+}
+
+// enabled defaults to true — a generator without the field is on.
+function generatorEnabled(g: ImageGenerator): boolean {
+  return g.enabled !== false;
+}
+
+// The identity of a generator for the per-generator queue: the command
+// (local program) or the URL (SD API). Two config entries pointing at the
+// same program share a queue — the program (and the GPU) must not be hit
+// by several runs at once.
+function generatorKey(g: ImageGenerator): string {
+  return isLocalGenerator(g)
+    ? `cmd:${expandPath(g.command)}`
+    : `url:${g.url.replace(/\/+$/, '')}`;
 }
 
 async function sdApiGenerate(
@@ -95,12 +123,10 @@ async function generatorAvailable(g: ImageGenerator): Promise<boolean> {
   return isLocalGenerator(g) ? localAvailable(g) : sdApiAvailable(g);
 }
 
-// The first available generator in config order.
-export async function resolveActiveGenerator(
-  generators: ImageGenerator[],
-): Promise<ImageGenerator | null> {
+// The first enabled and available generator in config order.
+async function firstAvailable(generators: ImageGenerator[]): Promise<ImageGenerator | null> {
   for (const g of generators) {
-    if (await generatorAvailable(g)) return g;
+    if (generatorEnabled(g) && (await generatorAvailable(g))) return g;
   }
   return null;
 }
@@ -108,12 +134,6 @@ export async function resolveActiveGenerator(
 // The reserved file name of a generated image (in the chat files/).
 export function newGeneratedImageName(): string {
   return `gen-${randomUUID().slice(0, 8)}.png`;
-}
-
-// Resolves the generator to use: the active one, or the first available from
-// the list (recomputed).
-async function resolveGen(generators: ImageGenerator[]): Promise<ImageGenerator | null> {
-  return activeGenerator ?? (await resolveActiveGenerator(generators));
 }
 
 // Resolves reference file names (inside the chat files/) to existing absolute
@@ -170,16 +190,16 @@ async function writeOneImage(
   fs.writeFileSync(outPath, buffers[0]);
 }
 
-// Generates images for a chat with the first available generator.
-// refFilenames — file names inside the chat files/. Returns the names of the
-// saved images (inside the chat files/).
+// Generates images for a chat with the first enabled and available
+// generator (config order). refFilenames — file names inside the chat
+// files/. Returns the names of the saved images (inside the chat files/).
 export async function generateImages(
   generators: ImageGenerator[],
   chatId: string,
   prompt: string,
   refFilenames: string[],
 ): Promise<string[]> {
-  const gen = await resolveGen(generators);
+  const gen = await firstAvailable(generators);
   if (!gen) {
     throw new Error('Image generation is not configured (no available generator)');
   }
@@ -237,10 +257,28 @@ interface JobEntry {
 
 // The in-flight (and queued) jobs, keyed by `${chatId}:${reservedName}`.
 const jobs = new Map<string, JobEntry>();
-// The generations are serialized: one run at a time (a local program and the
-// GPU must not be hit by several runs at once). The chain never rejects —
-// every task settles its own result.
-let jobChain: Promise<void> = Promise.resolve();
+// The per-generator chains: the jobs of one generator are serialized (a
+// local program and the GPU must not be hit by several runs at once), while
+// different generators run in parallel. The chains never reject — every
+// task settles its own result.
+const genChains = new Map<string, Promise<void>>();
+// The current load of each chain: the running + the queued jobs of it.
+const genLoads = new Map<string, number>();
+
+// The least-loaded available generator (config order breaks the ties), or
+// null when none is available.
+function pickGenerator(): ImageGenerator | null {
+  let best: ImageGenerator | null = null;
+  let bestLoad = Infinity;
+  for (const g of availableGenerators) {
+    const load = genLoads.get(generatorKey(g)) ?? 0;
+    if (load < bestLoad) {
+      best = g;
+      bestLoad = load;
+    }
+  }
+  return best;
+}
 
 export function jobKey(chatId: string, name: string): string {
   return `${chatId}:${name}`;
@@ -280,6 +318,8 @@ export function startImageJob(opts: {
 }): ImageJob {
   const { chatId, name, prompt, refFilenames } = opts;
   const key = jobKey(chatId, name);
+  const dir = chatFilesDir(chatId);
+  const target = path.join(dir, name);
   const entry: JobEntry = {
     job: null as unknown as ImageJob,
     aborts: [],
@@ -287,9 +327,7 @@ export function startImageJob(opts: {
     cancelled: false,
   };
 
-  const run = async (): Promise<ImageJobResult> => {
-    const dir = chatFilesDir(chatId);
-    const target = path.join(dir, name);
+  const run = async (gen: ImageGenerator): Promise<ImageJobResult> => {
     // Was there a usable image at the name before this run? (decides whether
     // a failure/cancel leaves the message ready on the old file or broken.)
     const hadOld = fs.existsSync(target);
@@ -302,15 +340,6 @@ export function startImageJob(opts: {
       if (!fs.existsSync(chatDir(chatId))) {
         return { status: 'failed', error: 'The chat was deleted', hadOld: false };
       }
-      const gen = await resolveGen(loadConfig().imageGenerators);
-      if (!gen) {
-        return {
-          status: 'failed',
-          error: 'Image generation is not configured (no available generator)',
-          hadOld,
-        };
-      }
-      if (entry.cancelled) return { status: 'cancelled', hadOld };
       fs.mkdirSync(dir, { recursive: true });
       const refPaths = resolveRefPaths(dir, refFilenames);
       await writeOneImage(
@@ -347,12 +376,38 @@ export function startImageJob(opts: {
     }
   };
 
-  const result: Promise<ImageJobResult> = jobChain.then(() => run());
-  // The chain (for the next job) must never reject and carries no value.
-  jobChain = result.then(
-    () => undefined,
-    () => undefined,
-  );
+  // Enqueues the run into its generator's chain (the per-generator queue)
+  // and accounts for the chain load (for the least-loaded pick).
+  const enqueue = (gen: ImageGenerator): Promise<ImageJobResult> => {
+    const gk = generatorKey(gen);
+    genLoads.set(gk, (genLoads.get(gk) ?? 0) + 1);
+    const prev = genChains.get(gk) ?? Promise.resolve();
+    const runP: Promise<ImageJobResult> = prev.then(() => run(gen)).finally(() => {
+      genLoads.set(gk, Math.max(0, (genLoads.get(gk) ?? 1) - 1));
+    });
+    genChains.set(gk, runP.then(() => undefined, () => undefined));
+    return runP;
+  };
+
+  const result: Promise<ImageJobResult> = (async (): Promise<ImageJobResult> => {
+    // The generator is picked when the job starts: the least-loaded
+    // available one (so the jobs spread over the generators). If the cache
+    // is empty (no startup refresh yet) the availability is recomputed
+    // first.
+    let gen = pickGenerator();
+    if (!gen) {
+      await refreshAvailableGenerators(loadConfig().imageGenerators);
+      gen = pickGenerator();
+    }
+    if (!gen) {
+      return {
+        status: 'failed',
+        error: 'Image generation is not configured (no available generator)',
+        hadOld: fs.existsSync(target),
+      };
+    }
+    return enqueue(gen);
+  })();
 
   const job: ImageJob = {
     result,

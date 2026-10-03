@@ -172,11 +172,14 @@ function normalizeGenerators(raw: unknown): ImageGenerator[] {
   for (const entry of raw) {
     if (!entry || typeof entry !== 'object') continue;
     const g = entry as Record<string, unknown>;
+    // enabled defaults to true — a generator without the field is on.
+    const enabled = typeof g.enabled === 'boolean' ? g.enabled : true;
     if (typeof g.command === 'string') {
       result.push({
         command: g.command,
         args: Array.isArray(g.args) ? g.args.map((a) => String(a)) : [],
         maxInputImages: typeof g.maxInputImages === 'number' ? g.maxInputImages : 0,
+        enabled,
       });
     } else if (typeof g.url === 'string') {
       result.push({
@@ -186,6 +189,7 @@ function normalizeGenerators(raw: unknown): ImageGenerator[] {
         height: typeof g.height === 'number' ? g.height : 768,
         denoisingStrength: typeof g.denoisingStrength === 'number' ? g.denoisingStrength : 0.75,
         negativePrompt: typeof g.negativePrompt === 'string' ? g.negativePrompt : '',
+        enabled,
       });
     }
   }

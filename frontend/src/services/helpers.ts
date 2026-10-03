@@ -68,13 +68,16 @@ export function splitNarration(text: string): Array<{ text: string; narration: b
 }
 
 // The image hover hint: how it was generated (the generator command with the
-// placeholders substituted / a request to SD API / just the prompt).
+// placeholders substituted / a request to SD API / just the prompt). With
+// several enabled generators the image may have been made by any of them, so
+// the command/URL details are shown only for a single one.
 export function imageHintFor(config: AppConfig | null, m: ChatMessage, img: string): string {
   const base = 'Click — add as a reference for generation';
   const prompt = m.imagePrompts?.[img];
   if (prompt === undefined) return base;
   if (!config) return `Prompt: ${prompt}\n${base}`;
-  const local = config.imageGenerators.find(isLocalGenerator);
+  const gens = config.imageGenerators.filter((g) => g.enabled !== false);
+  const local = gens.length === 1 ? gens.find(isLocalGenerator) : undefined;
   if (local) {
     const refs = (m.imageRefs?.[img] ?? []).join(',');
     const line = [local.command, ...local.args]
@@ -87,7 +90,7 @@ export function imageHintFor(config: AppConfig | null, m: ChatMessage, img: stri
       .join(' ');
     return `${line}\n${base}`;
   }
-  const sdapi = config.imageGenerators.find(isSdApiGenerator);
+  const sdapi = gens.length === 1 ? gens.find(isSdApiGenerator) : undefined;
   if (sdapi) {
     return `SD API (${sdapi.url}): ${prompt}\n${base}`;
   }

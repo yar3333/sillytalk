@@ -2,7 +2,13 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { chatDir, chatFilesDir } from './config';
-import { cancelAllJobs, generateImages, refreshActiveGenerator, startImageJob } from './imagegen';
+import {
+  cancelAllJobs,
+  generateImages,
+  hasAvailableGenerator,
+  refreshAvailableGenerators,
+  startImageJob,
+} from './imagegen';
 import { ImageGenerator } from './types';
 
 const chatId = 'jest-local-cmd-test';
@@ -151,7 +157,7 @@ it('rejects more references than the generator supports', async () => {
 });
 
 it('does not generate without an available generator', async () => {
-  await refreshActiveGenerator([]);
+  await refreshAvailableGenerators([]);
   await expect(generateImages([], chatId, 'hello', [])).rejects.toThrow(/not configured/);
 });
 
@@ -165,10 +171,28 @@ describe('startImageJob (background generation)', () => {
   const okFile = path.join(os.tmpdir(), `sillytalk-job-ok${scriptExt}`);
   const slowFile = path.join(os.tmpdir(), `sillytalk-job-slow${scriptExt}`);
   const failFile = path.join(os.tmpdir(), `sillytalk-job-fail${scriptExt}`);
+  // Two identical scripts in different files: the generator key is the
+  // command, so these are two DIFFERENT generators (two queues).
+  const logFileA = path.join(os.tmpdir(), `sillytalk-job-logA${scriptExt}`);
+  const logFileB = path.join(os.tmpdir(), `sillytalk-job-logB${scriptExt}`);
 
-  const genOf = (file: string, withOutputArg = true): ImageGenerator => ({
+  const genOf = (
+    file: string,
+    withOutputArg = true,
+    extra: { enabled?: boolean } = {},
+  ): ImageGenerator => ({
     command: file,
     args: withOutputArg ? ['{absolutePathToOutputImage}'] : [],
+    maxInputImages: 0,
+    ...extra,
+  });
+
+  // A generator whose prompt carries a shared log path (arg 1): the script
+  // logs "start"/"end" there, so a test can see whether two runs overlapped
+  // (parallel generators) or ran one behind the other (one queue).
+  const logGen = (file: string): ImageGenerator => ({
+    command: file,
+    args: ['{prompt}', '{absolutePathToOutputImage}'],
     maxInputImages: 0,
   });
 
@@ -177,11 +201,20 @@ describe('startImageJob (background generation)', () => {
       fs.writeFileSync(okFile, '@echo off\r\necho job ok > "%~1"\r\n');
       fs.writeFileSync(slowFile, '@echo off\r\nping -n 30 127.0.0.1 >nul\r\necho job ok > "%~1"\r\n');
       fs.writeFileSync(failFile, '@echo off\r\necho fail line from the job 1>&2\r\nexit /b 2\r\n');
+      for (const f of [logFileA, logFileB]) {
+        fs.writeFileSync(
+          f,
+          '@echo off\r\necho start >> "%~1"\r\nping -n 3 127.0.0.1 >nul\r\necho end >> "%~1"\r\necho job ok > "%~2"\r\n',
+        );
+      }
     } else {
       fs.writeFileSync(okFile, '#!/bin/sh\necho job ok > "$1"\n');
       fs.writeFileSync(slowFile, '#!/bin/sh\nsleep 30\necho job ok > "$1"\n');
       fs.writeFileSync(failFile, '#!/bin/sh\necho fail line from the job >&2\nexit 2\n');
-      for (const f of [okFile, slowFile, failFile]) fs.chmodSync(f, 0o755);
+      for (const f of [logFileA, logFileB]) {
+        fs.writeFileSync(f, '#!/bin/sh\necho start >> "$1"\nsleep 2\necho end >> "$1"\necho job ok > "$2"\n');
+        fs.chmodSync(f, 0o755);
+      }
     }
     // The job refuses to run for a deleted chat — the chat dir must exist.
     fs.rmSync(chatDir(jobChatId), { recursive: true, force: true });
@@ -189,13 +222,13 @@ describe('startImageJob (background generation)', () => {
   });
 
   afterAll(async () => {
-    await refreshActiveGenerator([]);
+    await refreshAvailableGenerators([]);
     fs.rmSync(chatDir(jobChatId), { recursive: true, force: true });
-    for (const f of [okFile, slowFile, failFile]) fs.rmSync(f, { force: true });
+    for (const f of [okFile, slowFile, failFile, logFileA, logFileB]) fs.rmSync(f, { force: true });
   });
 
   it('writes the image to the reserved file name', async () => {
-    await refreshActiveGenerator([genOf(okFile)]);
+    await refreshAvailableGenerators([genOf(okFile)]);
     const name = 'job-ready.png';
     const job = startImageJob({ chatId: jobChatId, name, prompt: 'p', refFilenames: [] });
     const r = await job.result;
@@ -206,7 +239,7 @@ describe('startImageJob (background generation)', () => {
   });
 
   it('a failed program resolves to "failed" with the program error, no file left', async () => {
-    await refreshActiveGenerator([genOf(failFile, false)]);
+    await refreshAvailableGenerators([genOf(failFile, false)]);
     const name = 'job-fail.png';
     const job = startImageJob({ chatId: jobChatId, name, prompt: 'p', refFilenames: [] });
     const r = await job.result;
@@ -220,7 +253,7 @@ describe('startImageJob (background generation)', () => {
   });
 
   it('a cancel stops the run and resolves to "cancelled", no file left', async () => {
-    await refreshActiveGenerator([genOf(slowFile)]);
+    await refreshAvailableGenerators([genOf(slowFile)]);
     const name = 'job-cancel.png';
     const job = startImageJob({ chatId: jobChatId, name, prompt: 'p', refFilenames: [] });
     setTimeout(() => job.cancel(), 500);
@@ -231,7 +264,7 @@ describe('startImageJob (background generation)', () => {
   });
 
   it('cancelAllJobs cancels a running job (the server-shutdown path)', async () => {
-    await refreshActiveGenerator([genOf(slowFile)]);
+    await refreshAvailableGenerators([genOf(slowFile)]);
     const name = 'job-shutdown.png';
     const job = startImageJob({ chatId: jobChatId, name, prompt: 'p', refFilenames: [] });
     setTimeout(() => cancelAllJobs(), 500);
@@ -244,7 +277,7 @@ describe('startImageJob (background generation)', () => {
   });
 
   it('a failed regeneration keeps the older image (hadOld)', async () => {
-    await refreshActiveGenerator([genOf(failFile, false)]);
+    await refreshAvailableGenerators([genOf(failFile, false)]);
     const name = 'job-keepold.png';
     const file = path.join(chatFilesDir(jobChatId), name);
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -255,4 +288,64 @@ describe('startImageJob (background generation)', () => {
     if (r.status === 'failed') expect(r.hadOld).toBe(true);
     expect(fs.readFileSync(file, 'utf-8')).toBe('old image');
   });
+
+  it('enabled defaults to true: a generator without the field is available', async () => {
+    await refreshAvailableGenerators([genOf(okFile)]);
+    expect(hasAvailableGenerator()).toBe(true);
+  });
+
+  it('skips a disabled generator (enabled: false)', async () => {
+    const disabled = genOf(okFile, false, { enabled: false });
+    await refreshAvailableGenerators([disabled]);
+    expect(hasAvailableGenerator()).toBe(false);
+    await expect(generateImages([disabled], chatId, 'p', [])).rejects.toThrow(/not configured/);
+  });
+
+  it('runs the jobs in parallel on different generators', async () => {
+    await refreshAvailableGenerators([logGen(logFileA), logGen(logFileB)]);
+    const log = path.join(os.tmpdir(), `sillytalk-job-parallel-${process.pid}.log`);
+    fs.writeFileSync(log, '');
+    const t0 = Date.now();
+    const [r1, r2] = await Promise.all([
+      startImageJob({ chatId: jobChatId, name: 'par-1.png', prompt: log, refFilenames: [] }).result,
+      startImageJob({ chatId: jobChatId, name: 'par-2.png', prompt: log, refFilenames: [] }).result,
+    ]);
+    const totalMs = Date.now() - t0;
+    expect(r1.status).toBe('ok');
+    expect(r2.status).toBe('ok');
+    // cmd's echo appends a trailing space on redirect — trim the lines.
+    const lines = fs
+      .readFileSync(log, 'utf-8')
+      .trim()
+      .split(/\r?\n/)
+      .map((l) => l.trim());
+    // Both runs started before either one finished — a real overlap: if the
+    // jobs had been queued one behind the other, the first "end" would come
+    // before the second "start".
+    expect(lines[0]).toBe('start');
+    expect(lines[1]).toBe('start');
+    // Two ~2s runs side by side take ~2s, not ~4s.
+    expect(totalMs).toBeLessThan(4000);
+    fs.rmSync(log, { force: true });
+  }, 30000);
+
+  it('queues the jobs of one generator (one run at a time, in order)', async () => {
+    await refreshAvailableGenerators([logGen(logFileA)]);
+    const log = path.join(os.tmpdir(), `sillytalk-job-queue-${process.pid}.log`);
+    fs.writeFileSync(log, '');
+    const [r1, r2] = await Promise.all([
+      startImageJob({ chatId: jobChatId, name: 'q-1.png', prompt: log, refFilenames: [] }).result,
+      startImageJob({ chatId: jobChatId, name: 'q-2.png', prompt: log, refFilenames: [] }).result,
+    ]);
+    expect(r1.status).toBe('ok');
+    expect(r2.status).toBe('ok');
+    const lines = fs
+      .readFileSync(log, 'utf-8')
+      .trim()
+      .split(/\r?\n/)
+      .map((l) => l.trim());
+    // One run at a time: the first run finished before the second started.
+    expect(lines).toEqual(['start', 'end', 'start', 'end']);
+    fs.rmSync(log, { force: true });
+  }, 30000);
 });

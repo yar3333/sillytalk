@@ -100,7 +100,8 @@ Example:
   },
   "imageGenerators": [
     // A generation method: either an SD API (API) or a local program.
-    // Tried in list order at startup — the first available one is used.
+    // Every enabled and available method works in parallel; the jobs of one
+    // method are queued (one at a time). "enabled" defaults to true.
     {
       "url": "http://127.0.0.1:7860",
       "steps": 30,
@@ -108,6 +109,7 @@ Example:
       "height": 768,
       "denoisingStrength": 0.75,
       "negativePrompt": "",
+      "enabled": true, // generator toggle (default true)
     },
     {
       "command": "path/to/generator", // e.g. "python" or a .bat/.cmd/.ps1
@@ -120,6 +122,7 @@ Example:
         "{absolutePathToOutputImage}",
       ],
       "maxInputImages": 2, // how many references it supports (0 = unlimited)
+      "enabled": true,
     },
   ],
 }
@@ -141,11 +144,13 @@ resolved by `resolveApiKey()`: `envKey` (an environment variable) takes priority
   its own persona (`Chat.userId`) — in the menu on the name in the header or when creating a chat.
 - Avatars: `users/<id>/avatar.jpg` and `characters/<id>/avatar.jpg` — uploaded in **Settings**,
   shown next to the messages.
-- Image generation: there can be several methods (`imageGenerators`). The automatically available
-  one is determined at app startup: the methods are tried in order, and the first answering/configured
-  one is used for real generation. SD API availability is probed by the `/sdapi/v1/sd-models`
-  response; a local program is considered available when a command is set (for an absolute path —
-  if the file exists).
+- Image generation: there can be several methods (`imageGenerators`), each with an `enabled`
+  toggle (default `true` — a disabled method is never used). At app startup every method is probed:
+  the SD API availability is checked by the `/sdapi/v1/sd-models` response; a local program is
+  considered available when a command is set (for an absolute path — if the file exists). **Every
+  enabled and available method is used**: images can be generated on several generators at the
+  same time, while the jobs of a single generator are queued (one at a time — a program / the
+  GPU is not hit by several runs concurrently).
 - For the local program: `{prompt}` — the prompt text, `{absolutePathsToInputImages}` — the
   reference absolute paths, comma joined (empty for txt2img), `{absolutePathToOutputImage}` — the
   path where the program must save the PNG.

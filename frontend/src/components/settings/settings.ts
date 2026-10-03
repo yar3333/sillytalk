@@ -28,12 +28,19 @@ import { UiStore } from '../../services/ui-store';
         </div>
 
         <h3>Image generation</h3>
-        <div class="hint">At startup the methods are tried in list order — the first available one is used.</div>
+        <div class="hint">
+          Every enabled and available generator works in parallel — the jobs of one generator are
+          queued (one run at a time).
+        </div>
         @for (g of generators(); track $index; let i = $index) {
           <div class="block">
             <div class="row">
               <span>{{ genKind(g) }}</span>
-              <button class="btn danger" (click)="removeGenerator(i)">✕</button>
+              <label class="chk">
+                <input type="checkbox" [checked]="g.enabled !== false" (change)="setGenEnabled(i, $event)" />
+                enabled
+              </label>
+              <button class="btn danger" (click)="removeGenerator(i)" style="margin-left: auto">✕</button>
             </div>
             @if (isLocal(g)) {
               <input class="full" placeholder="Command (e.g. python)" [value]="g.command" (input)="setGenStr(i, 'command', $event)" />
@@ -123,6 +130,13 @@ export class Settings implements OnInit {
     gen[key] = Number((e.target as HTMLInputElement).value);
     this.m.set({ ...c });
   }
+  private setGenEnabled(i: number, e: Event): void {
+    const c = this.m()!;
+    const gen = c.imageGenerators[i];
+    if (!gen) return;
+    gen.enabled = (e.target as HTMLInputElement).checked;
+    this.m.set({ ...c });
+  }
   private setGenArg(i: number, k: number, e: Event): void {
     const c = this.m()!;
     const gen = c.imageGenerators[i];
@@ -159,6 +173,7 @@ export class Settings implements OnInit {
       height: 768,
       denoisingStrength: 0.75,
       negativePrompt: '',
+      enabled: true,
     };
     this.m.set({ ...c, imageGenerators: [...c.imageGenerators, g] });
   }
@@ -168,6 +183,7 @@ export class Settings implements OnInit {
       command: '',
       args: ['--prompt', '{prompt}', '--input', '{absolutePathsToInputImages}', '--output', '{absolutePathToOutputImage}'],
       maxInputImages: 0,
+      enabled: true,
     };
     this.m.set({ ...c, imageGenerators: [...c.imageGenerators, g] });
   }

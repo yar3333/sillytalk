@@ -35,10 +35,10 @@ import { chatCompletion, extractImageRequests, extractPhotoRequests, labelHistor
 import {
   cancelJob,
   getCurrentJob,
-  getActiveGenerator,
+  hasAvailableGenerator,
   ImageJob,
   newGeneratedImageName,
-  refreshActiveGenerator,
+  refreshAvailableGenerators,
   startImageJob,
 } from './imagegen';
 
@@ -345,7 +345,7 @@ async function appendAssistantReply(
 ): Promise<ChatMessage | null> {
   const character = getCharacter(characterId);
   if (!character) return null;
-  const canGenerateImages = getActiveGenerator() != null;
+  const canGenerateImages = hasAvailableGenerator();
   // The inventory is always needed: it backs both [PHOTO:N] (send a ready
   // image, no generator required) and [IMG:... | N] references (generation).
   const inventory = imageInventory(chat, character);
@@ -496,8 +496,8 @@ apiRouter.put('/config', async (req, res) => {
   delete cfg.imageGeneration;
   saveConfig(cfg);
   ensureDirs();
-  // recompute the active generator for the updated settings
-  await refreshActiveGenerator(loadConfig().imageGenerators);
+  // recompute the available generators for the updated settings
+  await refreshAvailableGenerators(loadConfig().imageGenerators);
   res.json(loadConfig());
 });
 
@@ -907,7 +907,7 @@ apiRouter.post('/chats/:id/messages/:messageId/regenerate-image', async (req, re
     return;
   }
   const config = loadConfig();
-  if (getActiveGenerator() == null) {
+  if (!hasAvailableGenerator()) {
     res.status(400).json({ error: 'Image generation is not configured' });
     return;
   }
@@ -964,9 +964,9 @@ apiRouter.post('/chats/:id/messages/:messageId/cancel-image', (req, res) => {
 });
 
 // ---- image generation ----
-// Whether the active generator is available (for the "🎨" button and auto-[IMG] on the frontend).
+// Whether any generator is available (for the "🎨" button and auto-[IMG] on the frontend).
 apiRouter.get('/image/status', (_req, res) => {
-  res.json({ available: getActiveGenerator() != null });
+  res.json({ available: hasAvailableGenerator() });
 });
 
 apiRouter.post('/image', async (req, res) => {
@@ -982,7 +982,7 @@ apiRouter.post('/image', async (req, res) => {
       return;
     }
     const config = loadConfig();
-    if (getActiveGenerator() == null) {
+    if (!hasAvailableGenerator()) {
       res.status(400).json({ error: 'Image generation is not configured' });
       return;
     }
