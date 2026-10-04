@@ -13,10 +13,13 @@ import zlib from 'zlib';
 // assertions (non-empty text, no [SILENT]/[IMG:]/⚠️, the author is one of the
 // chat participants).
 //
-// The mock generator is a bash script that sleeps (5 s for prompts containing
+// The mock generator is a node script that sleeps (5 s for prompts containing
 // "slow"), copies a template PNG to the output path, or fails when the prompt
 // contains "fail". The backend runs it via the configured imageGenerators
-// entry (command: "bash", args: [script, template, '{absolutePathToOutputImage}', '{prompt}']).
+// entry (command: process.execPath, args: [script, template,
+// '{absolutePathToOutputImage}', '{prompt}']). Node instead of a bash script:
+// "bash" on Windows may be a WSL stub without a distro (instant exit 1), and
+// Git Bash is not guaranteed either — node works everywhere.
 
 // ------------------------------------------------------------------ helpers
 // A small valid PNG built in-process (truecolor, one solid color).

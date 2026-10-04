@@ -80,15 +80,21 @@ export class WindowsMachineService implements MachineService {
     const pid = child.pid;
     if (pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
     // taskkill /F /T kills the whole process tree — the cmd.exe /
-    // powershell.exe wrapper AND the real generator behind it. Fire-and-
-    // forget; best-effort (the tree may already be partly gone).
-    spawn('taskkill', ['/F', '/T', '/PID', String(pid)], { windowsHide: true }).unref();
-    // Additionally kill the direct child so the "close" event fires promptly
-    // and unblocks the job while taskkill finishes cleaning up the tree.
-    try {
-      child.kill();
-    } catch {
-      // already gone
-    }
+    // powershell.exe wrapper AND the real generator behind it. The direct
+    // child must stay ALIVE until taskkill has walked the tree: killing it
+    // first removes the tree root and taskkill then cannot find the
+    // grandchildren — they survive holding the inherited stdio pipes, so the
+    // "close" event (and the job) never settles.
+    const killer = spawn('taskkill', ['/F', '/T', '/PID', String(pid)], { windowsHide: true });
+    killer.unref();
+    killer.on('close', (code) => {
+      if (code === 0) return; // the tree is gone; "close" fires on its own
+      // Fallback (the tree walk failed): terminate the direct child at least.
+      try {
+        child.kill();
+      } catch {
+        // already gone
+      }
+    });
   }
 }
