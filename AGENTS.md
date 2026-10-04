@@ -490,8 +490,9 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   built (`npm run build` in `backend/`) before the run.
 - Uses **mocked model + image generation** — both suites share `e2e/helpers/mocks.ts`:
   a deterministic OpenAI-compatible LLM (the delay before answering is controllable at
-  runtime via `MockLlm.setDelay`) and a mock local-program image generator (a bash script
-  that sleeps, fails on "fail" prompts, and is slow on "slow" ones). `beforeAll` starts the
+  runtime via `MockLlm.setDelay`) and a mock local-program image generator (a node script
+  that sleeps, fails on "fail" prompts, and is slow on "slow" ones — plain `node` instead of
+  a bash script, because "bash" on Windows may be a WSL stub without a distro). `beforeAll` starts the
   mock LLM, `beforeEach` points the config's `llmModels`/`imageGenerators` at the mocks, so
   the run is fast and does not depend on the user's real models. The mock LLM answers
   "Mock reply from <character name>." (the name is read from the system prompt); the

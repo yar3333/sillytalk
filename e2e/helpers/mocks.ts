@@ -186,24 +186,30 @@ export interface MockGenSetup {
 
 export function setupMockGenerator(dir: string): MockGenSetup {
   fs.mkdirSync(dir, { recursive: true });
-  const script = path.join(dir, 'mock-gen.sh');
+  const script = path.join(dir, 'mock-gen.js');
   const template = path.join(dir, 'template.png');
   fs.writeFileSync(template, makePng(96, 96, 210, 60, 60));
   fs.writeFileSync(
     script,
     [
-      '#!/bin/bash',
-      'TEMPLATE="$1"; OUT="$2"; PROMPT="$3"',
-      'case "$PROMPT" in *fail*) echo "mock generator: intentional failure" >&2; exit 1;; esac',
-      'case "$PROMPT" in *slow*) sleep 5;; *) sleep 1.2;; esac',
-      'cp "$TEMPLATE" "$OUT"',
+      '// The mock generator (run by plain node — no bash/WSL dependency):',
+      '// copies the template PNG to the output path; fails on a "fail" prompt,',
+      '// is slow (5 s) on a "slow" one.',
+      'const fs = require("fs");',
+      'const [template, out, prompt] = process.argv.slice(2);',
+      'if (/fail/i.test(prompt)) {',
+      '  console.error("mock generator: intentional failure");',
+      '  process.exit(1);',
+      '}',
+      'setTimeout(() => {',
+      '  fs.copyFileSync(template, out);',
+      '}, /slow/i.test(prompt) ? 5000 : 1200);',
       '',
     ].join('\n'),
   );
-  fs.chmodSync(script, 0o755);
   return {
     generator: {
-      command: 'bash',
+      command: process.execPath,
       args: [script, template, '{absolutePathToOutputImage}', '{prompt}'],
       maxInputImages: 2,
     },
