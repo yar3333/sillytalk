@@ -3,7 +3,7 @@ import os from "os";
 import path from "path";
 import { chatDir, chatFilesDir, chatsDir, loadConfig } from "../config";
 import { getMachineService } from "../machine";
-import { ChatService } from "../chats/ChatService";
+import { ChatsService } from "../chats/ChatsService";
 import { TextGenerationService } from "../text_generation/TextGenerationService";
 import { ImageGenerationService } from "./ImageGenerationService";
 import { ImageGenerator } from "../types";
@@ -14,7 +14,7 @@ import { ImageGenerator } from "../types";
 const images = new ImageGenerationService(
   getMachineService(),
   new TextGenerationService(),
-  new ChatService(() => chatsDir(), loadConfig),
+  new ChatsService(() => chatsDir(), loadConfig),
   loadConfig,
 );
 

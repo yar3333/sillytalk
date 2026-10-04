@@ -7,10 +7,10 @@ import { CONFIG_FILE, charactersDir, chatsDir, ensureDirs, loadConfig, parseList
 import { listUsers, saveUser } from "./users";
 import { Container } from "./di";
 import { initMachineService, MACHINE_SERVICE } from "./machine";
-import { CHATS, ChatService } from "./chats/ChatService";
-import { CHARACTERS, CharacterService } from "./characters/CharacterService";
-import { IMAGE_GENERATION, ImageGenerationService } from "./image_generation/ImageGenerationService";
-import { TEXT_GENERATION, TextGenerationService } from "./text_generation/TextGenerationService";
+import { DI_CHATS_SERVICE, ChatsService } from "./chats/ChatsService";
+import { DI_CHARACTERS_SERVICE, CharactersService } from "./characters/CharactersService";
+import { DI_IMAGE_GENERATION_SERVICE, ImageGenerationService } from "./image_generation/ImageGenerationService";
+import { DI_TEXT_GENERATION_SERVICE, TextGenerationService } from "./text_generation/TextGenerationService";
 
 // ---- DI: the composition root of the backend ----
 // Services are registered as lazy singletons on the container and resolved
@@ -18,15 +18,21 @@ import { TEXT_GENERATION, TextGenerationService } from "./text_generation/TextGe
 // and never touch the container themselves.
 const container = new Container();
 container.register(MACHINE_SERVICE, () => initMachineService());
-container.register(TEXT_GENERATION, () => new TextGenerationService());
-container.register(CHARACTERS, () => new CharacterService(() => charactersDir()));
-container.register(CHATS, () => new ChatService(() => chatsDir(), loadConfig));
+container.register(DI_TEXT_GENERATION_SERVICE, () => new TextGenerationService());
+container.register(DI_CHARACTERS_SERVICE, () => new CharactersService(() => charactersDir()));
+container.register(DI_CHATS_SERVICE, () => new ChatsService(() => chatsDir(), loadConfig));
 container.register(
-  IMAGE_GENERATION,
-  (c) => new ImageGenerationService(c.resolve(MACHINE_SERVICE), c.resolve(TEXT_GENERATION), c.resolve(CHATS), loadConfig),
+  DI_IMAGE_GENERATION_SERVICE,
+  (c) =>
+    new ImageGenerationService(
+      c.resolve(MACHINE_SERVICE),
+      c.resolve(DI_TEXT_GENERATION_SERVICE),
+      c.resolve(DI_CHATS_SERVICE),
+      loadConfig,
+    ),
 );
-const characters = container.resolve(CHARACTERS);
-const chats = container.resolve(CHATS);
+const characters = container.resolve(DI_CHARACTERS_SERVICE);
+const chats = container.resolve(DI_CHATS_SERVICE);
 
 // Migration: characters from the old config.json format (the characters field)
 // are moved into characters/<id>/character.json folders.
@@ -48,8 +54,8 @@ ensureDirs();
 
 // The available image generators (enabled and up) — every one of them can
 // run jobs in parallel; the jobs of a single generator are queued.
-const images = container.resolve(IMAGE_GENERATION);
-const llm = container.resolve(TEXT_GENERATION);
+const images = container.resolve(DI_IMAGE_GENERATION_SERVICE);
+const textGeneration = container.resolve(DI_TEXT_GENERATION_SERVICE);
 void images.refreshAvailableGenerators(config.imageGenerators);
 
 // First run (nothing exists yet): create the default character and user.
@@ -66,7 +72,7 @@ if (listUsers().length === 0) {
 
 const app = express();
 app.use(cors());
-app.use("/api", createApiRouter(images, llm, characters, chats));
+app.use("/api", createApiRouter(images, textGeneration, characters, chats));
 
 // Static built frontend (Angular) + SPA fallback
 const candidates = [

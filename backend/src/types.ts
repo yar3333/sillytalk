@@ -66,7 +66,7 @@ export function isSdApiGenerator(g: ImageGenerator): g is SdApiSettings {
 }
 
 // Characters and users are not stored in the config: each one is a
-// characters/<id>/ or users/<id>/ folder (see characters/CharacterService.ts / users.ts).
+// characters/<id>/ or users/<id>/ folder (see characters/CharactersService.ts / users.ts).
 // There is no selected "current" user anymore: each chat specifies its own
 // persona in the Chat.userId field.
 export type Config = {

@@ -23,7 +23,7 @@ backend/               Express API; also serves the built frontend
     di.ts              minimal DI container: typed tokens (createToken<T>) +
                        lazy singletons (register/resolve)
     routes.ts          REST API (config, users, characters, chats, messages, avatars, image, files);
-                       createApiRouter(imageGeneration, llm, characters) — the
+                       createApiRouter(imageGeneration, textGeneration, characters, chats) — the
                        services are injected
     text_generation/   the LLM domain: the top-level service class
                        (TextGenerationService.ts — the OpenAI-compatible provider client:
@@ -44,23 +44,23 @@ backend/               Express API; also serves the built frontend
                        ImageGenerationService.test.ts —
                        jest unit tests (local program, background image jobs)
     characters/        the character domain: the top-level service class
-                       (CharacterService.ts — the character catalog on the
+                       (CharactersService.ts — the character catalog on the
                        characters/<id>/ folders: CRUD, clone, the full-list
                        sync, the migration from the old config format, the ID
-                       validation; DI token CHARACTERS, the root folder
-                       injected as () => string) and
-                       CharacterService.test.ts — jest unit tests
+                       validation; DI token DI_CHARACTERS_SERVICE, the root
+                       folder injected as () => string) and
+                       CharactersService.test.ts — jest unit tests
     machine.ts         MachineService: OS-specific launch/kill of the local
                        generator program (interface + platform selection)
     machine-win32.ts   Windows impl (cmd.exe / powershell wrappers, taskkill)
     machine-posix.ts   POSIX impl (detached process groups, group kill)
     chats/             the chat domain: the top-level service class
-                       (ChatService.ts — chat + chat-file persistence on the
+                       (ChatsService.ts — chat + chat-file persistence on the
                        chats/<id>/ folders: CRUD, the format guards, the model
                        fallback, the chat files (saveImage,
-                       importCharacterPhoto); DI token CHATS, the root folder
-                       and the config loader injected) and
-                       ChatService.test.ts — jest unit tests
+                       importCharacterPhoto); DI token DI_CHATS_SERVICE, the
+                       root folder and the config loader injected) and
+                       ChatsService.test.ts — jest unit tests
     users.ts           user persistence in users/<id>/ folders
     config.ts          config load/save, path helpers
     types.ts           shared backend types
@@ -294,7 +294,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   `~/.config/sillytalk/characters/<id>/`: the folder name IS the character id, `character.json` holds
   `{ name, description }`, `photos/` is the fixed "starter" photo set (computed by
   `characterPhotosDir(id)`), and `avatar.jpg` is the character avatar shown next to its messages.
-  CRUD lives in `characters/CharacterService.ts`; `GET/PUT /api/characters` read/sync the folders (PUT performs a full
+  CRUD lives in `characters/CharactersService.ts`; `GET/PUT /api/characters` read/sync the folders (PUT performs a full
   sync: create/update/delete). An on-disk `characters` field in an old config.json is migrated to
   folders at startup (`index.ts`) and stripped by `PUT /api/config` — do not reintroduce a
   `characters` array in the config.
@@ -383,9 +383,9 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
 
 - **DI is a minimal hand-rolled container** (`backend/src/di.ts`, no framework): typed tokens
   (`createToken<T>()`) registered as lazy singletons. The composition root is `index.ts` — it
-  registers `MACHINE_SERVICE`, `TEXT_GENERATION`, `CHARACTERS`, `CHATS` and `IMAGE_GENERATION` and resolves
-  them once; `routes.ts` receives the services through
-  `createApiRouter(imageGeneration, llm, characters, chats)`. Consumers take dependencies via
+  registers `MACHINE_SERVICE`, `TEXT_GENERATION`, `DI_CHARACTERS_SERVICE`, `DI_CHATS_SERVICE` and
+  `IMAGE_GENERATION` and resolves them once; `routes.ts` receives the services through
+  `createApiRouter(imageGeneration, textGeneration, characters, chats)`. Consumers take dependencies via
   constructors and never import the container themselves.
 - **General backend patterns (established by the `image_generation/` refactor).** When a domain
   grows logic of its own, structure it like `image_generation/` does — these rules generalize it:
@@ -409,7 +409,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
     normalization (`normalizeChatImages`) are routes'/persistence concerns, not the domain's.
   - **Keep the dependency graph one-way and acyclic** (`routes → service → drivers/machine/
     config/chats/text_generation/characters`): the service may call lower-level services and module
-    functions (e.g. `ImageGenerationService` calling `ChatService.importCharacterPhoto` and
+    functions (e.g. `ImageGenerationService` calling `ChatsService.importCharacterPhoto` and
     `TextGenerationService.translatePrompt`), but nothing below it may import the domain back.
     When pulling code into the service, grep the rest of the project for logic that belongs to
     the domain and move what fits (`ensureEnglishPrompt`, `imageInventory`,
@@ -419,8 +419,8 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
     (`MachineService` + `machine-win32.ts` / `machine-posix.ts`); the domain code never
     branches on `process.platform`.
   - **Planned migration (partially done):** `llm.ts`, `characters.ts` and `chats.ts` are
-    already converted (`text_generation/TextGenerationService.ts`, `characters/CharacterService.ts`,
-    `chats/ChatService.ts`); the remaining modules (`users.ts`, `config.ts`) are still
+    already converted (`text_generation/TextGenerationService.ts`, `characters/CharactersService.ts`,
+    `chats/ChatsService.ts`); the remaining modules (`users.ts`, `config.ts`) are still
     function-style and are to be converted to this service-class pattern in the future (a
     class per module, DI through the container, state on the instance, routes keep only HTTP
     glue). Until a module is converted, keep the two styles separate — do not add new

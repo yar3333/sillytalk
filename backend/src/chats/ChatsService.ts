@@ -6,7 +6,7 @@ import { chatDir, chatFile, chatFilesDir, isDirEntry, listModels, newId } from "
 import { createToken } from "../di";
 
 // The DI token of the chat service (registered in index.ts).
-export const CHATS = createToken<ChatService>("ChatService");
+export const DI_CHATS_SERVICE = createToken<ChatsService>("ChatsService");
 
 // The top-level chat service: chat + chat-file persistence on top of the
 // chats/<id>/ folders (chat.json + files/ — the chat's uploaded/generated
@@ -14,7 +14,7 @@ export const CHATS = createToken<ChatService>("ChatService");
 // value), so the service always sees the current SILLYTALK_CHATS_DIR / data
 // root, and tests can point it at a temp dir; the config loader is injected
 // the same way (the model fallback in get() needs the current model list).
-export class ChatService {
+export class ChatsService {
   constructor(
     private readonly chatsRoot: () => string,
     private readonly loadConfig: () => Config,
@@ -101,7 +101,7 @@ export class ChatService {
   saveImage(chatId: string, dataUrl: string, originalName?: string): string {
     const match = /^data:([\w/+.-]+);base64,(.+)$/.exec(dataUrl);
     if (!match) throw new Error("Expected a data URL like data:image/...;base64,...");
-    const ext = ChatService.EXT_BY_MIME[match[1]] ?? ".png";
+    const ext = ChatsService.EXT_BY_MIME[match[1]] ?? ".png";
     const base = (originalName ? path.basename(originalName, path.extname(originalName)) : "img")
       .replace(/[^\w.-]+/g, "_")
       .slice(0, 40);

@@ -5,7 +5,7 @@ import { characterDir, characterFile, characterPhotosDir, isDirEntry } from "../
 import { createToken } from "../di";
 
 // The DI token of the character service (registered in index.ts).
-export const CHARACTERS = createToken<CharacterService>("CharacterService");
+export const DI_CHARACTERS_SERVICE = createToken<CharactersService>("CharactersService");
 
 // The top-level character service: the character catalog on top of the
 // characters/<id>/ folders — the folder name is the character ID,
@@ -13,7 +13,7 @@ export const CHARACTERS = createToken<CharacterService>("CharacterService");
 // set, avatar.<ext> the character avatar. The root folder is read through the
 // accessor (not injected as a value), so the service always sees the current
 // SILLYTALK_CHARACTERS_DIR / data root, and tests can point it at a temp dir.
-export class CharacterService {
+export class CharactersService {
   constructor(private readonly charactersRoot: () => string) {}
 
   // The character ID is a folder name, so the allowed characters are limited.

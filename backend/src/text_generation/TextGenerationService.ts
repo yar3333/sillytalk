@@ -5,7 +5,7 @@ import { chatFilesDir, listModels, resolveApiKey } from "../config";
 import { createToken } from "../di";
 
 // The DI token of the LLM service (registered in index.ts).
-export const TEXT_GENERATION = createToken<TextGenerationService>("TextGenerationService");
+export const DI_TEXT_GENERATION_SERVICE = createToken<TextGenerationService>("TextGenerationService");
 
 // A model request to generate an image: prompt + reference numbers from the inventory (from 1).
 export type ImageRequest = { prompt: string; refs: number[] };
