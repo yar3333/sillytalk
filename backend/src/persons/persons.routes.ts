@@ -3,12 +3,11 @@ import { HttpHelper } from "../shared/HttpHelper";
 import { Person } from "./Person";
 import { PersonsService } from "./PersonsService";
 
-// The /users routes (the persona cards). The domain concept in the code is
-// person/persons — the REST paths, the JSON body field and the response keys
-// stay "users" (the external contract). The domain logic lives in
-// PersonsService; this file is the thin HTTP layer (validation, status
-// codes, streaming).
-export function createUsersRouter(persons: PersonsService): express.Router {
+// The /persons routes (the persona cards). The JSON body field and the
+// response keys stay "users", and the on-disk layout stays users/<id>/
+// user.json. The domain logic lives in PersonsService; this file is the
+// thin HTTP layer (validation, status codes, streaming).
+export function createPersonsRouter(persons: PersonsService): express.Router {
   const router = express.Router();
 
   router.get("/", (_req, res) => {

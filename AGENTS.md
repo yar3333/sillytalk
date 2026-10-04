@@ -91,7 +91,7 @@ backend/               Express API; also serves the built frontend
                        deleteAvatar), the list with the avatar flag
                        (listWithAvatars); DI token DI_PERSONS_SERVICE, the root
                        folder injected as () => string); persons.routes.ts —
-                       the /users routes (the persona catalog + the avatar);
+                       the /persons routes (the persona catalog + the avatar);
                        PersonsService.test.ts — jest unit tests
     configuration/     the configuration domain: the types (Config.ts,
                        LlmModel.ts, Model.ts), the top-level service class
@@ -356,8 +356,8 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
 - **Users are NOT in the config either.** Each person (persona card) is a folder
   `~/.config/sillytalk/users/<id>/` with `user.json` holding `{ name, description }` and `avatar.jpg`
   (persona avatar, shown next to user messages). CRUD lives in `persons/PersonsService.ts` (the
-  domain concept in the code is `person`/`persons`, type `Person`); `GET/PUT /api/users` mirror the
-  character endpoints — the REST paths, the `users` JSON fields, the `userId` fields and the on-disk
+  domain concept in the code is `person`/`persons`, type `Person`); `GET/PUT /api/persons` mirror the
+  character endpoints — the `users` JSON body/response fields, the `userId` fields and the on-disk
   layout (`users/`, `user.json`) stay "user"-named. There is **no selected/current user** in the
   config anymore: each chat stores the **active** persona (whose name new messages are sent under) in
   `Chat.userId`, chosen when creating a new chat (dialog) or via the header menu. On a fresh install
@@ -393,7 +393,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   The header character menu toggles participants (last one cannot be removed) and reorders them
   with ↑/↓; there is no legacy single-`characterId` format — old chats were converted once by a
   one-off script.
-- **Avatars.** Served/uploaded via `GET/POST/DELETE /api/users/:id/avatar` and
+- **Avatars.** Served/uploaded via `GET/POST/DELETE /api/persons/:id/avatar` and
   `GET/POST/DELETE /api/characters/:id/avatar`. The file is `avatar.<ext>` where the extension
   follows the actual uploaded format (usually `.jpg`); the GET route serves the first existing
   candidate and sets `Cache-Control: no-store`. List endpoints add a computed `hasAvatar` flag —
@@ -417,7 +417,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   the ✎ icons / "+ New" buttons above. They carry **Save/Cancel**, **Delete** (a confirm; only in
   edit mode) and **Clone** (only in edit mode). Models are saved through the config (a rename
   re-keys the llmModels entry); characters/personas through the full list sync. Character/persona
-  clone — `POST /api/characters/:id/clone` / `POST /api/users/:id/clone` (the folder is copied:
+  clone — `POST /api/characters/:id/clone` / `POST /api/persons/:id/clone` (the folder is copied:
   photos and avatar go along, the name gets a " (copy)" suffix); the response is
   `{ id, characters|users }` with the NEW id, and the dialog does NOT close — it switches to the
   copy's edit form (the `app.ts` modal blocks wrap the dialog in a single-item `@for ... track
@@ -592,7 +592,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   ux-explore suite passes a `drawReplies` option so it can test the model-initiated
   `[IMG:...]` / `[PHOTO:1]` tags. The "hanging model" cancel test in `app.spec.ts` still
   spins up its own never-answering server (on top of the mocks).
-- `beforeEach` also creates the catalog via the API (`PUT /users`: Carol + Dave;
+- `beforeEach` also creates the catalog via the API (`PUT /persons`: Carol + Dave;
   `PUT /characters`: Alice + Bob) and clears all chats so each test opens a fresh empty chat.
 - Selectors are `data-testid` attributes: `char-name` (joined participant names; click opens the
   participants menu), `model-chip` (click opens the model menu), `menu`,

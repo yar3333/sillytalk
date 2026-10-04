@@ -54,7 +54,7 @@ async function clearChats(): Promise<void> {
 }
 
 async function setupCatalog(): Promise<void> {
-  await api('/users', 'PUT', {
+  await api('/persons', 'PUT', {
     users: [
       { id: 'carol', name: 'Carol', description: 'A regular user.' },
       { id: 'dave', name: 'Dave', description: 'A second persona.' },
@@ -85,7 +85,7 @@ async function setupCatalog(): Promise<void> {
   const photo = makePng(320, 240, 40, 80, 200);
   fs.mkdirSync(path.join(DATA, 'characters', 'alice', 'photos'), { recursive: true });
   fs.writeFileSync(path.join(DATA, 'characters', 'alice', 'photos', 'photo1.png'), photo);
-  await api('/users/carol/avatar', 'POST', { data: dataUrl(makePng(64, 64, 140, 60, 160)) });
+  await api('/persons/carol/avatar', 'POST', { data: dataUrl(makePng(64, 64, 140, 60, 160)) });
   await api('/characters/alice/avatar', 'POST', { data: dataUrl(makePng(64, 64, 60, 140, 60)) });
   await api('/characters/bob/avatar', 'POST', { data: dataUrl(makePng(64, 64, 180, 120, 40)) });
 }

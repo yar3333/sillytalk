@@ -10,7 +10,7 @@ import { createCharactersRouter } from "./characters/characters.routes";
 import { createChatsRouter } from "./chats/chats.routes";
 import { createConfigRouter } from "./configuration/config.routes";
 import { createImageRouter } from "./image_generation/image.routes";
-import { createUsersRouter } from "./persons/persons.routes";
+import { createPersonsRouter } from "./persons/persons.routes";
 
 // The API router: a thin assembler that mounts the per-domain route files
 // (each domain folder keeps its own <domain>.routes.ts). The domain logic
@@ -33,11 +33,8 @@ export function createApiRouter(
 
   apiRouter.use("/config", createConfigRouter(configuration, characters, imageGeneration));
   apiRouter.use("/characters", createCharactersRouter(characters));
-  apiRouter.use("/users", createUsersRouter(persons));
-  apiRouter.use(
-    "/chats",
-    createChatsRouter(chats, reply, characters, textGeneration, configuration, imageGeneration),
-  );
+  apiRouter.use("/persons", createPersonsRouter(persons));
+  apiRouter.use("/chats", createChatsRouter(chats, reply, characters, textGeneration, configuration, imageGeneration));
   apiRouter.use("/image", createImageRouter(imageGeneration, reply, chats, textGeneration, configuration));
 
   return apiRouter;

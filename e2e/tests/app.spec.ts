@@ -28,7 +28,7 @@ test.afterAll(() => {
 // The characters and the personas are created by the tests in the isolated
 // catalog — the real data is not used.
 async function setupCatalog(): Promise<void> {
-  await fetch(`${API}/users`, {
+  await fetch(`${API}/persons`, {
     method: 'PUT',
     headers: JSON_HEADERS,
     body: JSON.stringify({

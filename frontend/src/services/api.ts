@@ -29,7 +29,7 @@ export interface Character {
   hasAvatar?: boolean; // is there a characters/<id>/avatar.*
 }
 
-// A user is stored in users/<id>/user.json (served by the backend via /api/users).
+// A user is stored in users/<id>/user.json (served by the backend via /api/persons).
 export interface User {
   id: string;
   name: string;
@@ -68,7 +68,7 @@ export function isSdApiGenerator(g: ImageGenerator): g is SdApiSettings {
 
 // Characters and users are not in the config — each one is stored in a
 // characters/<id>/character.json and users/<id>/user.json folder respectively
-// (the backend serves them via /api/characters and /api/users).
+// (the backend serves them via /api/characters and /api/persons).
 // There is no "current" user in the config: each chat picks its own persona (Chat.userId).
 export interface AppConfig {
   listen: string; // "0.0.0.0:3210"
@@ -161,16 +161,16 @@ export class ApiService {
   }
 
   getUsers(): Promise<User[]> {
-    return this.req<User[]>('/users');
+    return this.req<User[]>('/persons');
   }
 
   // Full sync of the user list (create/update/delete).
   putUsers(users: User[]): Promise<User[]> {
-    return this.req<User[]>('/users', { method: 'PUT', body: JSON.stringify({ users }) });
+    return this.req<User[]>('/persons', { method: 'PUT', body: JSON.stringify({ users }) });
   }
 
   userAvatarUrl(userId: string): string {
-    return API + '/users/' + userId + '/avatar';
+    return API + '/persons/' + userId + '/avatar';
   }
 
   characterAvatarUrl(characterId: string): string {
@@ -179,7 +179,7 @@ export class ApiService {
 
   // Uploads an avatar (a data URL) to the user/character folder.
   uploadAvatar(kind: 'user' | 'character', id: string, data: string): Promise<{ ok: boolean }> {
-    const base = kind === 'user' ? '/users' : '/characters';
+    const base = kind === 'user' ? '/persons' : '/characters';
     return this.req(base + '/' + id + '/avatar', {
       method: 'POST',
       body: JSON.stringify({ data }),
@@ -187,7 +187,7 @@ export class ApiService {
   }
 
   deleteAvatar(kind: 'user' | 'character', id: string): Promise<{ deleted: boolean }> {
-    const base = kind === 'user' ? '/users' : '/characters';
+    const base = kind === 'user' ? '/persons' : '/characters';
     return this.req(base + '/' + id + '/avatar', { method: 'DELETE' });
   }
 
@@ -202,7 +202,7 @@ export class ApiService {
   // Clones the user folder (the avatar goes along); returns the new id +
   // the updated user list.
   cloneUser(id: string): Promise<{ id: string; users: User[] }> {
-    return this.req<{ id: string; users: User[] }>(`/users/${id}/clone`, { method: 'POST' });
+    return this.req<{ id: string; users: User[] }>(`/persons/${id}/clone`, { method: 'POST' });
   }
 
   getChats(): Promise<ChatSummary[]> {
