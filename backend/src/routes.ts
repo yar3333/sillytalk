@@ -31,22 +31,14 @@ import {
   syncCharacters,
 } from "./characters";
 import { cloneUser, getUser, isValidUserId, listUsers, syncUsers } from "./users";
-import {
-  chatCompletion,
-  extractImageRequests,
-  extractPhotoRequests,
-  labelHistory,
-  parseSilence,
-  stripNamePrefixes,
-  systemPromptFor,
-  trimHistory,
-} from "./llm";
+import { LlmService } from "./llm/LlmService";
 import { ImageGenerationService } from "./image_generating/ImageGenerationService";
 import { ImageJob } from "./image_generating/ImageJob";
 
-// The API router. The image-generation service is injected (the composition
-// root in index.ts builds the DI container and hands the service in here).
-export function createApiRouter(imageGeneration: ImageGenerationService): express.Router {
+// The API router. The image-generation and LLM services are injected (the
+// composition root in index.ts builds the DI container and hands the services
+// in here).
+export function createApiRouter(imageGeneration: ImageGenerationService, llm: LlmService): express.Router {
   const apiRouter = express.Router();
 
   apiRouter.use(express.json({ limit: "25mb" }));
@@ -290,7 +282,7 @@ export function createApiRouter(imageGeneration: ImageGenerationService): expres
       .filter((id) => id !== characterId)
       .map((id) => getCharacter(id))
       .filter((c): c is Character => c !== null);
-    const system = systemPromptFor(character, user, canGenerateImages, inventoryText || undefined, fellows);
+    const system = llm.systemPromptFor(character, user, canGenerateImages, inventoryText || undefined, fellows);
 
     // In a group chat we label lines with authors — the model must understand
     // who said what. With a single character and a single persona the history
@@ -302,8 +294,8 @@ export function createApiRouter(imageGeneration: ImageGenerationService): expres
     const replacedIndex = replaceLast && chat.messages.length > 0 ? chat.messages.length - 1 : -1;
     const replacedMessage =
       replacedIndex !== -1 && chat.messages[replacedIndex]?.role === "assistant" ? chat.messages[replacedIndex] : null;
-    const history = trimHistory(
-      labelHistory(
+    const history = llm.trimHistory(
+      llm.labelHistory(
         chat.messages.filter((m) => m !== replacedMessage && !m.error),
         Object.fromEntries(
           chat.characterIds
@@ -322,7 +314,7 @@ export function createApiRouter(imageGeneration: ImageGenerationService): expres
 
     // A reminder at the end of the context: weak models forget whose turn it
     // is near the end of the history and keep speaking for the previous speaker.
-    const replyText = await chatCompletion(
+    const replyText = await llm.chatCompletion(
       model,
       system,
       history,
@@ -336,10 +328,10 @@ export function createApiRouter(imageGeneration: ImageGenerationService): expres
     );
 
     // The character may have stayed silent (exactly [SILENT]) — no chat message.
-    const spoken0 = parseSilence(replyText);
+    const spoken0 = llm.parseSilence(replyText);
     if (spoken0 === null) return null;
     // Strip "Bob: …" / "Carol: Carol: …" — copies of author labels from the history.
-    const spoken = stripNamePrefixes(spoken0, [character.name, ...fellows.map((c) => c.name)]);
+    const spoken = llm.stripNamePrefixes(spoken0, [character.name, ...fellows.map((c) => c.name)]);
 
     // The model may have requested images itself with the [IMG:description | 1,3]
     // tag. The tags are removed and the images are generated in the BACKGROUND:
@@ -347,10 +339,10 @@ export function createApiRouter(imageGeneration: ImageGenerationService): expres
     // (with the "pending" status) so the reply is returned to the client
     // without waiting for the (slow) generation. A failure or a cancel marks
     // the image "failed" (the broken placeholder with a Regenerate button).
-    const parsed = extractImageRequests(spoken);
+    const parsed = llm.extractImageRequests(spoken);
     // [PHOTO:N] — send a ready image from the inventory as-is (a character
     // photo is copied into the chat files/ via importCharacterPhoto).
-    const photoReq = extractPhotoRequests(parsed.text);
+    const photoReq = llm.extractPhotoRequests(parsed.text);
     const photoIdx = [...new Set(photoReq.photos)];
     const images: string[] = photoIdx.length > 0 ? imageGeneration.resolveInventoryRefs(chat.id, photoIdx, inventory) : [];
     const imagePrompts: Record<string, string> = {};

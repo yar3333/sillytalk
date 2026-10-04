@@ -23,8 +23,13 @@ backend/               Express API; also serves the built frontend
     di.ts              minimal DI container: typed tokens (createToken<T>) +
                        lazy singletons (register/resolve)
     routes.ts          REST API (config, users, characters, chats, messages, avatars, image, files);
-                       createApiRouter(imageGeneration) — the service is injected
-    llm.ts             OpenAI-compatible /chat/completions (text + image_url), history trimming
+                       createApiRouter(imageGeneration, llm) — the services are injected
+    llm/               the LLM domain: the top-level service class
+                       (LlmService.ts — the OpenAI-compatible provider client:
+                       chatCompletion text + image_url, translatePrompt; the
+                       system prompt, [IMG]/[PHOTO] tag parsing, [SILENT],
+                       author labels, history trimming; DI token LLM) and
+                       LlmService.test.ts — jest unit tests
     image_generating/  image generation: the driver interface
                        (IImageGeneratorDriver.ts; the job model — ImageJob.ts /
                        ImageJobResult.ts), the backends
@@ -260,7 +265,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   after cancelling any job still running for that image.
 - **Sending existing photos without generation.** Independently of the generator, `systemPromptFor`
   (when the inventory is non-empty) instructs the model it can attach an inventory image as-is with a
-  `[PHOTO:1,3]` tag (same numbering as `[IMG]` refs). `extractPhotoRequests` in `llm.ts` strips the
+  `[PHOTO:1,3]` tag (same numbering as `[IMG]` refs). `extractPhotoRequests` in `LlmService` strips the
   tags (strict format: numbers only — a bare `[PHOTO]` stays literal text); `appendAssistantReply`
   resolves the indices through `ImageGenerationService.resolveInventoryRefs` (character photos are
   copied into the chat's
@@ -268,7 +273,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   built for every reply, generator or not.
 - **Generation prompts are always English.** The `[IMG:...]` instruction requires English scene
   descriptions. Manually typed prompts (gen mode) and stored Russian prompts (regeneration) are
-  translated to English via the chat's model (`translatePrompt` in `llm.ts`, called by
+  translated to English via the chat's model (`translatePrompt` in `LlmService`, called by
   `ImageGenerationService.ensureEnglishPrompt`) before hitting the generator; on translation
   failure the original text is used.
   The final prompt is stored in `ChatMessage.imagePrompts`, so image hover hints show it.
@@ -299,7 +304,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   reply appears as soon as it is generated and the typing indicator shows who is generating
   (`ChatStore.typingCharacterId`). Each character sees the previous replies; a character answers
   only from its own name and may stay **silent** by replying with exactly `[SILENT]` (parsed by
-  `parseSilence` in `llm.ts` — a bare tag means silence, inline occurrences are stripped;
+  `parseSilence` in `LlmService` — a bare tag means silence, inline occurrences are stripped;
   `reply === null`). In group chats (more than one character or persona)
   `labelHistory` prefixes history lines with speaker names. "Another message from the AI" (empty
   send) continues with the next character in turn order (same reply queue); "Regenerate" is built
@@ -398,15 +403,16 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   - **OS/program specifics go behind an interface** selected once at startup
     (`MachineService` + `machine-win32.ts` / `machine-posix.ts`); the domain code never
     branches on `process.platform`.
-  - **Planned migration (not done yet):** the remaining modules (`characters.ts`, `users.ts`,
-    `chats.ts`, `llm.ts`, `config.ts`) are still function-style and are to be converted to this
+  - **Planned migration (partially done):** `llm.ts` is already converted (`llm/LlmService.ts`); the
+    remaining modules (`characters.ts`, `users.ts`, `chats.ts`, `config.ts`) are still function-style
+    and are to be converted to this
     service-class pattern in the future (a class per module, DI through the container, state on
     the instance, routes keep only HTTP glue). Until a module is converted, keep the two styles
     separate — do not add new module-level state to them; new domains must start as service
     classes right away.
 - **Single port in production** — `backend/src/index.ts` mounts the API at `/api`, serves the built
   frontend as static files, and falls back to `index.html` for non-`/api` GETs (SPA).
-- **LLM call** (`llm.ts`) — `chatCompletion()` posts to `${baseUrl}/chat/completions`. `trimHistory()`
+- **LLM call** (`llm/LlmService.ts`) — `chatCompletion()` posts to `${baseUrl}/chat/completions`. `trimHistory()`
   trims the tail to fit `contextSize` (never dropping the system prompt), estimating tokens as
   `ceil(len/4) + images*1000`.
 - **Frontend store pattern (split by meaning).** App state (signals) and actions live in

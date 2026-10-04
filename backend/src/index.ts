@@ -9,6 +9,7 @@ import { listUsers, saveUser } from "./users";
 import { Container } from "./di";
 import { initMachineService, MACHINE_SERVICE } from "./machine";
 import { IMAGE_GENERATION, ImageGenerationService } from "./image_generating/ImageGenerationService";
+import { LLM, LlmService } from "./llm/LlmService";
 
 // Migration: characters from the old config.json format (the characters field)
 // are moved into characters/<id>/character.json folders.
@@ -34,14 +35,16 @@ ensureDirs();
 // and never touch the container themselves.
 const container = new Container();
 container.register(MACHINE_SERVICE, () => initMachineService());
+container.register(LLM, () => new LlmService());
 container.register(
   IMAGE_GENERATION,
-  (c) => new ImageGenerationService(c.resolve(MACHINE_SERVICE), loadConfig),
+  (c) => new ImageGenerationService(c.resolve(MACHINE_SERVICE), c.resolve(LLM), loadConfig),
 );
 
 // The available image generators (enabled and up) — every one of them can
 // run jobs in parallel; the jobs of a single generator are queued.
 const images = container.resolve(IMAGE_GENERATION);
+const llm = container.resolve(LLM);
 void images.refreshAvailableGenerators(config.imageGenerators);
 
 // First run (nothing exists yet): create the default character and user.
@@ -58,7 +61,7 @@ if (listUsers().length === 0) {
 
 const app = express();
 app.use(cors());
-app.use("/api", createApiRouter(images));
+app.use("/api", createApiRouter(images, llm));
 
 // Static built frontend (Angular) + SPA fallback
 const candidates = [

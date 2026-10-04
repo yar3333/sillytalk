@@ -6,7 +6,7 @@ import { Character, Chat, Config, ImageGenerator, Model } from "../types";
 import { characterPhotosDir, chatDir, chatFilesDir } from "../config";
 import { createToken } from "../di";
 import { importCharacterPhoto } from "../chats";
-import { translatePrompt } from "../llm";
+import { LlmService } from "../llm/LlmService";
 import { MachineService } from "../machine";
 import { DriverFactory } from "./DriverFactory";
 import { ImageJobResult } from "./ImageJobResult";
@@ -68,6 +68,9 @@ export class ImageGenerationService {
 
   constructor(
     private readonly machine: MachineService,
+    // The LLM service (translatePrompt for ensureEnglishPrompt) — another
+    // domain service, injected like the machine one.
+    private readonly llm: LlmService,
     // The config is read through the loader (not injected as a value), so a
     // job that starts after a settings change probes the current generators.
     private readonly loadConfig: () => Config,
@@ -179,7 +182,7 @@ export class ImageGenerationService {
   async ensureEnglishPrompt(model: Model | null, prompt: string): Promise<string> {
     if (!model || !this.hasCyrillic(prompt)) return prompt;
     try {
-      return (await translatePrompt(model, prompt)).trim() || prompt;
+      return (await this.llm.translatePrompt(model, prompt)).trim() || prompt;
     } catch {
       return prompt;
     }

@@ -1,5 +1,9 @@
-import { chatCompletion, extractImageRequests, extractPhotoRequests, labelHistory, parseSilence, stripNamePrefixes, systemPromptFor, translatePrompt, trimHistory } from './llm';
-import { ChatMessage, Model } from './types';
+import { LlmService } from './LlmService';
+import { ChatMessage, Model } from '../types';
+
+// One service instance for the whole suite — the service is stateless, the
+// tests only need its methods.
+const llm = new LlmService();
 
 function msg(text: string, role: 'user' | 'assistant' = 'user'): ChatMessage {
   return { id: Math.random().toString(36), role, text, images: [], timestamp: Date.now() };
@@ -24,7 +28,7 @@ function jsonRes(body: unknown, status = 200) {
 
 describe('systemPromptFor', () => {
   it('includes the character name and description', () => {
-    const out = systemPromptFor({ name: 'Alice', description: 'A kind fairy' });
+    const out = llm.systemPromptFor({ name: 'Alice', description: 'A kind fairy' });
     expect(out).toContain('Alice');
     expect(out).toContain('A kind fairy');
     expect(out).toContain('2–5 sentences');
@@ -32,7 +36,7 @@ describe('systemPromptFor', () => {
   });
 
   it('adds the selected user description when present', () => {
-    const out = systemPromptFor(
+    const out = llm.systemPromptFor(
       { name: 'Alice', description: 'A kind fairy' },
       { name: 'Bob', description: 'Engineer, likes brevity' },
     );
@@ -41,7 +45,7 @@ describe('systemPromptFor', () => {
   });
 
   it('does not add the interlocutor block without a description', () => {
-    const out = systemPromptFor(
+    const out = llm.systemPromptFor(
       { name: 'Alice', description: 'A kind fairy' },
       { name: 'You', description: '   ' },
     );
@@ -50,10 +54,10 @@ describe('systemPromptFor', () => {
 
   it('the [IMG:...] instruction is added only when canGenerateImages', () => {
     const base = { name: 'Alice', description: '' };
-    expect(systemPromptFor(base)).not.toContain('[IMG:');
-    expect(systemPromptFor(base, null, true)).toContain('[IMG:');
-    expect(systemPromptFor(base, null, true)).toContain('English');
-    const withInv = systemPromptFor(base, null, true, '#1 — character photo');
+    expect(llm.systemPromptFor(base)).not.toContain('[IMG:');
+    expect(llm.systemPromptFor(base, null, true)).toContain('[IMG:');
+    expect(llm.systemPromptFor(base, null, true)).toContain('English');
+    const withInv = llm.systemPromptFor(base, null, true, '#1 — character photo');
     expect(withInv).toContain('[IMG:description | 1,3]');
     expect(withInv).toContain('#1 — character photo');
     expect(withInv).toContain('MUST');
@@ -61,7 +65,7 @@ describe('systemPromptFor', () => {
 
   it('group chat: lists the other characters and allows [SILENT]', () => {
     const base = { name: 'Alice', description: 'a fairy' };
-    const out = systemPromptFor(base, null, false, undefined, [
+    const out = llm.systemPromptFor(base, null, false, undefined, [
       { name: 'Bob', description: 'a knight' },
     ]);
     expect(out).toContain('Bob');
@@ -71,26 +75,26 @@ describe('systemPromptFor', () => {
 
   it('the [PHOTO:...] instruction and inventory work without a generator', () => {
     const base = { name: 'Alice', description: '' };
-    expect(systemPromptFor(base)).not.toContain('[PHOTO:');
-    const out = systemPromptFor(base, null, false, '#1 — character photo');
+    expect(llm.systemPromptFor(base)).not.toContain('[PHOTO:');
+    const out = llm.systemPromptFor(base, null, false, '#1 — character photo');
     expect(out).toContain('[PHOTO:');
     expect(out).toContain('#1 — character photo');
     expect(out).not.toContain('[IMG:');
   });
 
   it('without other characters the [SILENT] tag is not mentioned', () => {
-    expect(systemPromptFor({ name: 'Alice', description: '' })).not.toContain('[SILENT]');
+    expect(llm.systemPromptFor({ name: 'Alice', description: '' })).not.toContain('[SILENT]');
   });
 });
 
 describe('parseSilence', () => {
   it('exactly [SILENT] is silence (case and whitespace do not matter)', () => {
-    expect(parseSilence('[SILENT]')).toBeNull();
-    expect(parseSilence('  [silent]\n')).toBeNull();
+    expect(llm.parseSilence('[SILENT]')).toBeNull();
+    expect(llm.parseSilence('  [silent]\n')).toBeNull();
   });
 
   it('a tag inside text is not silence and is removed', () => {
-    expect(parseSilence('Let me think… [SILENT] Okay, I will reply.')).toBe('Let me think… Okay, I will reply.');
+    expect(llm.parseSilence('Let me think… [SILENT] Okay, I will reply.')).toBe('Let me think… Okay, I will reply.');
   });
 });
 
@@ -98,22 +102,22 @@ describe('stripNamePrefixes', () => {
   const names = ['Bob', 'Carol'];
 
   it('strips a single and a repeated prefix of its own name', () => {
-    expect(stripNamePrefixes('Carol: Hi!', names)).toBe('Hi!');
-    expect(stripNamePrefixes('Carol: Carol: Hi!', names)).toBe('Hi!');
+    expect(llm.stripNamePrefixes('Carol: Hi!', names)).toBe('Hi!');
+    expect(llm.stripNamePrefixes('Carol: Carol: Hi!', names)).toBe('Hi!');
   });
 
   it('strips a copy of another prefix from the history', () => {
-    expect(stripNamePrefixes('Bob: Bob: /*I noticed…*/', names)).toBe('/*I noticed…*/');
+    expect(llm.stripNamePrefixes('Bob: Bob: /*I noticed…*/', names)).toBe('/*I noticed…*/');
   });
 
   it('leaves text without a prefix and a name without a colon alone', () => {
-    expect(stripNamePrefixes('Hi!', names)).toBe('Hi!');
-    expect(stripNamePrefixes('Bob said: hi', names)).toBe('Bob said: hi');
-    expect(stripNamePrefixes('Carla: hi', names)).toBe('Carla: hi');
+    expect(llm.stripNamePrefixes('Hi!', names)).toBe('Hi!');
+    expect(llm.stripNamePrefixes('Bob said: hi', names)).toBe('Bob said: hi');
+    expect(llm.stripNamePrefixes('Carla: hi', names)).toBe('Carla: hi');
   });
 
   it('an empty name list leaves the text as-is', () => {
-    expect(stripNamePrefixes('Carol: hi', [])).toBe('Carol: hi');
+    expect(llm.stripNamePrefixes('Carol: hi', [])).toBe('Carol: hi');
   });
 });
 
@@ -127,7 +131,7 @@ describe('labelHistory', () => {
       { ...msg('greetings', 'assistant'), characterId: 'c2' },
       msg('how are you?'),
     ];
-    const out = labelHistory(history, characterNames, userNames, true);
+    const out = llm.labelHistory(history, characterNames, userNames, true);
     expect(out[0].text).toBe('Dave: hi');
     expect(out[1].text).toBe('Bob: greetings');
     // Unknown author — the text is not changed
@@ -139,13 +143,13 @@ describe('labelHistory', () => {
       { ...msg('hi'), userId: 'u1' },
       { ...msg('hello', 'assistant'), characterId: 'c1' },
     ];
-    expect(labelHistory(history, characterNames, userNames, false)).toEqual(history);
+    expect(llm.labelHistory(history, characterNames, userNames, false)).toEqual(history);
   });
 });
 
 describe('extractImageRequests', () => {
   it('removes the tags and returns prompts without references', () => {
-    const { text, requests } = extractImageRequests(
+    const { text, requests } = llm.extractImageRequests(
       'Hi!\n[IMG: a fluffy cat, sunset] Here is what I drew.\n[IMG:night city]',
     );
     expect(text).toBe('Hi!\nHere is what I drew.');
@@ -156,7 +160,7 @@ describe('extractImageRequests', () => {
   });
 
   it('parses reference numbers in a tag', () => {
-    const { text, requests } = extractImageRequests(
+    const { text, requests } = llm.extractImageRequests(
       'Here you go: [IMG: the same girl on the beach | 1, 3]. Another option: [IMG:a city at night |2]',
     );
     expect(text).toBe('Here you go: . Another option:');
@@ -167,13 +171,13 @@ describe('extractImageRequests', () => {
   });
 
   it('text without tags passes through as-is', () => {
-    const { text, requests } = extractImageRequests('Just a message');
+    const { text, requests } = llm.extractImageRequests('Just a message');
     expect(text).toBe('Just a message');
     expect(requests).toEqual([]);
   });
 
   it('a bare [IMG] tag without a colon and description is not a tag', () => {
-    const { text, requests } = extractImageRequests(
+    const { text, requests } = llm.extractImageRequests(
       'Let me see what I have in stock.\n[IMG]',
     );
     expect(text).toBe('Let me see what I have in stock.\n[IMG]');
@@ -183,25 +187,25 @@ describe('extractImageRequests', () => {
 
 describe('extractPhotoRequests', () => {
   it('removes the tags and returns the image numbers', () => {
-    const { text, photos } = extractPhotoRequests('Here: [PHOTO:2] a photo.\n[photo: 1, 3]');
+    const { text, photos } = llm.extractPhotoRequests('Here: [PHOTO:2] a photo.\n[photo: 1, 3]');
     expect(text).toBe('Here: a photo.');
     expect(photos).toEqual([2, 1, 3]);
   });
 
   it('text without tags passes through as-is', () => {
-    const { text, photos } = extractPhotoRequests('Just a message');
+    const { text, photos } = llm.extractPhotoRequests('Just a message');
     expect(text).toBe('Just a message');
     expect(photos).toEqual([]);
   });
 
   it('a bare [PHOTO] without a number is not a tag', () => {
-    const { text, photos } = extractPhotoRequests('Here are [PHOTO] and [PHOTO:] in the text.');
+    const { text, photos } = llm.extractPhotoRequests('Here are [PHOTO] and [PHOTO:] in the text.');
     expect(text).toBe('Here are [PHOTO] and [PHOTO:] in the text.');
     expect(photos).toEqual([]);
   });
 
   it('does not mix with the [IMG:...] tag', () => {
-    const { text, photos } = extractPhotoRequests('[IMG:cat | 1] and [PHOTO:1]');
+    const { text, photos } = llm.extractPhotoRequests('[IMG:cat | 1] and [PHOTO:1]');
     expect(text).toBe('[IMG:cat | 1] and');
     expect(photos).toEqual([1]);
   });
@@ -221,7 +225,7 @@ describe('translatePrompt', () => {
     global.fetch = fetchMock as unknown as typeof fetch;
 
     // Russian input — the case the translation is for
-    const out = await translatePrompt(model, 'пушистый кот');
+    const out = await llm.translatePrompt(model, 'пушистый кот');
     expect(out).toBe('a fluffy cat');
     const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
     const body = JSON.parse(init.body) as { messages: Array<{ role: string; content: string }> };
@@ -234,7 +238,7 @@ describe('trimHistory', () => {
   it('always keeps the first (system) message and the latest ones', () => {
     const system = msg('system', 'assistant');
     const history = [system, ...Array.from({ length: 12 }, (_, i) => msg('x'.repeat(4000) + i))];
-    const trimmed = trimHistory(history, 2000);
+    const trimmed = llm.trimHistory(history, 2000);
     expect(trimmed[0]).toBe(system);
     expect(trimmed[trimmed.length - 1]).toBe(history[history.length - 1]);
     expect(trimmed.length).toBeLessThan(history.length);
@@ -243,13 +247,13 @@ describe('trimHistory', () => {
 
   it('does not trim a short history', () => {
     const history = [msg('hi'), msg('hello', 'assistant')];
-    expect(trimHistory(history, 8192)).toHaveLength(2);
+    expect(llm.trimHistory(history, 8192)).toHaveLength(2);
   });
 
   it('accounts for images in the size estimate', () => {
     const withImage: ChatMessage = { ...msg(''), images: ['a.png', 'b.png'] };
     const history = [msg('system', 'assistant'), ...Array.from({ length: 8 }, () => ({ ...withImage }))];
-    const trimmed = trimHistory(history, 2000);
+    const trimmed = llm.trimHistory(history, 2000);
     expect(trimmed.length).toBeLessThan(history.length);
   });
 });
@@ -274,7 +278,7 @@ describe('chatCompletion', () => {
     global.fetch = fetchMock as unknown as typeof fetch;
 
     const history = [{ ...msg('what is on the photo?'), images: ['a.png'] }];
-    const reply = await chatCompletion(model, 'system', history, 'chat-test');
+    const reply = await llm.chatCompletion(model, 'system', history, 'chat-test');
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(reply).toContain('a reply without a photo');
@@ -289,7 +293,7 @@ describe('chatCompletion', () => {
       .mockResolvedValue(jsonRes({ choices: [{ message: { content: 'ok' } }] }));
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    await chatCompletion(model, 'system', [msg('hi')], 'chat-test', "The next reply is Carol's line.");
+    await llm.chatCompletion(model, 'system', [msg('hi')], 'chat-test', "The next reply is Carol's line.");
     const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
     const body = JSON.parse(init.body) as { messages: Array<{ role: string; content: string }> };
     // system first only: the reminder rides inside the last user message
@@ -304,7 +308,7 @@ describe('chatCompletion', () => {
       .mockResolvedValue(jsonRes({ choices: [{ message: { content: 'ok' } }] }));
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    await chatCompletion(model, 'system', [msg('line', 'assistant')], 'chat-test', 'reminder');
+    await llm.chatCompletion(model, 'system', [msg('line', 'assistant')], 'chat-test', 'reminder');
     const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
     const body = JSON.parse(init.body) as { messages: Array<{ role: string; content: string }> };
     expect(body.messages).toHaveLength(3);
@@ -318,7 +322,7 @@ describe('chatCompletion', () => {
       .mockResolvedValue(jsonRes({ choices: [{ message: { content: 'ok' } }] }));
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    await chatCompletion({ ...model, id: '' }, 'system', [msg('hi')], 'chat-test');
+    await llm.chatCompletion({ ...model, id: '' }, 'system', [msg('hi')], 'chat-test');
     const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
     const body = JSON.parse(init.body) as Record<string, unknown>;
     expect(body).not.toHaveProperty('model');
@@ -330,7 +334,7 @@ describe('chatCompletion', () => {
       .mockResolvedValue(jsonRes({ choices: [{ message: { content: 'ok' } }] }));
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    await chatCompletion({ ...model, reasoning: 'high' }, 'system', [msg('hi')], 'chat-test');
+    await llm.chatCompletion({ ...model, reasoning: 'high' }, 'system', [msg('hi')], 'chat-test');
     const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
     const body = JSON.parse(init.body) as Record<string, unknown>;
     // reasoning_effort — OpenAI/llama.cpp, reasoning.effort — OpenRouter.
@@ -344,7 +348,7 @@ describe('chatCompletion', () => {
       .mockResolvedValue(jsonRes({ choices: [{ message: { content: 'ok' } }] }));
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    await chatCompletion({ ...model, reasoning: false }, 'system', [msg('hi')], 'chat-test');
+    await llm.chatCompletion({ ...model, reasoning: false }, 'system', [msg('hi')], 'chat-test');
     const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
     const body = JSON.parse(init.body) as Record<string, unknown>;
     expect(body).not.toHaveProperty('reasoning_effort');
@@ -357,7 +361,7 @@ describe('chatCompletion', () => {
       .mockResolvedValue(jsonRes({ error: { message: 'boom' } }, 500));
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    await expect(chatCompletion(model, 'system', [msg('hi')], 'chat-test')).rejects.toThrow(
+    await expect(llm.chatCompletion(model, 'system', [msg('hi')], 'chat-test')).rejects.toThrow(
       'boom',
     );
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -372,7 +376,7 @@ describe('chatCompletion', () => {
     global.fetch = fetchMock as unknown as typeof fetch;
 
     const history = [{ ...msg('photo'), images: ['a.png'] }];
-    await expect(chatCompletion(model, 'system', history, 'chat-test')).rejects.toThrow(
+    await expect(llm.chatCompletion(model, 'system', history, 'chat-test')).rejects.toThrow(
       'mmproj',
     );
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -397,7 +401,7 @@ describe('chatCompletion', () => {
     global.fetch = fetchMock as unknown as typeof fetch;
 
     const ctrl = new AbortController();
-    const pending = chatCompletion(model, 'system', [msg('hi')], 'chat-test', undefined, ctrl.signal);
+    const pending = llm.chatCompletion(model, 'system', [msg('hi')], 'chat-test', undefined, ctrl.signal);
     ctrl.abort();
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
     // the signal reached the provider, and a cancel is not retried

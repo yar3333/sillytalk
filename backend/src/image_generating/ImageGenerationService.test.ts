@@ -3,13 +3,14 @@ import os from 'os';
 import path from 'path';
 import { chatDir, chatFilesDir, loadConfig } from '../config';
 import { getMachineService } from '../machine';
+import { LlmService } from '../llm/LlmService';
 import { ImageGenerationService } from './ImageGenerationService';
 import { ImageGenerator } from '../types';
 
 // One service instance for the whole suite — the state (the availability
 // cache and the job registry) lives on the instance, and the tests recompute
 // the availability via refreshAvailableGenerators as needed.
-const images = new ImageGenerationService(getMachineService(), loadConfig);
+const images = new ImageGenerationService(getMachineService(), new LlmService(), loadConfig);
 
 const chatId = 'jest-local-cmd-test';
 const cmdFile = path.join(os.tmpdir(), 'sillytalk-gen-test.cmd');
