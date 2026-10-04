@@ -2,7 +2,7 @@ import fs from "fs";
 import { ChildProcess } from "child_process";
 import { LocalProgramSettings } from "../../types";
 import { expandPath } from "../../config";
-import { MachineService } from "../../machine";
+import { IMachineService } from "../../machine/IMachineService";
 import { IImageGeneratorDriver } from "../IImageGeneratorDriver";
 
 // The local-program backend: the configured program writes the PNG itself
@@ -14,7 +14,7 @@ export class LocalProgramDriver implements IImageGeneratorDriver {
 
   constructor(
     private readonly cfg: LocalProgramSettings,
-    private readonly machine: MachineService,
+    private readonly machine: IMachineService,
   ) {
     this.key = `cmd:${expandPath(cfg.command ?? "")}`;
   }

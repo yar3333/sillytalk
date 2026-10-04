@@ -2,7 +2,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { chatDir, chatFilesDir, chatsDir, loadConfig } from "../config";
-import { getMachineService } from "../machine";
+import { getMachineService } from "../machine/IMachineService";
 import { ChatsService } from "../chats/ChatsService";
 import { TextGenerationService } from "../text_generation/TextGenerationService";
 import { ImageGenerationService } from "./ImageGenerationService";

@@ -1,14 +1,14 @@
-import { ChildProcess, spawn } from 'child_process';
-import { MachineService, programFailureMessage } from './machine';
+import { ChildProcess, spawn } from "child_process";
+import { IMachineService, programFailureMessage } from "../IMachineService";
 
 // The POSIX (Linux/macOS) implementation: programs run directly (no shell
 // wrappers) in their own process group, so a kill reaches everything they
 // spawned. .bat/.cmd scripts are a Windows format and are refused up front.
-export class PosixMachineService implements MachineService {
+export class MachinePosixService implements IMachineService {
   commandLine(command: string, args: string[]): string {
     // Display only (error messages): the plain invocation, args quoted.
-    const cmd = command.trim().replace(/^"+|"+$/g, '');
-    return [cmd, ...args.map((arg) => `"${arg}"`)].join(' ');
+    const cmd = command.trim().replace(/^"+|"+$/g, "");
+    return [cmd, ...args.map((arg) => `"${arg}"`)].join(" ");
   }
 
   runProgram(
@@ -17,7 +17,7 @@ export class PosixMachineService implements MachineService {
     registerChild: (child: ChildProcess) => void = () => undefined,
   ): Promise<void> {
     const line = this.commandLine(command, args);
-    const cmd = command.trim().replace(/^"+|"+$/g, '');
+    const cmd = command.trim().replace(/^"+|"+$/g, "");
     if (/\.(bat|cmd)$/i.test(cmd)) {
       return Promise.reject(
         new Error(`A .bat/.cmd generator program is only supported on Windows\nCommand line: ${line}`),
@@ -30,18 +30,18 @@ export class PosixMachineService implements MachineService {
       // pipes open and stall the job (and the whole generation queue).
       const child = spawn(cmd, args, { detached: true });
       registerChild(child);
-      let stdout = '';
-      let stderr = '';
-      child.stdout?.on('data', (chunk) => {
+      let stdout = "";
+      let stderr = "";
+      child.stdout?.on("data", (chunk) => {
         stdout += String(chunk);
       });
-      child.stderr?.on('data', (chunk) => {
+      child.stderr?.on("data", (chunk) => {
         stderr += String(chunk);
       });
-      child.on('error', (err) =>
+      child.on("error", (err) =>
         reject(new Error(`Failed to start the program: ${err.message}\nCommand line: ${line}`)),
       );
-      child.on('close', (code) => {
+      child.on("close", (code) => {
         if (code === 0) resolve();
         else reject(new Error(programFailureMessage(code, line, stdout, stderr)));
       });
@@ -54,10 +54,10 @@ export class PosixMachineService implements MachineService {
     if (pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
     // Kill the whole process group (the program was spawned detached).
     try {
-      process.kill(-pid, 'SIGTERM');
+      process.kill(-pid, "SIGTERM");
     } catch {
       try {
-        child.kill('SIGTERM');
+        child.kill("SIGTERM");
       } catch {
         // already gone
       }

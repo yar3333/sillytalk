@@ -7,7 +7,7 @@ import { characterPhotosDir, chatDir, chatFilesDir } from "../config";
 import { createToken } from "../di";
 import { ChatsService } from "../chats/ChatsService";
 import { TextGenerationService } from "../text_generation/TextGenerationService";
-import { MachineService } from "../machine";
+import { IMachineService } from "../machine/IMachineService";
 import { DriverFactory } from "./DriverFactory";
 import { ImageJobResult } from "./ImageJobResult";
 import { ImageJob } from "./ImageJob";
@@ -67,7 +67,7 @@ export class ImageGenerationService {
   private readonly drivers: DriverFactory;
 
   constructor(
-    private readonly machine: MachineService,
+    private readonly machine: IMachineService,
     // The text generation service (translatePrompt for ensureEnglishPrompt) —
     // another domain service, injected like the machine one.
     private readonly textGeneration: TextGenerationService,

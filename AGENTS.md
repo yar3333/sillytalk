@@ -50,10 +50,14 @@ backend/               Express API; also serves the built frontend
                        validation; DI token DI_CHARACTERS_SERVICE, the root
                        folder injected as () => string) and
                        CharactersService.test.ts — jest unit tests
-    machine.ts         MachineService: OS-specific launch/kill of the local
-                       generator program (interface + platform selection)
-    machine-win32.ts   Windows impl (cmd.exe / powershell wrappers, taskkill)
-    machine-posix.ts   POSIX impl (detached process groups, group kill)
+    machine/           the local-generator machine service: the interface +
+                       platform selection (IMachineService.ts, DI token
+                       DI_MACHINE_SERVICE), the Windows impl
+                       (implementations/MachineWindowsService.ts — cmd.exe /
+                       powershell wrappers, taskkill) and the POSIX impl
+                       (implementations/MachinePosixService.ts — detached
+                       process groups, group kill); MachineService.test.ts —
+                       jest unit tests (platform selection, command lines)
     chats/             the chat domain: the top-level service class
                        (ChatsService.ts — chat + chat-file persistence on the
                        chats/<id>/ folders: CRUD, the format guards, the model
@@ -64,7 +68,6 @@ backend/               Express API; also serves the built frontend
     users.ts           user persistence in users/<id>/ folders
     config.ts          config load/save, path helpers
     types.ts           shared backend types
-    machine.test.ts    jest unit tests (platform selection, command lines)
     users.test.ts      jest unit tests (user folders: CRUD, sync)
   jest.config.js       ts-jest setup
 
@@ -235,7 +238,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   `-InputImagePath a.jpg,b.jpg` style), `{absolutePathToOutputImage}` (absolute path of the output
   PNG the program must write — the backend places it in the chat's `files/` dir; there is no
   `outputDir` config field anymore). The OS-specific launch/kill lives behind the
-  `MachineService` interface (`machine.ts`, selected once at startup in `index.ts` via
+  `IMachineService` interface (`machine/IMachineService.ts`, selected once at startup in `index.ts` via
   `initMachineService()` for the current OS): on **Windows** `.bat`/`.cmd` run through
   `cmd.exe /d /s /c` with quoted args, `.ps1` through `powershell.exe -NoProfile
   -ExecutionPolicy Bypass -File` (plain executables spawn directly — Node throws EINVAL on
@@ -243,7 +246,8 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   /PID` (a plain `child.kill()` would only terminate the wrapper); on **POSIX** programs
   spawn directly in their own process group (`detached`) and cancelling kills the whole
   group (`kill(-pid)`), while `.bat`/`.cmd` are refused with a clear error. Keep new
-  OS-specific behavior in the platform impls (`machine-win32.ts` / `machine-posix.ts`), not in
+  OS-specific behavior in the platform impls (`machine/implementations/MachineWindowsService.ts` /
+  `MachinePosixService.ts`), not in
   the image-generation code. A generator's `maxInputImages` caps how many reference images it accepts
   (0 = unlimited; the backend rejects the request with a clear error before spawning).
 - **Self-initiated image generation.** When a generator is available, `systemPromptFor`
@@ -383,7 +387,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
 
 - **DI is a minimal hand-rolled container** (`backend/src/di.ts`, no framework): typed tokens
   (`createToken<T>()`) registered as lazy singletons. The composition root is `index.ts` — it
-  registers `MACHINE_SERVICE`, `TEXT_GENERATION`, `DI_CHARACTERS_SERVICE`, `DI_CHATS_SERVICE` and
+  registers `DI_MACHINE_SERVICE`, `TEXT_GENERATION`, `DI_CHARACTERS_SERVICE`, `DI_CHATS_SERVICE` and
   `IMAGE_GENERATION` and resolves them once; `routes.ts` receives the services through
   `createApiRouter(imageGeneration, textGeneration, characters, chats)`. Consumers take dependencies via
   constructors and never import the container themselves.
@@ -397,7 +401,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
     (`DriverFactory.ts`). Interfaces get their own file named after the type
     (`IImageGeneratorDriver.ts`, `ImageJob.ts`); no barrel `index.ts` — consumers import from
     concrete files.
-  - **Dependencies are injected through the constructor** (`MachineService`, `() => Config`);
+  - **Dependencies are injected through the constructor** (`IMachineService`, `() => Config`);
     the class is registered in the container under a token defined next to it (`IMAGE_GENERATION`)
     and resolved once at the composition root. Tests instantiate the class directly
     (`new ImageGenerationService(...)`) instead of resetting module state.
@@ -416,7 +420,8 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
     `resolveInventoryRefs` moved from `routes.ts`); leave HTTP/persistence glue behind, but
     be able to say why.
   - **OS/program specifics go behind an interface** selected once at startup
-    (`MachineService` + `machine-win32.ts` / `machine-posix.ts`); the domain code never
+    (`IMachineService` + `machine/implementations/MachineWindowsService.ts` /
+    `MachinePosixService.ts`); the domain code never
     branches on `process.platform`.
   - **Planned migration (partially done):** `llm.ts`, `characters.ts` and `chats.ts` are
     already converted (`text_generation/TextGenerationService.ts`, `characters/CharactersService.ts`,

@@ -6,7 +6,7 @@ import { createApiRouter } from "./routes";
 import { CONFIG_FILE, charactersDir, chatsDir, ensureDirs, loadConfig, parseListen } from "./config";
 import { listUsers, saveUser } from "./users";
 import { Container } from "./di";
-import { initMachineService, MACHINE_SERVICE } from "./machine";
+import { initMachineService, DI_MACHINE_SERVICE } from "./machine/IMachineService";
 import { DI_CHATS_SERVICE, ChatsService } from "./chats/ChatsService";
 import { DI_CHARACTERS_SERVICE, CharactersService } from "./characters/CharactersService";
 import { DI_IMAGE_GENERATION_SERVICE, ImageGenerationService } from "./image_generation/ImageGenerationService";
@@ -17,7 +17,7 @@ import { DI_TEXT_GENERATION_SERVICE, TextGenerationService } from "./text_genera
 // here, once; consumers (e.g. the API router) receive them via constructors
 // and never touch the container themselves.
 const container = new Container();
-container.register(MACHINE_SERVICE, () => initMachineService());
+container.register(DI_MACHINE_SERVICE, () => initMachineService());
 container.register(DI_TEXT_GENERATION_SERVICE, () => new TextGenerationService());
 container.register(DI_CHARACTERS_SERVICE, () => new CharactersService(() => charactersDir()));
 container.register(DI_CHATS_SERVICE, () => new ChatsService(() => chatsDir(), loadConfig));
@@ -25,7 +25,7 @@ container.register(
   DI_IMAGE_GENERATION_SERVICE,
   (c) =>
     new ImageGenerationService(
-      c.resolve(MACHINE_SERVICE),
+      c.resolve(DI_MACHINE_SERVICE),
       c.resolve(DI_TEXT_GENERATION_SERVICE),
       c.resolve(DI_CHATS_SERVICE),
       loadConfig,
