@@ -167,7 +167,10 @@ describeWindows(".cmd/.ps1 generator launch (Windows only)", () => {
 });
 
 it("rejects more references than the generator supports", async () => {
-  fs.mkdirSync(PathHelper.chatDir(chatId), { recursive: true });
+  // chatFilesDir (not chatDir): the refs are written into files/, and
+  // recursive:true also creates the chat dir the job checks for. On POSIX
+  // the Windows-only tests that used to create files/ are skipped.
+  fs.mkdirSync(PathHelper.chatFilesDir(chatId), { recursive: true });
   for (const n of ["a.png", "b.png", "c.png"]) {
     fs.writeFileSync(path.join(PathHelper.chatFilesDir(chatId), n), "x");
   }
