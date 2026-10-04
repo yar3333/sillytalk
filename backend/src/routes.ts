@@ -8,32 +8,25 @@ import {
   characterPhotosDir,
   ensureDirs,
   loadConfig,
+  newId,
   saveConfig,
   userDir,
 } from "./config";
-import {
-  createChat,
-  deleteChat,
-  getChat,
-  importCharacterPhoto,
-  listChats,
-  newId,
-  saveChat,
-  saveChatImage,
-} from "./chats";
+import { ChatService } from "./chats/ChatService";
 import { CharacterService } from "./characters/CharacterService";
 import { cloneUser, getUser, isValidUserId, listUsers, syncUsers } from "./users";
 import { LlmService } from "./llm/LlmService";
 import { ImageGenerationService } from "./image_generating/ImageGenerationService";
 import { ImageJob } from "./image_generating/ImageJob";
 
-// The API router. The image-generation, LLM and character services are
+// The API router. The image-generation, LLM, character and chat services are
 // injected (the composition root in index.ts builds the DI container and hands
 // the services in here).
 export function createApiRouter(
   imageGeneration: ImageGenerationService,
   llm: LlmService,
   characters: CharacterService,
+  chats: ChatService,
 ): express.Router {
   const apiRouter = express.Router();
 
@@ -161,7 +154,7 @@ export function createApiRouter(
     for (const img of images) {
       if (typeof img !== "string" || !img) continue;
       if (img.startsWith("data:")) {
-        saved.push(saveChatImage(chatId, img));
+        saved.push(chats.saveImage(chatId, img));
       } else {
         const safe = path.basename(img);
         if (fs.existsSync(path.join(filesDir, safe))) saved.push(safe);
@@ -186,7 +179,7 @@ export function createApiRouter(
     status: "pending" | "failed" | "cancelled" | undefined,
     error?: string,
   ): void {
-    const chat = getChat(chatId);
+    const chat = chats.get(chatId);
     if (!chat) return;
     const msg = chat.messages.find((m) => m.id === messageId);
     if (!msg) return;
@@ -209,7 +202,7 @@ export function createApiRouter(
       if (error !== undefined) msg.imageErrors = { ...(msg.imageErrors ?? {}), [image]: error };
       dirty = true;
     }
-    if (dirty) saveChat(chat);
+    if (dirty) chats.save(chat);
   }
 
   // Starts a background generation for the reserved image `name` (which must
@@ -371,7 +364,7 @@ export function createApiRouter(
     // Save the reply (with the reserved "pending" names) BEFORE starting the
     // jobs, so the client already sees the placeholders when the response
     // returns and the jobs update a message that exists on disk.
-    saveChat(chat);
+    chats.save(chat);
     for (const job of pendingJobs) {
       startChatImageJob(chat.id, assistantMsg.id, job.name, job.prompt, job.refs);
     }
@@ -532,7 +525,7 @@ export function createApiRouter(
 
   // ---- chats ----
   apiRouter.get("/chats", (_req, res) => {
-    res.json(listChats());
+    res.json(chats.list());
   });
 
   // A list of ids from a string or an array of strings (empties dropped).
@@ -552,7 +545,7 @@ export function createApiRouter(
       res.status(400).json({ error: "characterId is required" });
       return;
     }
-    const chat = createChat(
+    const chat = chats.create(
       characterIds,
       typeof body.modelId === "string" ? body.modelId : "",
       typeof body.userId === "string" ? body.userId : "",
@@ -561,7 +554,7 @@ export function createApiRouter(
   });
 
   apiRouter.get("/chats/:id", (req, res) => {
-    const chat = getChat(req.params.id);
+    const chat = chats.get(req.params.id);
     if (!chat) {
       res.status(404).json({ error: "Chat not found" });
       return;
@@ -570,7 +563,7 @@ export function createApiRouter(
   });
 
   apiRouter.patch("/chats/:id", (req, res) => {
-    const chat = getChat(req.params.id);
+    const chat = chats.get(req.params.id);
     if (!chat) {
       res.status(404).json({ error: "Chat not found" });
       return;
@@ -590,12 +583,12 @@ export function createApiRouter(
     // Switching the active persona: old messages stay under their former
     // authors — the author is stored on every message.
     if (userId !== undefined) chat.userId = userId;
-    saveChat(chat);
+    chats.save(chat);
     res.json(chat);
   });
 
   apiRouter.delete("/chats/:id", (req, res) => {
-    res.json({ deleted: deleteChat(req.params.id) });
+    res.json({ deleted: chats.delete(req.params.id) });
   });
 
   apiRouter.get("/chats/:id/files/:name", (req, res) => {
@@ -604,7 +597,7 @@ export function createApiRouter(
 
   // Imports a character photo into the chat files/ (for use as a reference)
   apiRouter.post("/chats/:id/import-photo", (req, res) => {
-    const chat = getChat(req.params.id);
+    const chat = chats.get(req.params.id);
     if (!chat) {
       res.status(404).json({ error: "Chat not found" });
       return;
@@ -615,7 +608,7 @@ export function createApiRouter(
       res.status(404).json({ error: "Character not found" });
       return;
     }
-    const name = importCharacterPhoto(chat.id, path.join(characterPhotosDir(character.id), path.basename(photo)));
+    const name = chats.importCharacterPhoto(chat.id, path.join(characterPhotosDir(character.id), path.basename(photo)));
     if (!name) {
       res.status(404).json({ error: "Photo not found" });
       return;
@@ -628,7 +621,7 @@ export function createApiRouter(
   // frontend one at a time (POST /reply) — that way it knows who is "typing"
   // now and adds lines as they are generated.
   apiRouter.post("/chats/:id/messages", (req, res) => {
-    const chat = getChat(req.params.id);
+    const chat = chats.get(req.params.id);
     if (!chat) {
       res.status(404).json({ error: "Chat not found" });
       return;
@@ -642,7 +635,7 @@ export function createApiRouter(
       images: payload.images,
       timestamp: Date.now(),
     });
-    saveChat(chat);
+    chats.save(chat);
     res.json({ chat });
   });
 
@@ -660,7 +653,7 @@ export function createApiRouter(
     // `replaceLast` (regeneration): the last assistant message is being replaced —
     // the backend removes it only after the new reply is saved.
     const replaceLast = req.body?.replaceLast === true;
-    const chat = getChat(req.params.id);
+    const chat = chats.get(req.params.id);
     if (!chat) {
       res.status(404).json({ error: "Chat not found" });
       return;
@@ -685,13 +678,13 @@ export function createApiRouter(
         // The user cancelled: no error message is saved, the chat stays as it
         // was. The client is already gone (it aborted its own fetch too).
         try {
-          res.json({ chat: getChat(chat.id) ?? chat, reply: null });
+          res.json({ chat: chats.get(chat.id) ?? chat, reply: null });
         } catch {
           /* the connection is closed */
         }
         return;
       }
-      const fresh = getChat(req.params.id);
+      const fresh = chats.get(req.params.id);
       if (fresh) {
         fresh.messages.push({
           id: newId(),
@@ -702,7 +695,7 @@ export function createApiRouter(
           timestamp: Date.now(),
           error: true,
         });
-        saveChat(fresh);
+        chats.save(fresh);
         res.json({ chat: fresh, reply: null });
       } else {
         res.status(500).json({ error: (err as Error).message });
@@ -717,7 +710,7 @@ export function createApiRouter(
   // current chat so the client can re-sync (a reply that landed in the last
   // moment is already saved and stays).
   apiRouter.post("/chats/:id/cancel", (req, res) => {
-    const chat = getChat(req.params.id);
+    const chat = chats.get(req.params.id);
     if (!chat) {
       res.status(404).json({ error: "Chat not found" });
       return;
@@ -730,7 +723,7 @@ export function createApiRouter(
   // Edits an existing message: the text and/or the image list
   // (a data URL — a new image, a file name — an already uploaded one).
   apiRouter.patch("/chats/:id/messages/:messageId", (req, res) => {
-    const chat = getChat(req.params.id);
+    const chat = chats.get(req.params.id);
     if (!chat) {
       res.status(404).json({ error: "Chat not found" });
       return;
@@ -755,14 +748,14 @@ export function createApiRouter(
       }
       msg.images = normalizeChatImages(chat.id, images);
     }
-    saveChat(chat);
+    chats.save(chat);
     res.json({ chat });
   });
 
   // Deletes a message: by default the message and all subsequent ones (trims
   // the tail of the dialogue), or only the single message with ?single=1.
   apiRouter.delete("/chats/:id/messages/:messageId", (req, res) => {
-    const chat = getChat(req.params.id);
+    const chat = chats.get(req.params.id);
     if (!chat) {
       res.status(404).json({ error: "Chat not found" });
       return;
@@ -775,7 +768,7 @@ export function createApiRouter(
     }
     if (single) chat.messages.splice(idx, 1);
     else chat.messages.splice(idx); // from here to the end
-    saveChat(chat);
+    chats.save(chat);
     res.json({ chat });
   });
 
@@ -791,7 +784,7 @@ export function createApiRouter(
   // cancelled first. If an older image exists at the name and the run fails or
   // is cancelled, the old one is kept (the message stays ready).
   apiRouter.post("/chats/:id/messages/:messageId/regenerate-image", async (req, res) => {
-    const chat = getChat(req.params.id);
+    const chat = chats.get(req.params.id);
     if (!chat) {
       res.status(404).json({ error: "Chat not found" });
       return;
@@ -818,7 +811,7 @@ export function createApiRouter(
     imageGeneration.cancelJob(chat.id, image);
     // Mark "pending" (and clear a previous error) in a single re-read+save, so
     // the status and the (possibly re-translated) prompt land together.
-    const fresh = getChat(chat.id);
+    const fresh = chats.get(chat.id);
     const fmsg = fresh?.messages.find((m) => m.id === msg.id);
     if (!fresh || !fmsg) {
       res.status(404).json({ error: "Message not found" });
@@ -830,7 +823,7 @@ export function createApiRouter(
       delete fmsg.imageErrors[image];
       if (Object.keys(fmsg.imageErrors).length === 0) delete fmsg.imageErrors;
     }
-    saveChat(fresh);
+    chats.save(fresh);
     startChatImageJob(chat.id, msg.id, image, prompt, refs);
     res.json({ chat: fresh });
   });
@@ -841,7 +834,7 @@ export function createApiRouter(
   // image, if any, so a cancelled regeneration does not break a ready one).
   // Cancelling an image that is not "pending" is a no-op.
   apiRouter.post("/chats/:id/messages/:messageId/cancel-image", (req, res) => {
-    const chat = getChat(req.params.id);
+    const chat = chats.get(req.params.id);
     if (!chat) {
       res.status(404).json({ error: "Chat not found" });
       return;
@@ -860,7 +853,7 @@ export function createApiRouter(
       imageGeneration.cancelJob(chat.id, image);
       setMessageImageStatus(chat.id, msg.id, image, "cancelled", "Generation cancelled");
     }
-    res.json({ chat: getChat(chat.id) });
+    res.json({ chat: chats.get(chat.id) });
   });
 
   // ---- image generation ----
@@ -872,7 +865,7 @@ export function createApiRouter(
   apiRouter.post("/image", async (req, res) => {
     try {
       const { chatId, prompt, refs } = req.body ?? {};
-      const chat = getChat(chatId);
+      const chat = chats.get(chatId);
       if (!chat) {
         res.status(404).json({ error: "Chat not found" });
         return;
@@ -903,7 +896,7 @@ export function createApiRouter(
         timestamp: Date.now(),
       };
       chat.messages.push(msg);
-      saveChat(chat);
+      chats.save(chat);
       startChatImageJob(chat.id, msg.id, name, finalPrompt, refs ?? []);
       res.json({ chat, message: msg });
     } catch (err) {

@@ -3,10 +3,11 @@ import cors from "cors";
 import fs from "fs";
 import path from "path";
 import { createApiRouter } from "./routes";
-import { CONFIG_FILE, charactersDir, ensureDirs, loadConfig, parseListen } from "./config";
+import { CONFIG_FILE, charactersDir, chatsDir, ensureDirs, loadConfig, parseListen } from "./config";
 import { listUsers, saveUser } from "./users";
 import { Container } from "./di";
 import { initMachineService, MACHINE_SERVICE } from "./machine";
+import { CHATS, ChatService } from "./chats/ChatService";
 import { CHARACTERS, CharacterService } from "./characters/CharacterService";
 import { IMAGE_GENERATION, ImageGenerationService } from "./image_generating/ImageGenerationService";
 import { LLM, LlmService } from "./llm/LlmService";
@@ -19,11 +20,13 @@ const container = new Container();
 container.register(MACHINE_SERVICE, () => initMachineService());
 container.register(LLM, () => new LlmService());
 container.register(CHARACTERS, () => new CharacterService(() => charactersDir()));
+container.register(CHATS, () => new ChatService(() => chatsDir(), loadConfig));
 container.register(
   IMAGE_GENERATION,
-  (c) => new ImageGenerationService(c.resolve(MACHINE_SERVICE), c.resolve(LLM), loadConfig),
+  (c) => new ImageGenerationService(c.resolve(MACHINE_SERVICE), c.resolve(LLM), c.resolve(CHATS), loadConfig),
 );
 const characters = container.resolve(CHARACTERS);
+const chats = container.resolve(CHATS);
 
 // Migration: characters from the old config.json format (the characters field)
 // are moved into characters/<id>/character.json folders.
@@ -63,7 +66,7 @@ if (listUsers().length === 0) {
 
 const app = express();
 app.use(cors());
-app.use("/api", createApiRouter(images, llm, characters));
+app.use("/api", createApiRouter(images, llm, characters, chats));
 
 // Static built frontend (Angular) + SPA fallback
 const candidates = [

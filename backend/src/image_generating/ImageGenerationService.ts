@@ -5,7 +5,7 @@ import { ChildProcess } from "child_process";
 import { Character, Chat, Config, ImageGenerator, Model } from "../types";
 import { characterPhotosDir, chatDir, chatFilesDir } from "../config";
 import { createToken } from "../di";
-import { importCharacterPhoto } from "../chats";
+import { ChatService } from "../chats/ChatService";
 import { LlmService } from "../llm/LlmService";
 import { MachineService } from "../machine";
 import { DriverFactory } from "./DriverFactory";
@@ -71,6 +71,9 @@ export class ImageGenerationService {
     // The LLM service (translatePrompt for ensureEnglishPrompt) — another
     // domain service, injected like the machine one.
     private readonly llm: LlmService,
+    // The chat service (importCharacterPhoto for the [PHOTO] references) —
+    // the lower-level domain the image refs are copied through.
+    private readonly chats: ChatService,
     // The config is read through the loader (not injected as a value), so a
     // job that starts after a settings change probes the current generators.
     private readonly loadConfig: () => Config,
@@ -168,7 +171,7 @@ export class ImageGenerationService {
       if (path.dirname(item.path) === filesDir) {
         refs.push(path.basename(item.path));
       } else {
-        const name = importCharacterPhoto(chatId, item.path);
+        const name = this.chats.importCharacterPhoto(chatId, item.path);
         if (name) refs.push(name);
       }
     }

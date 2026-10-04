@@ -54,7 +54,13 @@ backend/               Express API; also serves the built frontend
                        generator program (interface + platform selection)
     machine-win32.ts   Windows impl (cmd.exe / powershell wrappers, taskkill)
     machine-posix.ts   POSIX impl (detached process groups, group kill)
-    chats.ts           chat + chat-file persistence
+    chats/             the chat domain: the top-level service class
+                       (ChatService.ts — chat + chat-file persistence on the
+                       chats/<id>/ folders: CRUD, the format guards, the model
+                       fallback, the chat files (saveImage,
+                       importCharacterPhoto); DI token CHATS, the root folder
+                       and the config loader injected) and
+                       ChatService.test.ts — jest unit tests
     users.ts           user persistence in users/<id>/ folders
     config.ts          config load/save, path helpers
     types.ts           shared backend types
@@ -377,9 +383,10 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
 
 - **DI is a minimal hand-rolled container** (`backend/src/di.ts`, no framework): typed tokens
   (`createToken<T>()`) registered as lazy singletons. The composition root is `index.ts` — it
-  registers `MACHINE_SERVICE` and `IMAGE_GENERATION` and resolves them once; `routes.ts` receives
-  `ImageGenerationService` through `createApiRouter(imageGeneration)`. Consumers take dependencies
-  via constructors and never import the container themselves.
+  registers `MACHINE_SERVICE`, `LLM`, `CHARACTERS`, `CHATS` and `IMAGE_GENERATION` and resolves
+  them once; `routes.ts` receives the services through
+  `createApiRouter(imageGeneration, llm, characters, chats)`. Consumers take dependencies via
+  constructors and never import the container themselves.
 - **General backend patterns (established by the `image_generating/` refactor).** When a domain
   grows logic of its own, structure it like `image_generating/` does — these rules generalize it:
   - **A domain = a folder + one top-level service class.** `service.ts`-style module globals
@@ -401,8 +408,9 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
     `routes.ts`) stays in the routes layer; likewise file serving (`sendImage`) and upload
     normalization (`normalizeChatImages`) are routes'/persistence concerns, not the domain's.
   - **Keep the dependency graph one-way and acyclic** (`routes → service → drivers/machine/
-    config/chats/llm/characters`): the service may call lower-level module functions (e.g.
-    `importCharacterPhoto`, `translatePrompt`), but nothing below it may import the domain back.
+    config/chats/llm/characters`): the service may call lower-level services and module
+    functions (e.g. `ImageGenerationService` calling `ChatService.importCharacterPhoto` and
+    `LlmService.translatePrompt`), but nothing below it may import the domain back.
     When pulling code into the service, grep the rest of the project for logic that belongs to
     the domain and move what fits (`ensureEnglishPrompt`, `imageInventory`,
     `resolveInventoryRefs` moved from `routes.ts`); leave HTTP/persistence glue behind, but
@@ -410,13 +418,13 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   - **OS/program specifics go behind an interface** selected once at startup
     (`MachineService` + `machine-win32.ts` / `machine-posix.ts`); the domain code never
     branches on `process.platform`.
-  - **Planned migration (partially done):** `llm.ts` and `characters.ts` are already converted
-    (`llm/LlmService.ts`, `characters/CharacterService.ts`); the remaining modules
-    (`users.ts`, `chats.ts`, `config.ts`) are still function-style and are to be converted to this
-    service-class pattern in the future (a class per module, DI through the container, state on
-    the instance, routes keep only HTTP glue). Until a module is converted, keep the two styles
-    separate — do not add new module-level state to them; new domains must start as service
-    classes right away.
+  - **Planned migration (partially done):** `llm.ts`, `characters.ts` and `chats.ts` are
+    already converted (`llm/LlmService.ts`, `characters/CharacterService.ts`,
+    `chats/ChatService.ts`); the remaining modules (`users.ts`, `config.ts`) are still
+    function-style and are to be converted to this service-class pattern in the future (a
+    class per module, DI through the container, state on the instance, routes keep only HTTP
+    glue). Until a module is converted, keep the two styles separate — do not add new
+    module-level state to them; new domains must start as service classes right away.
 - **Single port in production** — `backend/src/index.ts` mounts the API at `/api`, serves the built
   frontend as static files, and falls back to `index.html` for non-`/api` GETs (SPA).
 - **LLM call** (`llm/LlmService.ts`) — `chatCompletion()` posts to `${baseUrl}/chat/completions`. `trimHistory()`

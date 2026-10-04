@@ -1,6 +1,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { randomUUID } from 'crypto';
 import { Config, ImageGenerator, LlmModel, Model } from './types';
 
 // The data root is ~/.config/sillytalk. Overridden by environment variables
@@ -264,12 +265,21 @@ export function chatsDir(): string {
   return CHATS_DIR;
 }
 
-export function chatDir(chatId: string): string {
-  return path.join(CHATS_DIR, chatId);
+export function chatDir(chatId: string, root: string = chatsDir()): string {
+  return path.join(root, chatId);
 }
 
-export function chatFilesDir(chatId: string): string {
-  return path.join(chatDir(chatId), `files`);
+export function chatFile(chatId: string, root: string = chatsDir()): string {
+  return path.join(chatDir(chatId, root), 'chat.json');
+}
+
+export function chatFilesDir(chatId: string, root: string = chatsDir()): string {
+  return path.join(chatDir(chatId, root), `files`);
+}
+
+// A fresh id for a chat or a message.
+export function newId(): string {
+  return randomUUID();
 }
 
 // Dirent.isDirectory() returns false for symlinks and Windows junctions,
