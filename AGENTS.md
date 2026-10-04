@@ -23,12 +23,15 @@ backend/               Express API; also serves the built frontend
     di.ts              minimal DI container: typed tokens (createToken<T>) +
                        lazy singletons (register/resolve)
     routes.ts          REST API (config, users, characters, chats, messages, avatars, image, files);
-                       createApiRouter(imageGeneration, llm) — the services are injected
+                       createApiRouter(imageGeneration, llm, characters) — the
+                       services are injected
     llm/               the LLM domain: the top-level service class
                        (LlmService.ts — the OpenAI-compatible provider client:
-                       chatCompletion text + image_url, translatePrompt; the
-                       system prompt, [IMG]/[PHOTO] tag parsing, [SILENT],
-                       author labels, history trimming; DI token LLM) and
+                       chatCompletion text + image_url, translatePrompt;
+                       resolveModel (the chat's model by llmModels key with
+                       the first-model fallback); the system prompt,
+                       [IMG]/[PHOTO] tag parsing, [SILENT], author labels,
+                       history trimming; DI token LLM) and
                        LlmService.test.ts — jest unit tests
     image_generating/  image generation: the driver interface
                        (IImageGeneratorDriver.ts; the job model — ImageJob.ts /
@@ -40,18 +43,22 @@ backend/               Express API; also serves the built frontend
                        generateImages, the background job registry);
                        ImageGenerationService.test.ts —
                        jest unit tests (local program, background image jobs)
+    characters/        the character domain: the top-level service class
+                       (CharacterService.ts — the character catalog on the
+                       characters/<id>/ folders: CRUD, clone, the full-list
+                       sync, the migration from the old config format, the ID
+                       validation; DI token CHARACTERS, the root folder
+                       injected as () => string) and
+                       CharacterService.test.ts — jest unit tests
     machine.ts         MachineService: OS-specific launch/kill of the local
                        generator program (interface + platform selection)
     machine-win32.ts   Windows impl (cmd.exe / powershell wrappers, taskkill)
     machine-posix.ts   POSIX impl (detached process groups, group kill)
     chats.ts           chat + chat-file persistence
-    characters.ts      character persistence in characters/<id>/ folders
     users.ts           user persistence in users/<id>/ folders
     config.ts          config load/save, path helpers
     types.ts           shared backend types
-    llm.test.ts        jest unit tests (system prompt + history trimming)
     machine.test.ts    jest unit tests (platform selection, command lines)
-    characters.test.ts jest unit tests (character folders: CRUD, sync, migration)
     users.test.ts      jest unit tests (user folders: CRUD, sync)
   jest.config.js       ts-jest setup
 
@@ -281,7 +288,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   `~/.config/sillytalk/characters/<id>/`: the folder name IS the character id, `character.json` holds
   `{ name, description }`, `photos/` is the fixed "starter" photo set (computed by
   `characterPhotosDir(id)`), and `avatar.jpg` is the character avatar shown next to its messages.
-  CRUD lives in `characters.ts`; `GET/PUT /api/characters` read/sync the folders (PUT performs a full
+  CRUD lives in `characters/CharacterService.ts`; `GET/PUT /api/characters` read/sync the folders (PUT performs a full
   sync: create/update/delete). An on-disk `characters` field in an old config.json is migrated to
   folders at startup (`index.ts`) and stripped by `PUT /api/config` — do not reintroduce a
   `characters` array in the config.
@@ -394,7 +401,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
     `routes.ts`) stays in the routes layer; likewise file serving (`sendImage`) and upload
     normalization (`normalizeChatImages`) are routes'/persistence concerns, not the domain's.
   - **Keep the dependency graph one-way and acyclic** (`routes → service → drivers/machine/
-    config/chats/llm`): the service may call lower-level module functions (e.g.
+    config/chats/llm/characters`): the service may call lower-level module functions (e.g.
     `importCharacterPhoto`, `translatePrompt`), but nothing below it may import the domain back.
     When pulling code into the service, grep the rest of the project for logic that belongs to
     the domain and move what fits (`ensureEnglishPrompt`, `imageInventory`,
@@ -403,9 +410,9 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   - **OS/program specifics go behind an interface** selected once at startup
     (`MachineService` + `machine-win32.ts` / `machine-posix.ts`); the domain code never
     branches on `process.platform`.
-  - **Planned migration (partially done):** `llm.ts` is already converted (`llm/LlmService.ts`); the
-    remaining modules (`characters.ts`, `users.ts`, `chats.ts`, `config.ts`) are still function-style
-    and are to be converted to this
+  - **Planned migration (partially done):** `llm.ts` and `characters.ts` are already converted
+    (`llm/LlmService.ts`, `characters/CharacterService.ts`); the remaining modules
+    (`users.ts`, `chats.ts`, `config.ts`) are still function-style and are to be converted to this
     service-class pattern in the future (a class per module, DI through the container, state on
     the instance, routes keep only HTTP glue). Until a module is converted, keep the two styles
     separate — do not add new module-level state to them; new domains must start as service

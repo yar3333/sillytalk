@@ -1,13 +1,12 @@
 import express from "express";
 import fs from "fs";
 import path from "path";
-import { Character, Chat, ChatMessage, Config, Model, User } from "./types";
+import { Character, Chat, ChatMessage, Model, User } from "./types";
 import {
   chatFilesDir,
   characterDir,
   characterPhotosDir,
   ensureDirs,
-  listModels,
   loadConfig,
   saveConfig,
   userDir,
@@ -22,23 +21,20 @@ import {
   saveChat,
   saveChatImage,
 } from "./chats";
-import {
-  cloneCharacter,
-  getCharacter,
-  isValidCharacterId,
-  listCharacters,
-  migrateCharacters,
-  syncCharacters,
-} from "./characters";
+import { CharacterService } from "./characters/CharacterService";
 import { cloneUser, getUser, isValidUserId, listUsers, syncUsers } from "./users";
 import { LlmService } from "./llm/LlmService";
 import { ImageGenerationService } from "./image_generating/ImageGenerationService";
 import { ImageJob } from "./image_generating/ImageJob";
 
-// The API router. The image-generation and LLM services are injected (the
-// composition root in index.ts builds the DI container and hands the services
-// in here).
-export function createApiRouter(imageGeneration: ImageGenerationService, llm: LlmService): express.Router {
+// The API router. The image-generation, LLM and character services are
+// injected (the composition root in index.ts builds the DI container and hands
+// the services in here).
+export function createApiRouter(
+  imageGeneration: ImageGenerationService,
+  llm: LlmService,
+  characters: CharacterService,
+): express.Router {
   const apiRouter = express.Router();
 
   apiRouter.use(express.json({ limit: "25mb" }));
@@ -101,7 +97,7 @@ export function createApiRouter(imageGeneration: ImageGenerationService, llm: Ll
   // The three avatar routes (GET/POST/DELETE) are identical for users/ and characters/.
   function avatarRoutes(kind: "user" | "character") {
     const dirFor = (id: string) => (kind === "user" ? userDir(id) : characterDir(id));
-    const valid = (id: string) => (kind === "user" ? isValidUserId(id) : isValidCharacterId(id));
+    const valid = (id: string) => (kind === "user" ? isValidUserId(id) : characters.isValidId(id));
     return {
       get: (req: express.Request, res: express.Response): void => {
         const id = String(req.params.id);
@@ -156,12 +152,6 @@ export function createApiRouter(imageGeneration: ImageGenerationService, llm: Ll
   apiRouter.get("/characters/:id/avatar", characterAvatar.get);
   apiRouter.post("/characters/:id/avatar", characterAvatar.post);
   apiRouter.delete("/characters/:id/avatar", characterAvatar.delete);
-
-  function resolveModel(config: Config, chat: Chat) {
-    const models = listModels(config);
-    // chat.modelId — the llmModels key (which is Model.name).
-    return models.find((m) => m.name === chat.modelId) ?? models[0] ?? null;
-  }
 
   // Normalizes the image list to file names in the chat files/: a data URL is
   // saved as a new file; a string without data: is a reference to an existing one.
@@ -268,7 +258,7 @@ export function createApiRouter(imageGeneration: ImageGenerationService, llm: Ll
     signal?: AbortSignal,
     replaceLast = false,
   ): Promise<ChatMessage | null> {
-    const character = getCharacter(characterId);
+    const character = characters.get(characterId);
     if (!character) return null;
     const canGenerateImages = imageGeneration.hasAvailableGenerator();
     // The inventory is always needed: it backs both [PHOTO:N] (send a ready
@@ -280,7 +270,7 @@ export function createApiRouter(imageGeneration: ImageGenerationService, llm: Ll
     // reply order and allows staying silent.
     const fellows = chat.characterIds
       .filter((id) => id !== characterId)
-      .map((id) => getCharacter(id))
+      .map((id) => characters.get(id))
       .filter((c): c is Character => c !== null);
     const system = llm.systemPromptFor(character, user, canGenerateImages, inventoryText || undefined, fellows);
 
@@ -299,7 +289,7 @@ export function createApiRouter(imageGeneration: ImageGenerationService, llm: Ll
         chat.messages.filter((m) => m !== replacedMessage && !m.error),
         Object.fromEntries(
           chat.characterIds
-            .map((id) => [id, getCharacter(id)?.name ?? id] as const)
+            .map((id) => [id, characters.get(id)?.name ?? id] as const)
             .filter(([id]) => chat.messages.some((m) => m.characterId === id)),
         ),
         Object.fromEntries(
@@ -401,7 +391,7 @@ export function createApiRouter(imageGeneration: ImageGenerationService, llm: Ll
     }
     if (Array.isArray(cfg.characters)) {
       // characters are no longer in the config — move them into folders
-      migrateCharacters(cfg.characters);
+      characters.migrate(cfg.characters);
     }
     delete cfg.characters;
     // legacy fields are removed to avoid confusion
@@ -417,9 +407,9 @@ export function createApiRouter(imageGeneration: ImageGenerationService, llm: Ll
   });
 
   // ---- characters ----
-  // Characters are stored in characters/<id>/ folders (see characters.ts).
+  // Characters are stored in characters/<id>/ folders (see characters/CharacterService.ts).
   function charactersWithPhotos(): Array<Character & { photos: string[]; hasAvatar: boolean }> {
-    return listCharacters().map((character) => {
+    return characters.list().map((character) => {
       const dir = characterPhotosDir(character.id);
       let photos: string[] = [];
       if (fs.existsSync(dir)) {
@@ -435,20 +425,20 @@ export function createApiRouter(imageGeneration: ImageGenerationService, llm: Ll
 
   // Full sync: creates/updates/deletes characters to match the list.
   apiRouter.put("/characters", (req, res) => {
-    const { characters } = req.body ?? {};
-    if (!Array.isArray(characters)) {
+    const { characters: chars } = req.body ?? {};
+    if (!Array.isArray(chars)) {
       res.status(400).json({ error: "Expected a list of characters" });
       return;
     }
     const list: Character[] = [];
     const seen = new Set<string>();
-    for (const entry of characters) {
+    for (const entry of chars) {
       if (!entry || typeof entry !== "object") {
         res.status(400).json({ error: "Invalid character entry" });
         return;
       }
       const c = entry as Partial<Character>;
-      if (!isValidCharacterId(c.id) || seen.has(c.id)) {
+      if (!characters.isValidId(c.id) || seen.has(c.id)) {
         res.status(400).json({ error: `Invalid or duplicate character ID: ${String(c.id)}` });
         return;
       }
@@ -459,7 +449,7 @@ export function createApiRouter(imageGeneration: ImageGenerationService, llm: Ll
         description: typeof c.description === "string" ? c.description : "",
       });
     }
-    syncCharacters(list);
+    characters.sync(list);
     res.json(charactersWithPhotos());
   });
 
@@ -467,7 +457,7 @@ export function createApiRouter(imageGeneration: ImageGenerationService, llm: Ll
   // is named "<name> (copy)" in a free <id>-copy* folder. The response carries
   // the new id (the UI opens the copy's edit dialog right away).
   apiRouter.post("/characters/:id/clone", (req, res) => {
-    const newId = cloneCharacter(req.params.id);
+    const newId = characters.clone(req.params.id);
     if (newId === null) {
       res.status(404).json({ error: "Character not found" });
       return;
@@ -476,7 +466,7 @@ export function createApiRouter(imageGeneration: ImageGenerationService, llm: Ll
   });
 
   apiRouter.get("/characters/:id/photos/:name", (req, res) => {
-    const character = getCharacter(req.params.id);
+    const character = characters.get(req.params.id);
     if (!character) {
       res.status(404).json({ error: "Character not found" });
       return;
@@ -620,7 +610,7 @@ export function createApiRouter(imageGeneration: ImageGenerationService, llm: Ll
       return;
     }
     const { characterId, photo } = req.body ?? {};
-    const character = getCharacter(characterId);
+    const character = characters.get(characterId);
     if (!character) {
       res.status(404).json({ error: "Character not found" });
       return;
@@ -680,7 +670,7 @@ export function createApiRouter(imageGeneration: ImageGenerationService, llm: Ll
       return;
     }
     const config = loadConfig();
-    const model = resolveModel(config, chat);
+    const model = llm.resolveModel(config, chat);
     if (!model) {
       res.status(400).json({ error: "No model configured for the chat" });
       return;
@@ -822,7 +812,7 @@ export function createApiRouter(imageGeneration: ImageGenerationService, llm: Ll
       return;
     }
     const rawPrompt = msg.imagePrompts?.[image] || msg.text.trim() || "image";
-    const prompt = await imageGeneration.ensureEnglishPrompt(resolveModel(config, chat), rawPrompt);
+    const prompt = await imageGeneration.ensureEnglishPrompt(llm.resolveModel(config, chat), rawPrompt);
     const refs = msg.imageRefs?.[image] ?? [];
     // A regeneration in flight for this image is cancelled — one job per image.
     imageGeneration.cancelJob(chat.id, image);
@@ -897,7 +887,7 @@ export function createApiRouter(imageGeneration: ImageGenerationService, llm: Ll
         return;
       }
       // The prompt is required in English: Russian is translated with the chat's model.
-      const model = resolveModel(config, chat);
+      const model = llm.resolveModel(config, chat);
       const finalPrompt = await imageGeneration.ensureEnglishPrompt(model, String(prompt));
       // The generation runs in the BACKGROUND: the message is saved right away
       // with the reserved name and the "pending" status (a spinner placeholder

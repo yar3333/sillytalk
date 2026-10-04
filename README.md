@@ -187,7 +187,8 @@ backend/
                       # program backends, the top-level service class
                       # (background jobs); di.ts — the minimal DI container
     chats.ts       # the chat and the file storage
-    characters.ts  # the character storage in the characters/<id>/ folders
+    characters/    # the character storage in the characters/<id>/ folders —
+                   # the CharacterService class + its DI token
     users.ts       # the user storage in the users/<id>/ folders
     config.ts      # the config load/save, the paths
     types.ts       # the types

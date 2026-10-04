@@ -1,5 +1,5 @@
 import { LlmService } from './LlmService';
-import { ChatMessage, Model } from '../types';
+import { Chat, ChatMessage, Config, Model } from '../types';
 
 // One service instance for the whole suite — the service is stateless, the
 // tests only need its methods.
@@ -17,6 +17,18 @@ const model: Model = {
   supportsImages: true,
 };
 
+function configOf(models: Model[]): Config {
+  return {
+    listen: '127.0.0.1:3210',
+    llmModels: Object.fromEntries(models.map((m) => [m.name, m])),
+    imageGenerators: [],
+  };
+}
+
+function chatWithModel(modelId: string): Chat {
+  return { id: 'chat-1', characterIds: [], userId: '', modelId, messages: [] };
+}
+
 function jsonRes(body: unknown, status = 200) {
   return {
     ok: status < 400,
@@ -25,6 +37,23 @@ function jsonRes(body: unknown, status = 200) {
     json: async () => body,
   };
 }
+
+describe('resolveModel', () => {
+  const second: Model = { ...model, name: 'second', id: 'second-model' };
+
+  it('returns the model the chat references by the llmModels key', () => {
+    expect(llm.resolveModel(configOf([model, second]), chatWithModel('second'))).toEqual(second);
+  });
+
+  it('falls back to the first model when the referenced one is gone', () => {
+    // the model was renamed or deleted from the config — the chat keeps working
+    expect(llm.resolveModel(configOf([model, second]), chatWithModel('renamed-away'))).toEqual(model);
+  });
+
+  it('returns null when the config has no models at all', () => {
+    expect(llm.resolveModel(configOf([]), chatWithModel(''))).toBeNull();
+  });
+});
 
 describe('systemPromptFor', () => {
   it('includes the character name and description', () => {

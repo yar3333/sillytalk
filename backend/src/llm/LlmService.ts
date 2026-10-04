@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
-import { ChatMessage, Model } from "../types";
-import { chatFilesDir, resolveApiKey } from "../config";
+import { Chat, ChatMessage, Config, Model } from "../types";
+import { chatFilesDir, listModels, resolveApiKey } from "../config";
 import { createToken } from "../di";
 
 // The DI token of the LLM service (registered in index.ts).
@@ -36,6 +36,16 @@ export class LlmService {
   // example, llama-server without an mmproj answers 500 "image input is not supported").
   private static readonly IMAGE_REJECT_RE =
     /image input|images? (?:are |is )?not supported|mmproj|multimodal/i;
+
+  // ---- model resolution ----
+
+  // The model a chat should use: the llmModels entry the chat references
+  // (chat.modelId is the llmModels key = Model.name), falling back to the
+  // first model so a chat whose model was renamed or deleted keeps working.
+  resolveModel(config: Config, chat: Chat): Model | null {
+    const models = listModels(config);
+    return models.find((m) => m.name === chat.modelId) ?? models[0] ?? null;
+  }
 
   // ---- prompts and history ----
 
