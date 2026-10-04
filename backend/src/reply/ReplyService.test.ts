@@ -27,8 +27,8 @@ function model(): Model {
   };
 }
 
-// The config is stubbed: the reply flow never reads it (the model is resolved
-// by the route layer and passed in).
+// The config is stubbed: the reply flow reads it only for the model
+// resolution (resolveChatModel) — no real config.json is involved.
 class StubConfigurationService extends ConfigurationService {
   loadConfig(): Config {
     return { listen: "127.0.0.1:3210", llmModels: { m1: model() }, imageGenerators: [] };
@@ -113,7 +113,7 @@ beforeEach(() => {
   textGeneration = new StubTextGeneration();
   fake = makeFakeImageGeneration();
   imageGeneration = fake.imageGeneration;
-  reply = new ReplyService(characters, persons, chats, textGeneration, imageGeneration);
+  reply = new ReplyService(characters, persons, chats, textGeneration, imageGeneration, new StubConfigurationService());
 });
 
 afterEach(() => {
@@ -276,9 +276,9 @@ describe("appendAssistantReply", () => {
 });
 
 describe("manualImage", () => {
-  it("appends the generated-image message with a pending status and starts the job", () => {
+  it("appends the generated-image message with a pending status and starts the job", async () => {
     const chat = newChat();
-    const { chat: saved, message } = reply.manualImage(chat, "a red fox in the snow", ["ref-1.png"]);
+    const { chat: saved, message } = await reply.manualImage(chat, "a red fox in the snow", ["ref-1.png"]);
     expect(message.text).toBe("🖼️ Generated: a red fox in the snow");
     const name = message.images[0];
     expect(message.imageStatus).toEqual({ [name]: "pending" });
@@ -294,7 +294,7 @@ describe("manualImage", () => {
 describe("regenerateImage", () => {
   it("cancels the in-flight job, re-marks pending on the same name and starts a new job", async () => {
     const { chat, message } = chatWithPendingImage();
-    const fresh = await reply.regenerateImage(chat, message, "gen-1.png", model());
+    const fresh = await reply.regenerateImage(chat, message, "gen-1.png");
     expect(fake.cancelled).toEqual([{ chatId: chat.id, name: "gen-1.png" }]);
     expect(fake.started).toEqual([{ chatId: chat.id, name: "gen-1.png", prompt: "a red fox", refFilenames: [] }]);
     const msg = fresh!.messages.find((m) => m.id === message.id)!;
@@ -305,7 +305,7 @@ describe("regenerateImage", () => {
   it("clears a stored error when the regeneration restarts", async () => {
     const { chat, message } = chatWithPendingImage();
     chats.setMessageImageStatus(chat.id, message.id, "gen-1.png", "failed", "GPU exploded");
-    const fresh = await reply.regenerateImage(chat, message, "gen-1.png", model());
+    const fresh = await reply.regenerateImage(chat, message, "gen-1.png");
     const msg = fresh!.messages.find((m) => m.id === message.id)!;
     expect(msg.imageErrors).toBeUndefined();
     expect(msg.imageStatus).toEqual({ "gen-1.png": "pending" });
@@ -314,8 +314,40 @@ describe("regenerateImage", () => {
   it("returns null when the chat is deleted in the meantime", async () => {
     const { chat, message } = chatWithPendingImage();
     chats.delete(chat.id);
-    const fresh = await reply.regenerateImage(chat, message, "gen-1.png", model());
+    const fresh = await reply.regenerateImage(chat, message, "gen-1.png");
     expect(fresh).toBeNull();
+  });
+});
+
+describe("resolveChatModel", () => {
+  it("returns the model the chat references", () => {
+    const chat = newChat();
+    expect(reply.resolveChatModel(chat)?.name).toBe("m1");
+  });
+
+  it("falls back to the first model when the chat model is gone", () => {
+    const chat = newChat();
+    chat.modelId = "renamed-away";
+    expect(reply.resolveChatModel(chat)?.name).toBe("m1");
+  });
+});
+
+describe("saveErrorMessage", () => {
+  it("appends the visible error line under the character and saves the chat", () => {
+    const chat = newChat();
+    const fresh = reply.saveErrorMessage(chat.id, "alice", "GPU exploded");
+    expect(fresh).not.toBeNull();
+    const msg = fresh!.messages[fresh!.messages.length - 1];
+    expect(msg.error).toBe(true);
+    expect(msg.characterId).toBe("alice");
+    expect(msg.text).toBe("⚠️ Error: GPU exploded");
+    expect(chats.get(chat.id)!.messages).toHaveLength(2);
+  });
+
+  it("returns null when the chat was deleted in the meantime", () => {
+    const chat = newChat();
+    chats.delete(chat.id);
+    expect(reply.saveErrorMessage(chat.id, "alice", "boom")).toBeNull();
   });
 });
 

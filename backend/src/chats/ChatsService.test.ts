@@ -194,6 +194,54 @@ describe("delete", () => {
   });
 });
 
+describe("the message primitives", () => {
+  it("addUserMessage appends the message under the active persona, normalizes the images and saves", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    const dataName = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=");
+    const msg = chats.addUserMessage(chat, "hi", [dataName, "missing.png"]);
+    expect(msg.role).toBe("user");
+    expect(msg.userId).toBe("me");
+    expect(msg.text).toBe("hi");
+    expect(msg.images).toEqual([dataName]);
+    expect(msg.id).toEqual(expect.any(String));
+    expect(msg.timestamp).toEqual(expect.any(Number));
+    expect(chats.get(chat.id)!.messages).toEqual([msg]);
+  });
+
+  it("editMessage applies the text and the images and saves", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    const dataName = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=");
+    chat.messages.push({ id: "m1", role: "user", userId: "me", text: "old", images: [], timestamp: 1 });
+    chats.save(chat);
+    chats.editMessage(chat, chat.messages[0], "new", [dataName, "missing.png"]);
+    const saved = chats.get(chat.id)!.messages[0];
+    expect(saved.text).toBe("new");
+    expect(saved.images).toEqual([dataName]);
+  });
+
+  it("deleteMessage trims the tail by default and the single message with single=true", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    chat.messages.push(
+      { id: "m1", role: "user", userId: "me", text: "1", images: [], timestamp: 1 },
+      { id: "m2", role: "user", userId: "me", text: "2", images: [], timestamp: 2 },
+      { id: "m3", role: "user", userId: "me", text: "3", images: [], timestamp: 3 },
+    );
+    chats.save(chat);
+    expect(chats.deleteMessage(chat, "m2")).toBe(true);
+    expect(chats.get(chat.id)!.messages.map((m) => m.id)).toEqual(["m1"]);
+    // re-populate and delete a single message in the middle
+    chat.messages.push({ id: "m3", role: "user", userId: "me", text: "3", images: [], timestamp: 3 });
+    chats.save(chat);
+    expect(chats.deleteMessage(chat, "m1", true)).toBe(true);
+    expect(chats.get(chat.id)!.messages.map((m) => m.id)).toEqual(["m3"]);
+  });
+
+  it("deleteMessage returns false for a missing message and saves nothing", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    expect(chats.deleteMessage(chat, "nope")).toBe(false);
+  });
+});
+
 describe("saveImage", () => {
   it("saves a data URL into the chat files/ and returns the file name", () => {
     const chat = chats.create(["a"], "m1", "me");

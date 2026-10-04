@@ -1,24 +1,43 @@
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { PathHelper } from "../configuration/PathHelper";
-import { getMachineService } from "../machine/IMachineService";
+import { PathHelper } from "../shared/PathHelper";
+import { createMachineService } from "../machine/IMachineService";
 import { ChatsService } from "../chats/ChatsService";
 import { TextGenerationService } from "../text_generation/TextGenerationService";
 import { ImageGenerationService } from "./ImageGenerationService";
-import { ImageGenerator } from "./ImageGenerator";
+import { ImageGenerator } from "../configuration/ImageGenerator";
 import { ConfigurationService } from "../configuration/ConfigurationService";
+import { Config } from "../configuration/Config";
+import { ImageJobResult } from "./ImageJobResult";
+
+// The config is stubbed: a job whose driver cache is empty re-probes it, and
+// the tests must not depend on the real config.json contents.
+class EmptyConfigurationService extends ConfigurationService {
+  loadConfig(): Config {
+    return { listen: "127.0.0.1:3210", llmModels: {}, imageGenerators: [] };
+  }
+}
 
 // One service instance for the whole suite — the state (the availability
 // cache and the job registry) lives on the instance, and the tests recompute
 // the availability via refreshAvailableGenerators as needed.
-const configuration = new ConfigurationService();
+const configuration = new EmptyConfigurationService();
 const images = new ImageGenerationService(
-  getMachineService(),
+  createMachineService(),
   new TextGenerationService(configuration),
   new ChatsService(() => PathHelper.chatsDir(), configuration),
   configuration,
 );
+
+// A one-shot generation through the production path: a background job for a
+// single generator (the reserved name is given by the test). Resolves to the
+// job result.
+async function oneShot(gen: ImageGenerator, prompt: string, refs: string[], name: string): Promise<ImageJobResult> {
+  await images.refreshAvailableGenerators([gen]);
+  const job = images.startImageJob({ chatId, name, prompt, refFilenames: refs });
+  return job.result;
+}
 
 const chatId = "jest-local-cmd-test";
 const cmdFile = path.join(os.tmpdir(), "sillytalk-gen-test.cmd");
@@ -61,11 +80,13 @@ beforeAll(() => {
     failFile,
     "@echo off\r\necho stdout line from failing script\r\necho stderr line from failing script 1>&2\r\nexit /b 3\r\n",
   );
-  fs.rmSync(PathHelper.chatFilesDir(chatId), { recursive: true, force: true });
+  // The job refuses to run for a deleted chat — the chat dir must exist.
+  fs.rmSync(PathHelper.chatDir(chatId), { recursive: true, force: true });
+  fs.mkdirSync(PathHelper.chatDir(chatId), { recursive: true });
 });
 
 afterAll(() => {
-  fs.rmSync(PathHelper.chatFilesDir(chatId), { recursive: true, force: true });
+  fs.rmSync(PathHelper.chatDir(chatId), { recursive: true, force: true });
   fs.rmSync(cmdFile, { force: true });
   fs.rmSync(ps1File, { force: true });
   fs.rmSync(failFile, { force: true });
@@ -77,9 +98,9 @@ afterAll(() => {
 const describeWindows = process.platform === "win32" ? describe : describe.skip;
 describeWindows(".cmd/.ps1 generator launch (Windows only)", () => {
   it("runs a .cmd and substitutes the prompt and the absolute output path", async () => {
-    const names = await images.generateImages([cmdGen], chatId, "hello world test", []);
-    expect(names).toHaveLength(1);
-    const file = path.join(PathHelper.chatFilesDir(chatId), names[0]);
+    const r = await oneShot(cmdGen, "hello world test", [], "one-cmd.png");
+    expect(r.status).toBe("ok");
+    const file = path.join(PathHelper.chatFilesDir(chatId), "one-cmd.png");
     expect(fs.existsSync(file)).toBe(true);
     const content = fs.readFileSync(file, "utf-8");
     expect(content).toContain("hello world test");
@@ -89,16 +110,16 @@ describeWindows(".cmd/.ps1 generator launch (Windows only)", () => {
     fs.mkdirSync(PathHelper.chatFilesDir(chatId), { recursive: true });
     const refPath = path.join(PathHelper.chatFilesDir(chatId), "ref.png");
     fs.writeFileSync(refPath, "x");
-    const names = await images.generateImages([cmdGen], chatId, "hello", ["ref.png"]);
-    const file = path.join(PathHelper.chatFilesDir(chatId), names[0]);
-    const content = fs.readFileSync(file, "utf-8");
+    const r = await oneShot(cmdGen, "hello", ["ref.png"], "one-cmd-ref.png");
+    expect(r.status).toBe("ok");
+    const content = fs.readFileSync(path.join(PathHelper.chatFilesDir(chatId), "one-cmd-ref.png"), "utf-8");
     expect(content).toContain(refPath);
   });
 
   it("runs a .ps1 through powershell.exe and substitutes the arguments", async () => {
-    const names = await images.generateImages([ps1Gen], chatId, "ps prompt test", []);
-    expect(names).toHaveLength(1);
-    const file = path.join(PathHelper.chatFilesDir(chatId), names[0]);
+    const r = await oneShot(ps1Gen, "ps prompt test", [], "one-ps1.png");
+    expect(r.status).toBe("ok");
+    const file = path.join(PathHelper.chatFilesDir(chatId), "one-ps1.png");
     expect(fs.existsSync(file)).toBe(true);
     const content = fs.readFileSync(file, "utf-8");
     expect(content).toContain("ps prompt test");
@@ -108,9 +129,9 @@ describeWindows(".cmd/.ps1 generator launch (Windows only)", () => {
     fs.mkdirSync(PathHelper.chatFilesDir(chatId), { recursive: true });
     const refPath = path.join(PathHelper.chatFilesDir(chatId), "ref.png");
     fs.writeFileSync(refPath, "x");
-    const names = await images.generateImages([ps1Gen], chatId, "hello", ["ref.png"]);
-    const file = path.join(PathHelper.chatFilesDir(chatId), names[0]);
-    const content = fs.readFileSync(file, "utf-8");
+    const r = await oneShot(ps1Gen, "hello", ["ref.png"], "one-ps1-ref.png");
+    expect(r.status).toBe("ok");
+    const content = fs.readFileSync(path.join(PathHelper.chatFilesDir(chatId), "one-ps1-ref.png"), "utf-8");
     expect(content).toContain(refPath);
   });
 
@@ -120,21 +141,18 @@ describeWindows(".cmd/.ps1 generator launch (Windows only)", () => {
       args: ["--prompt", "{prompt}", "--output", "{absolutePathToOutputImage}"],
       maxInputImages: 0,
     };
-    let err: Error | null = null;
-    try {
-      await images.generateImages([gen], chatId, "fail test", []);
-    } catch (e) {
-      err = e as Error;
+    const r = await oneShot(gen, "fail test", [], "one-fail.png");
+    expect(r.status).toBe("failed");
+    if (r.status === "failed") {
+      const msg = r.error;
+      expect(msg).toContain("exited with code 3");
+      // the full command line — with the cmd.exe wrapper and the file itself
+      expect(msg).toContain("cmd.exe /d /s /c");
+      expect(msg).toContain(failFile);
+      // and the whole program output: both stderr and stdout
+      expect(msg).toContain("stderr line from failing script");
+      expect(msg).toContain("stdout line from failing script");
     }
-    expect(err).not.toBeNull();
-    const msg = err!.message;
-    expect(msg).toContain("exited with code 3");
-    // the full command line — with the cmd.exe wrapper and the file itself
-    expect(msg).toContain("cmd.exe /d /s /c");
-    expect(msg).toContain(failFile);
-    // and the whole program output: both stderr and stdout
-    expect(msg).toContain("stderr line from failing script");
-    expect(msg).toContain("stdout line from failing script");
   });
 
   it("an unlimited generator (maxInputImages 0) accepts all references", async () => {
@@ -143,24 +161,28 @@ describeWindows(".cmd/.ps1 generator launch (Windows only)", () => {
       fs.writeFileSync(path.join(PathHelper.chatFilesDir(chatId), n), "x");
     }
     // 0 = unlimited: three references pass through (the batch file receives them)
-    await images.generateImages([cmdGen], chatId, "hello", ["a.png", "b.png", "c.png"]);
+    const r = await oneShot(cmdGen, "hello", ["a.png", "b.png", "c.png"], "one-unlimited.png");
+    expect(r.status).toBe("ok");
   });
 });
 
 it("rejects more references than the generator supports", async () => {
-  fs.mkdirSync(PathHelper.chatFilesDir(chatId), { recursive: true });
+  fs.mkdirSync(PathHelper.chatDir(chatId), { recursive: true });
   for (const n of ["a.png", "b.png", "c.png"]) {
     fs.writeFileSync(path.join(PathHelper.chatFilesDir(chatId), n), "x");
   }
   const limited: ImageGenerator = { ...ps1Gen, maxInputImages: 2 };
-  await expect(images.generateImages([limited], chatId, "hello", ["a.png", "b.png", "c.png"])).rejects.toThrow(
-    /at most 2/,
-  );
+  const r = await oneShot(limited, "hello", ["a.png", "b.png", "c.png"], "limited.png");
+  expect(r.status).toBe("failed");
+  if (r.status === "failed") expect(r.error).toMatch(/at most 2/);
 });
 
 it("does not generate without an available generator", async () => {
   await images.refreshAvailableGenerators([]);
-  await expect(images.generateImages([], chatId, "hello", [])).rejects.toThrow(/not configured/);
+  const job = images.startImageJob({ chatId, name: "nogen.png", prompt: "hello", refFilenames: [] });
+  const r = await job.result;
+  expect(r.status).toBe("failed");
+  if (r.status === "failed") expect(r.error).toMatch(/not configured/);
 });
 
 // ---- background image jobs (startImageJob) ----
@@ -297,7 +319,10 @@ describe("startImageJob (background generation)", () => {
     const disabled = genOf(okFile, false, { enabled: false });
     await images.refreshAvailableGenerators([disabled]);
     expect(images.hasAvailableGenerator()).toBe(false);
-    await expect(images.generateImages([disabled], chatId, "p", [])).rejects.toThrow(/not configured/);
+    const job = images.startImageJob({ chatId: jobChatId, name: "job-disabled.png", prompt: "p", refFilenames: [] });
+    const r = await job.result;
+    expect(r.status).toBe("failed");
+    if (r.status === "failed") expect(r.error).toMatch(/not configured/);
   });
 
   it("runs the jobs in parallel on different generators", async () => {

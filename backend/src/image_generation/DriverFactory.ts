@@ -1,4 +1,4 @@
-import { ImageGenerator, isLocalGenerator } from "./ImageGenerator";
+import { ImageGenerator, isLocalGenerator } from "../configuration/ImageGenerator";
 import { IMachineService } from "../machine/IMachineService";
 import { LocalProgramDriver } from "./drivers/LocalProgramDriver";
 import { SdApiDriver } from "./drivers/SdApiDriver";

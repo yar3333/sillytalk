@@ -1,12 +1,10 @@
 import express from "express";
 import path from "path";
 import { CharactersService } from "../characters/CharactersService";
-import { ConfigurationService } from "../configuration/ConfigurationService";
-import { PathHelper } from "../configuration/PathHelper";
+import { PathHelper } from "../shared/PathHelper";
 import { ImageGenerationService } from "../image_generation/ImageGenerationService";
 import { ReplyService } from "../reply/ReplyService";
 import { HttpHelper } from "../shared/HttpHelper";
-import { TextGenerationService } from "../text_generation/TextGenerationService";
 import { ChatsService } from "./ChatsService";
 
 // The /chats routes: the chat CRUD, the messages (send/edit/delete), the
@@ -18,8 +16,6 @@ export function createChatsRouter(
   chats: ChatsService,
   reply: ReplyService,
   characters: CharactersService,
-  textGeneration: TextGenerationService,
-  configuration: ConfigurationService,
   imageGeneration: ImageGenerationService,
 ): express.Router {
   const router = express.Router();
@@ -108,10 +104,8 @@ export function createChatsRouter(
       res.status(404).json({ error: "Character not found" });
       return;
     }
-    const name = chats.importCharacterPhoto(
-      chat.id,
-      path.join(PathHelper.characterPhotosDir(character.id), path.basename(photo)),
-    );
+    const photoPath = characters.photoFile(character.id, String(photo));
+    const name = photoPath ? chats.importCharacterPhoto(chat.id, photoPath) : null;
     if (!name) {
       res.status(404).json({ error: "Photo not found" });
       return;
@@ -130,16 +124,7 @@ export function createChatsRouter(
       res.status(404).json({ error: "Chat not found" });
       return;
     }
-    const images = chats.normalizeImages(chat.id, req.body?.images ?? []);
-    chat.messages.push({
-      id: PathHelper.newId(),
-      role: "user" as const,
-      userId: chat.userId,
-      text: req.body?.text ?? "",
-      images,
-      timestamp: Date.now(),
-    });
-    chats.save(chat);
+    chats.addUserMessage(chat, req.body?.text ?? "", req.body?.images ?? []);
     res.json({ chat });
   });
 
@@ -163,7 +148,7 @@ export function createChatsRouter(
       res.status(400).json({ error: "The character is not a participant of the chat" });
       return;
     }
-    const model = textGeneration.resolveModel(configuration.loadConfig(), chat);
+    const model = reply.resolveChatModel(chat);
     if (!model) {
       res.status(400).json({ error: "No model configured for the chat" });
       return;
@@ -183,18 +168,11 @@ export function createChatsRouter(
         }
         return;
       }
-      const fresh = chats.get(req.params.id);
+      // The visible error line is a domain concern — the reply service
+      // appends and saves it (null when the chat was deleted in the
+      // meantime).
+      const fresh = reply.saveErrorMessage(chat.id, characterId, (err as Error).message);
       if (fresh) {
-        fresh.messages.push({
-          id: PathHelper.newId(),
-          role: "assistant",
-          characterId: characterId || undefined,
-          text: `⚠️ Error: ${(err as Error).message}`,
-          images: [],
-          timestamp: Date.now(),
-          error: true,
-        });
-        chats.save(fresh);
         res.json({ chat: fresh, reply: null });
       } else {
         res.status(500).json({ error: (err as Error).message });
@@ -232,21 +210,15 @@ export function createChatsRouter(
       return;
     }
     const { text, images } = req.body ?? {};
-    if (text !== undefined) {
-      if (typeof text !== "string") {
-        res.status(400).json({ error: "Expected text (text field)" });
-        return;
-      }
-      msg.text = text;
+    if (text !== undefined && typeof text !== "string") {
+      res.status(400).json({ error: "Expected text (text field)" });
+      return;
     }
-    if (images !== undefined) {
-      if (!Array.isArray(images)) {
-        res.status(400).json({ error: "Expected an image list (images field)" });
-        return;
-      }
-      msg.images = chats.normalizeImages(chat.id, images);
+    if (images !== undefined && !Array.isArray(images)) {
+      res.status(400).json({ error: "Expected an image list (images field)" });
+      return;
     }
-    chats.save(chat);
+    chats.editMessage(chat, msg, text, images as string[] | undefined);
     res.json({ chat });
   });
 
@@ -259,14 +231,10 @@ export function createChatsRouter(
       return;
     }
     const single = req.query.single === "1";
-    const idx = chat.messages.findIndex((m) => m.id === req.params.messageId);
-    if (idx === -1) {
+    if (!chats.deleteMessage(chat, req.params.messageId, single)) {
       res.status(404).json({ error: "Message not found" });
       return;
     }
-    if (single) chat.messages.splice(idx, 1);
-    else chat.messages.splice(idx); // from here to the end
-    chats.save(chat);
     res.json({ chat });
   });
 
@@ -297,8 +265,7 @@ export function createChatsRouter(
       res.status(400).json({ error: "Image generation is not configured" });
       return;
     }
-    const model = textGeneration.resolveModel(configuration.loadConfig(), chat);
-    const fresh = await reply.regenerateImage(chat, msg, image, model);
+    const fresh = await reply.regenerateImage(chat, msg, image);
     if (!fresh) {
       res.status(404).json({ error: "Message not found" });
       return;

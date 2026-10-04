@@ -5,10 +5,10 @@ import { ChildProcess } from "child_process";
 import { Character } from "../characters/Character";
 import { Chat } from "../chats/Chat";
 import { Model } from "../configuration/Model";
-import { PathHelper } from "../configuration/PathHelper";
+import { PathHelper } from "../shared/PathHelper";
 import { ConfigurationService } from "../configuration/ConfigurationService";
 import { createToken } from "../di";
-import { ImageGenerator } from "./ImageGenerator";
+import { ImageGenerator } from "../configuration/ImageGenerator";
 import { ChatsService } from "../chats/ChatsService";
 import { TextGenerationService } from "../text_generation/TextGenerationService";
 import { IMachineService } from "../machine/IMachineService";
@@ -33,10 +33,10 @@ export type InventoryItem = { path: string; label: string };
 // The DI token of the image-generation service (registered in index.ts).
 export const DI_IMAGE_GENERATION_SERVICE = createToken<ImageGenerationService>("ImageGenerationService");
 
-// The top-level image-generation service: the availability cache, the
-// one-shot generateImages and the background job registry. The dependencies
-// (the machine, text-generation, chat and configuration services) are
-// injected; all the state lives on the instance, not in module globals.
+// The top-level image-generation service: the availability cache and the
+// background job registry. The dependencies (the machine, text-generation,
+// chat and configuration services) are injected; all the state lives on the
+// instance, not in module globals.
 export class ImageGenerationService {
   // ---- available generators ----
   // Every enabled and available generator is used: jobs of different
@@ -96,34 +96,6 @@ export class ImageGenerationService {
     const probed = await Promise.all(candidates.map(async (d) => ((await d.available()) ? d : null)));
     this.availableDrivers = probed.filter((d): d is IImageGeneratorDriver => d !== null);
     return this.availableDrivers;
-  }
-
-  // Generates an image with the first enabled and available generator
-  // (config order). refFilenames — file names inside the chat files/.
-  // Returns the name of the saved image (inside the chat files/).
-  async generateImages(
-    generators: ImageGenerator[],
-    chatId: string,
-    prompt: string,
-    refFilenames: string[],
-  ): Promise<string[]> {
-    let driver: IImageGeneratorDriver | null = null;
-    for (const g of generators) {
-      if (!ImageGenerationService.isEnabled(g)) continue;
-      const d = this.drivers.create(g);
-      if (await d.available()) {
-        driver = d;
-        break;
-      }
-    }
-    if (!driver) {
-      throw new Error("Image generation is not configured (no available generator)");
-    }
-    const dir = PathHelper.chatFilesDir(chatId);
-    fs.mkdirSync(dir, { recursive: true });
-    const name = this.newGeneratedImageName();
-    await driver.run(prompt, this.resolveRefPaths(dir, refFilenames), path.join(dir, name));
-    return [name];
   }
 
   // The reserved file name of a generated image (in the chat files/).

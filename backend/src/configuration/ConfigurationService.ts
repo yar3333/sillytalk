@@ -1,11 +1,11 @@
 import fs from "fs";
 import path from "path";
 import { createToken } from "../di";
-import { ImageGenerator } from "../image_generation/ImageGenerator";
 import { Config } from "./Config";
+import { ImageGenerator } from "./ImageGenerator";
 import { LlmModel } from "./LlmModel";
 import { Model } from "./Model";
-import { PathHelper } from "./PathHelper";
+import { PathHelper } from "../shared/PathHelper";
 
 // The DI token of the configuration service (registered in index.ts).
 export const DI_CONFIGURATION_SERVICE = createToken<ConfigurationService>("ConfigurationService");
@@ -91,6 +91,22 @@ export class ConfigurationService {
   saveConfig(config: Config): void {
     fs.mkdirSync(PathHelper.configDir(), { recursive: true });
     fs.writeFileSync(PathHelper.configFile(), JSON.stringify(config, null, 2), "utf-8");
+  }
+
+  // The legacy config.json fields, in one place: the characters array (the
+  // caller moves it into folders through CharactersService.migrate) and the
+  // dead top-level fields (port, models, userId, imageGeneration). Returns
+  // the legacy characters entries, or null when the config is already clean;
+  // the fields are stripped from the object, so a following save does not
+  // carry them on disk.
+  prepareLegacyConfig(raw: Record<string, unknown>): unknown[] | null {
+    const legacy = Array.isArray(raw.characters) ? raw.characters : null;
+    delete raw.characters;
+    delete raw.port;
+    delete raw.models;
+    delete raw.userId;
+    delete raw.imageGeneration;
+    return legacy;
   }
 
   private loadConfigFromFile(): Config {

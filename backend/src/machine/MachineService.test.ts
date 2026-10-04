@@ -1,14 +1,13 @@
-import { getMachineService, initMachineService, programFailureMessage } from "./IMachineService";
+import { createMachineService, programFailureMessage } from "./IMachineService";
 import { MachinePosixService } from "./implementations/MachinePosixService";
 import { MachineWindowsService, escapeCmdArg } from "./implementations/MachineWindowsService";
 
 describe("MachineService selection", () => {
-  it("picks the implementation for the current platform and caches it", () => {
-    const s = initMachineService();
+  it("picks the implementation for the current platform", () => {
+    const s = createMachineService();
     const isWin = process.platform === "win32";
     expect(s instanceof MachineWindowsService).toBe(isWin);
     expect(s instanceof MachinePosixService).toBe(!isWin);
-    expect(getMachineService()).toBe(s);
   });
 });
 

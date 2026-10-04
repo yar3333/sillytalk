@@ -2,8 +2,9 @@ import fs from "fs";
 import path from "path";
 import { randomUUID } from "crypto";
 import { Chat } from "./Chat";
+import { ChatMessage } from "./ChatMessage";
 import { ChatSummary } from "./ChatSummary";
-import { PathHelper } from "../configuration/PathHelper";
+import { PathHelper } from "../shared/PathHelper";
 import { ConfigurationService } from "../configuration/ConfigurationService";
 import { createToken } from "../di";
 
@@ -95,6 +96,45 @@ export class ChatsService {
     const dir = PathHelper.chatDir(chatId, this.chatsRoot());
     if (!fs.existsSync(dir)) return false;
     fs.rmSync(dir, { recursive: true, force: true });
+    return true;
+  }
+
+  // ---- messages ----
+
+  // Appends the user message (the chat's active persona is the author) and
+  // saves the chat. `images` is the raw client list: a data URL is saved as a
+  // new file, a file name is kept only when the file is in the chat files/.
+  addUserMessage(chat: Chat, text: string, images: unknown[]): ChatMessage {
+    const message: ChatMessage = {
+      id: PathHelper.newId(),
+      role: "user" as const,
+      userId: chat.userId,
+      text,
+      images: this.normalizeImages(chat.id, images),
+      timestamp: Date.now(),
+    };
+    chat.messages.push(message);
+    this.save(chat);
+    return message;
+  }
+
+  // Applies an edit to an existing message: the text and/or the image list
+  // (normalized to the chat files/), saving the chat.
+  editMessage(chat: Chat, message: ChatMessage, text: string | undefined, images: string[] | undefined): void {
+    if (text !== undefined) message.text = text;
+    if (images !== undefined) message.images = this.normalizeImages(chat.id, images);
+    this.save(chat);
+  }
+
+  // Deletes a message: only it (single) or it and everything after it (trims
+  // the tail of the dialogue), saving the chat. Returns false when the chat
+  // has no such message.
+  deleteMessage(chat: Chat, messageId: string, single = false): boolean {
+    const idx = chat.messages.findIndex((m) => m.id === messageId);
+    if (idx === -1) return false;
+    if (single) chat.messages.splice(idx, 1);
+    else chat.messages.splice(idx);
+    this.save(chat);
     return true;
   }
 

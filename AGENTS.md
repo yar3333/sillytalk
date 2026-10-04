@@ -37,16 +37,14 @@ backend/               Express API; also serves the built frontend
                        [IMG]/[PHOTO] tag parsing, [SILENT], author labels,
                        history trimming; DI token TEXT_GENERATION) and
                        TextGenerationService.test.ts — jest unit tests
-    image_generation/  image generation: the generator settings
-                       (ImageGenerator.ts — the union of SdApiSettings.ts /
-                       LocalProgramSettings.ts + the type guards), the driver
+    image_generation/  image generation: the driver
                        interface (IImageGeneratorDriver.ts; the job model —
                        ImageJob.ts / ImageJobResult.ts), the backends
                        (drivers/SdApiDriver.ts / drivers/LocalProgramDriver.ts),
                        the driver factory (DriverFactory.ts), and the top-level
                        service class (ImageGenerationService.ts —
-                       ImageGenerationService: availability cache, one-shot
-                       generateImages, the background job registry);
+                       ImageGenerationService: availability cache, the
+                       background job registry);
                        image.routes.ts — the /image routes (the availability
                        flag + the manual generation);
                        ImageGenerationService.test.ts —
@@ -58,8 +56,9 @@ backend/               Express API; also serves the built frontend
                        sync, the migration from the old config format, the ID
                        validation, the avatar (findAvatar/saveAvatar/
                        deleteAvatar), the list with photos + the avatar flag
-                       (listWithPhotos); DI token DI_CHARACTERS_SERVICE, the
-                       root folder injected as () => string);
+                       (listWithPhotos), the photo path (photoFile); DI token
+                       DI_CHARACTERS_SERVICE, the root folder injected as
+                       () => string);
                        characters.routes.ts — the /characters routes (the
                        catalog sync, the clone, the photos, the avatar);
                        CharactersService.test.ts — jest unit tests
@@ -76,10 +75,12 @@ backend/               Express API; also serves the built frontend
                        (ChatsService.ts — chat + chat-file persistence on the
                        chats/<id>/ folders: CRUD, the format guards, the model
                        fallback, the chat files (saveImage,
-                       importCharacterPhoto, normalizeImages), the per-image
-                       generation status (setMessageImageStatus); DI token
-                       DI_CHATS_SERVICE, the root folder and the configuration
-                       service injected); chats.routes.ts — the /chats routes
+                       importCharacterPhoto, normalizeImages), the message
+                       primitives (addUserMessage, editMessage, deleteMessage),
+                       the per-image generation status (setMessageImageStatus);
+                       DI token DI_CHATS_SERVICE, the root folder and the
+                       configuration service injected); chats.routes.ts — the
+                       /chats routes
                        (the chat CRUD, the messages, the reply queue, the
                        per-image generation controls);
                        ChatsService.test.ts — jest unit tests
@@ -94,31 +95,37 @@ backend/               Express API; also serves the built frontend
                        the /persons routes (the persona catalog + the avatar);
                        PersonsService.test.ts — jest unit tests
     configuration/     the configuration domain: the types (Config.ts,
-                       LlmModel.ts, Model.ts), the top-level service class
-                       (ConfigurationService.ts — the config.json load/save
-                       with normalization + JSONC comment stripping, the
-                       defaults, the listen-address parsing, the flat-model
-                       helpers; DI token DI_CONFIGURATION_SERVICE) and
-                       PathHelper.ts — the shared data-layout helpers as a
-                       stateless class with static methods (the data root,
-                       the domain folders, expandPath, newId, isDirEntry);
+                       LlmModel.ts, Model.ts, and the generator settings —
+                       ImageGenerator.ts, the union of SdApiSettings.ts /
+                       LocalProgramSettings.ts + the type guards: they
+                       describe the config schema, so the domain owns them),
+                       the top-level service class (ConfigurationService.ts —
+                       the config.json load/save with normalization + JSONC
+                       comment stripping, the defaults, the listen-address
+                       parsing, the flat-model helpers, the legacy-field
+                       cleanup (prepareLegacyConfig); DI token
+                       DI_CONFIGURATION_SERVICE);
                        config.routes.ts — the /config routes;
                        ConfigurationService.test.ts — jest unit tests
     reply/             the reply domain: the top-level service class
                        (ReplyService.ts — the AI-reply orchestration:
                        appendAssistantReply (system prompt, the history, the
                        model call, the [SILENT]/[IMG]/[PHOTO] parsing, saving,
-                       the background image jobs), the in-flight reply
-                       registry (beginReply/endReply/cancelReply), the manual
-                       image operations (manualImage, regenerateImage,
-                       cancelImage); DI token DI_REPLY_SERVICE, the five
-                       domain services injected) and
+                       the background image jobs), resolveChatModel (the
+                       chat's model with the first-model fallback),
+                       saveErrorMessage (the visible error line), the
+                       in-flight reply registry (beginReply/endReply/
+                       cancelReply), the manual image operations (manualImage,
+                       regenerateImage, cancelImage); DI token
+                       DI_REPLY_SERVICE, the six domain services injected) and
                        ReplyService.test.ts — jest unit tests
     shared/            small cross-domain helpers as stateless classes with
                        static methods: AvatarFile.ts (the avatar.<ext>
                        find/save/delete, shared by the character and the
-                       person services) and HttpHelper.ts (sendImage — the
-                       file streaming, a routes-layer concern)
+                       person services), HttpHelper.ts (sendImage — the file
+                       streaming, a routes-layer concern) and PathHelper.ts —
+                       the shared data-layout helpers (the data root, the
+                       domain folders, expandPath, newId, isDirEntry)
   jest.config.js       ts-jest setup
 
 frontend/              Angular app
@@ -290,7 +297,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   PNG the program must write — the backend places it in the chat's `files/` dir; there is no
   `outputDir` config field anymore). The OS-specific launch/kill lives behind the
   `IMachineService` interface (`machine/IMachineService.ts`, selected once at startup in `index.ts` via
-  `initMachineService()` for the current OS): on **Windows** `.bat`/`.cmd` run through
+  the `createMachineService()` factory for the current OS): on **Windows** `.bat`/`.cmd` run through
   `cmd.exe /d /s /c` with quoted args, `.ps1` through `powershell.exe -NoProfile
   -ExecutionPolicy Bypass -File` (plain executables spawn directly — Node throws EINVAL on
   batch files without a shell), and cancelling kills the process TREE with `taskkill /F /T
@@ -479,7 +486,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
     services → drivers/machine/configuration/...`): the service may call lower-level services
     and module functions (e.g. `ImageGenerationService` calling
     `ChatsService.importCharacterPhoto` and `TextGenerationService.translatePrompt`;
-    `ReplyService` calling all five domain services), but nothing below it may import the
+    `ReplyService` calling all six domain services), but nothing below it may import the
     domain back — that is why the reply orchestration could NOT go into
     `ChatsService` (which `ImageGenerationService` already depends on) and got its own
     `reply/` domain. When pulling code into the service, grep the rest of the project for
@@ -495,9 +502,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
     service class — `text_generation/TextGenerationService.ts`,
     `characters/CharactersService.ts`, `chats/ChatsService.ts`,
     `persons/PersonsService.ts`, `configuration/ConfigurationService.ts` (the last one moved out
-    of the function-style `config.ts`; its shared data-layout helpers live in
-    `configuration/PathHelper.ts` as static methods of a stateless `PathHelper`
-    class), `reply/ReplyService.ts` (the AI-reply orchestration, moved out of the
+    of the function-style `config.ts`), `reply/ReplyService.ts` (the AI-reply orchestration, moved out of the
     former monolithic `routes.ts`, together with the per-domain `<domain>.routes.ts`
     split). New domains must start as service classes right away — no stateful
     module globals; new routes go into the domain's `<domain>.routes.ts`, not the

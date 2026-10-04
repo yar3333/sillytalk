@@ -3,8 +3,9 @@ import { CharactersService } from "../characters/CharactersService";
 import { Chat } from "../chats/Chat";
 import { ChatMessage } from "../chats/ChatMessage";
 import { ChatsService } from "../chats/ChatsService";
+import { ConfigurationService } from "../configuration/ConfigurationService";
 import { Model } from "../configuration/Model";
-import { PathHelper } from "../configuration/PathHelper";
+import { PathHelper } from "../shared/PathHelper";
 import { createToken } from "../di";
 import { ImageGenerationService } from "../image_generation/ImageGenerationService";
 import { ImageJob } from "../image_generation/ImageJob";
@@ -22,8 +23,9 @@ export const DI_REPLY_SERVICE = createToken<ReplyService>("ReplyService");
 // operations (generate, regenerate and cancel a message image).
 //
 // It sits ABOVE the domain services (characters, persons, chats, text
-// generation, image generation) and is HTTP-agnostic: it returns the results
-// the routes layer applies (a saved chat, a message, or a typed failure).
+// generation, image generation, configuration) and is HTTP-agnostic: it
+// returns the results the routes layer applies (a saved chat, a message, or a
+// typed failure).
 export class ReplyService {
   constructor(
     private readonly characters: CharactersService,
@@ -31,7 +33,15 @@ export class ReplyService {
     private readonly chats: ChatsService,
     private readonly textGeneration: TextGenerationService,
     private readonly imageGeneration: ImageGenerationService,
+    private readonly configuration: ConfigurationService,
   ) {}
+
+  // The model a chat's replies should run on: the llmModels entry the chat
+  // references, falling back to the first model so a renamed/deleted model
+  // keeps the chat working. Null when the config has no models at all.
+  resolveChatModel(chat: Chat): Model | null {
+    return this.textGeneration.resolveModel(this.configuration.loadConfig(), chat);
+  }
 
   // The in-flight reply per chat: the controller is registered here so the
   // cancel route can abort the model call, while the /reply handler keeps it
@@ -205,21 +215,24 @@ export class ReplyService {
 
   // Manual image generation (the frontend gen mode): appends a
   // "🖼️ Generated: …" assistant message with the reserved "pending" image name
-  // and starts the background job. Returns the saved chat and the new message.
-  manualImage(chat: Chat, prompt: string, refs: string[]): { chat: Chat; message: ChatMessage } {
+  // and starts the background job. The prompt is required in English — a
+  // non-English one is translated with the chat's model. Returns the saved
+  // chat and the new message.
+  async manualImage(chat: Chat, prompt: string, refs: string[]): Promise<{ chat: Chat; message: ChatMessage }> {
+    const finalPrompt = await this.imageGeneration.ensureEnglishPrompt(this.resolveChatModel(chat), prompt);
     const name = this.imageGeneration.newGeneratedImageName();
     const message: ChatMessage = {
       id: PathHelper.newId(),
       role: "assistant" as const,
-      text: `🖼️ Generated: ${prompt}`,
+      text: `🖼️ Generated: ${finalPrompt}`,
       images: [name],
-      imagePrompts: { [name]: prompt },
+      imagePrompts: { [name]: finalPrompt },
       imageStatus: { [name]: "pending" },
       timestamp: Date.now(),
     };
     chat.messages.push(message);
     this.chats.save(chat);
-    this.startChatImageJob(chat.id, message.id, name, prompt, refs);
+    this.startChatImageJob(chat.id, message.id, name, finalPrompt, refs);
     return { chat, message };
   }
 
@@ -233,9 +246,9 @@ export class ReplyService {
   // one is kept (the message stays ready). Returns null when the chat or the
   // message disappeared in the meantime (deleted while the request was in
   // flight).
-  async regenerateImage(chat: Chat, message: ChatMessage, image: string, model: Model | null): Promise<Chat | null> {
+  async regenerateImage(chat: Chat, message: ChatMessage, image: string): Promise<Chat | null> {
     const rawPrompt = message.imagePrompts?.[image] || message.text.trim() || "image";
-    const prompt = await this.imageGeneration.ensureEnglishPrompt(model, rawPrompt);
+    const prompt = await this.imageGeneration.ensureEnglishPrompt(this.resolveChatModel(chat), rawPrompt);
     const refs = message.imageRefs?.[image] ?? [];
     // A regeneration in flight for this image is cancelled — one job per image.
     this.imageGeneration.cancelJob(chat.id, image);
@@ -265,6 +278,26 @@ export class ReplyService {
       this.chats.setMessageImageStatus(chat.id, message.id, image, "cancelled", "Generation cancelled");
     }
     return this.chats.get(chat.id);
+  }
+
+  // The visible error line of a failed model call: appended as an assistant
+  // message with the error flag (a cancelled run saves nothing — the route
+  // never calls this for one). Returns the saved chat, or null when the chat
+  // disappeared in the meantime.
+  saveErrorMessage(chatId: string, characterId: string, error: string): Chat | null {
+    const chat = this.chats.get(chatId);
+    if (!chat) return null;
+    chat.messages.push({
+      id: PathHelper.newId(),
+      role: "assistant" as const,
+      characterId: characterId || undefined,
+      text: `⚠️ Error: ${error}`,
+      images: [],
+      timestamp: Date.now(),
+      error: true,
+    });
+    this.chats.save(chat);
+    return chat;
   }
 
   // Starts a background generation for the reserved image `name` (which must

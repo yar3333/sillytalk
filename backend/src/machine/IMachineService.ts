@@ -9,7 +9,7 @@ export const DI_MACHINE_SERVICE = createToken<IMachineService>("MachineService")
 // The OS-specific machine operations used by the local image generation: how
 // a generator program is LAUNCHED (shell wrappers, process groups, windows
 // options) and how it is KILLED (together with everything it spawned). One
-// implementation per platform, selected once at startup (initMachineService).
+// implementation per platform, selected once at startup (createMachineService).
 export interface IMachineService {
   // The command line as shown to a human (error messages) — the exact
   // invocation, wrappers included.
@@ -43,16 +43,10 @@ export function programFailureMessage(code: number | null, line: string, stdout:
   return parts.join("\n");
 }
 
-let machineService: IMachineService | undefined;
-
 // Selects the implementation for the current platform (process.platform; the
-// architecture does not change any behavior) and caches it. Called at
-// startup in index.ts; getMachineService falls back to it lazily.
-export function initMachineService(): IMachineService {
-  machineService ??= process.platform === "win32" ? new MachineWindowsService() : new MachinePosixService();
-  return machineService;
-}
-
-export function getMachineService(): IMachineService {
-  return machineService ?? initMachineService();
+// architecture does not change any behavior). The implementations are
+// stateless, so this is a plain factory — the single instance is kept by the
+// DI container (registered in index.ts under DI_MACHINE_SERVICE).
+export function createMachineService(): IMachineService {
+  return process.platform === "win32" ? new MachineWindowsService() : new MachinePosixService();
 }

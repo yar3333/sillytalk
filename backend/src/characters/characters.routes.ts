@@ -1,6 +1,6 @@
 import express from "express";
 import path from "path";
-import { PathHelper } from "../configuration/PathHelper";
+import { PathHelper } from "../shared/PathHelper";
 import { HttpHelper } from "../shared/HttpHelper";
 import { Character } from "./Character";
 import { CharactersService } from "./CharactersService";

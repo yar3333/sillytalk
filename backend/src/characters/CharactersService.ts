@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { Character } from "./Character";
-import { PathHelper } from "../configuration/PathHelper";
+import { PathHelper } from "../shared/PathHelper";
 import { AvatarFile } from "../shared/AvatarFile";
 import { createToken } from "../di";
 
@@ -60,6 +60,15 @@ export class CharactersService {
   get(id: string): Character | null {
     if (!this.isValidId(id)) return null;
     return this.readCharacterFile(id, this.charactersRoot());
+  }
+
+  // The absolute path of a starter-set photo (the file name is reduced to its
+  // basename); null when the id is not a valid character id. The existence is
+  // up to the caller (ChatsService.importCharacterPhoto answers null for a
+  // missing file).
+  photoFile(id: string, name: string): string | null {
+    if (!this.isValidId(id)) return null;
+    return path.join(PathHelper.characterPhotosDir(id, this.charactersRoot()), path.basename(name));
   }
 
   // Creates the character folder (including photos/) and writes character.json.

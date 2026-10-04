@@ -67,6 +67,32 @@ describe("the reasoning config fields", () => {
   });
 });
 
+describe("prepareLegacyConfig", () => {
+  it("extracts the legacy characters and strips the dead fields", () => {
+    const raw: Record<string, unknown> = {
+      listen: "0.0.0.0:3210",
+      characters: [{ id: "a", name: "A", description: "" }],
+      port: 3210,
+      models: [],
+      userId: "me",
+      imageGeneration: { auto: true },
+    };
+    const legacy = configuration.prepareLegacyConfig(raw);
+    expect(legacy).toEqual([{ id: "a", name: "A", description: "" }]);
+    expect(raw.characters).toBeUndefined();
+    expect(raw.port).toBeUndefined();
+    expect(raw.models).toBeUndefined();
+    expect(raw.userId).toBeUndefined();
+    expect(raw.imageGeneration).toBeUndefined();
+    expect(raw.listen).toBe("0.0.0.0:3210");
+  });
+
+  it("returns null when the config is already clean", () => {
+    const raw: Record<string, unknown> = { listen: "0.0.0.0:3210" };
+    expect(configuration.prepareLegacyConfig(raw)).toBeNull();
+  });
+});
+
 describe("reasoningLevelsOf", () => {
   it("uses the model list when it is non-empty", () => {
     expect(configuration.reasoningLevelsOf({ reasoningLevels: ["a", "b"] })).toEqual(["a", "b"]);

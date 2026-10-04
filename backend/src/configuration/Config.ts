@@ -1,4 +1,4 @@
-import { ImageGenerator } from "../image_generation/ImageGenerator";
+import { ImageGenerator } from "./ImageGenerator";
 import { LlmModel } from "./LlmModel";
 
 // Characters and persons are not stored in the config: each one is a

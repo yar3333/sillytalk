@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { Person } from "./Person";
-import { PathHelper } from "../configuration/PathHelper";
+import { PathHelper } from "../shared/PathHelper";
 import { AvatarFile } from "../shared/AvatarFile";
 import { createToken } from "../di";
 

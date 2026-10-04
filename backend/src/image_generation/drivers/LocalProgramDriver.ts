@@ -1,7 +1,7 @@
 import fs from "fs";
 import { ChildProcess } from "child_process";
-import { LocalProgramSettings } from "../LocalProgramSettings";
-import { PathHelper } from "../../configuration/PathHelper";
+import { LocalProgramSettings } from "../../configuration/LocalProgramSettings";
+import { PathHelper } from "../../shared/PathHelper";
 import { IMachineService } from "../../machine/IMachineService";
 import { IImageGeneratorDriver } from "../IImageGeneratorDriver";
 

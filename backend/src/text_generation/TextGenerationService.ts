@@ -4,7 +4,7 @@ import { Chat } from "../chats/Chat";
 import { ChatMessage } from "../chats/ChatMessage";
 import { Config } from "../configuration/Config";
 import { Model } from "../configuration/Model";
-import { PathHelper } from "../configuration/PathHelper";
+import { PathHelper } from "../shared/PathHelper";
 import { ConfigurationService } from "../configuration/ConfigurationService";
 import { createToken } from "../di";
 

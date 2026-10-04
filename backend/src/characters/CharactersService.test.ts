@@ -61,6 +61,21 @@ describe("save / get / list", () => {
   });
 });
 
+describe("photoFile", () => {
+  it("answers the path of the starter-set photo (the name reduced to its basename)", () => {
+    characters.save({ id: "alice", name: "Alice", description: "" });
+    expect(characters.photoFile("alice", "p1.png")).toBe(path.join(root, "alice", "photos", "p1.png"));
+    expect(characters.photoFile("alice", path.join("/elsewhere", "p1.png"))).toBe(
+      path.join(root, "alice", "photos", "p1.png"),
+    );
+  });
+
+  it("returns null for an invalid id", () => {
+    characters.save({ id: "alice", name: "Alice", description: "" });
+    expect(characters.photoFile("a b", "p1.png")).toBeNull();
+  });
+});
+
 describe("sync", () => {
   it("creates new ones, updates changed ones, deletes the extras", () => {
     characters.save({ id: "one", name: "One", description: "old" });

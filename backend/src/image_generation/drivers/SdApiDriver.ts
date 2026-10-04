@@ -1,6 +1,6 @@
 import fs from "fs";
 import { ChildProcess } from "child_process";
-import { SdApiSettings } from "../SdApiSettings";
+import { SdApiSettings } from "../../configuration/SdApiSettings";
 import { IImageGeneratorDriver } from "../IImageGeneratorDriver";
 
 // The Stable Diffusion WebUI backend (sdapi/v1): txt2img / img2img over
