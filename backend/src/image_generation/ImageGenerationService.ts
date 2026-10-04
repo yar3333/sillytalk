@@ -6,7 +6,7 @@ import { Character, Chat, Config, ImageGenerator, Model } from "../types";
 import { characterPhotosDir, chatDir, chatFilesDir } from "../config";
 import { createToken } from "../di";
 import { ChatService } from "../chats/ChatService";
-import { LlmService } from "../llm/LlmService";
+import { TextGenerationService } from "../text_generation/TextGenerationService";
 import { MachineService } from "../machine";
 import { DriverFactory } from "./DriverFactory";
 import { ImageJobResult } from "./ImageJobResult";
@@ -70,7 +70,7 @@ export class ImageGenerationService {
     private readonly machine: MachineService,
     // The LLM service (translatePrompt for ensureEnglishPrompt) — another
     // domain service, injected like the machine one.
-    private readonly llm: LlmService,
+    private readonly llm: TextGenerationService,
     // The chat service (importCharacterPhoto for the [PHOTO] references) —
     // the lower-level domain the image refs are copied through.
     private readonly chats: ChatService,

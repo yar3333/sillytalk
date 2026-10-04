@@ -9,8 +9,8 @@ import { Container } from "./di";
 import { initMachineService, MACHINE_SERVICE } from "./machine";
 import { CHATS, ChatService } from "./chats/ChatService";
 import { CHARACTERS, CharacterService } from "./characters/CharacterService";
-import { IMAGE_GENERATION, ImageGenerationService } from "./image_generating/ImageGenerationService";
-import { LLM, LlmService } from "./llm/LlmService";
+import { IMAGE_GENERATION, ImageGenerationService } from "./image_generation/ImageGenerationService";
+import { TEXT_GENERATION, TextGenerationService } from "./text_generation/TextGenerationService";
 
 // ---- DI: the composition root of the backend ----
 // Services are registered as lazy singletons on the container and resolved
@@ -18,12 +18,12 @@ import { LLM, LlmService } from "./llm/LlmService";
 // and never touch the container themselves.
 const container = new Container();
 container.register(MACHINE_SERVICE, () => initMachineService());
-container.register(LLM, () => new LlmService());
+container.register(TEXT_GENERATION, () => new TextGenerationService());
 container.register(CHARACTERS, () => new CharacterService(() => charactersDir()));
 container.register(CHATS, () => new ChatService(() => chatsDir(), loadConfig));
 container.register(
   IMAGE_GENERATION,
-  (c) => new ImageGenerationService(c.resolve(MACHINE_SERVICE), c.resolve(LLM), c.resolve(CHATS), loadConfig),
+  (c) => new ImageGenerationService(c.resolve(MACHINE_SERVICE), c.resolve(TEXT_GENERATION), c.resolve(CHATS), loadConfig),
 );
 const characters = container.resolve(CHARACTERS);
 const chats = container.resolve(CHATS);
@@ -49,7 +49,7 @@ ensureDirs();
 // The available image generators (enabled and up) — every one of them can
 // run jobs in parallel; the jobs of a single generator are queued.
 const images = container.resolve(IMAGE_GENERATION);
-const llm = container.resolve(LLM);
+const llm = container.resolve(TEXT_GENERATION);
 void images.refreshAvailableGenerators(config.imageGenerators);
 
 // First run (nothing exists yet): create the default character and user.

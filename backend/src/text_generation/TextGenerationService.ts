@@ -5,7 +5,7 @@ import { chatFilesDir, listModels, resolveApiKey } from "../config";
 import { createToken } from "../di";
 
 // The DI token of the LLM service (registered in index.ts).
-export const LLM = createToken<LlmService>("LlmService");
+export const TEXT_GENERATION = createToken<TextGenerationService>("TextGenerationService");
 
 // A model request to generate an image: prompt + reference numbers from the inventory (from 1).
 export type ImageRequest = { prompt: string; refs: number[] };
@@ -22,7 +22,7 @@ type MessageParam = { role: string; content: string | ContentPart[] };
 // history trimming). The service is stateless — every call works on its
 // arguments; the provider key and the chat file paths are resolved through the
 // lower-level config module.
-export class LlmService {
+export class TextGenerationService {
   // Image MIME types by file extension (image_url parts are sent as data URIs).
   private static readonly MIME_BY_EXT: Record<string, string> = {
     ".png": "image/png",
@@ -34,8 +34,7 @@ export class LlmService {
 
   // Signs of the provider refusing specifically because of an image (for
   // example, llama-server without an mmproj answers 500 "image input is not supported").
-  private static readonly IMAGE_REJECT_RE =
-    /image input|images? (?:are |is )?not supported|mmproj|multimodal/i;
+  private static readonly IMAGE_REJECT_RE = /image input|images? (?:are |is )?not supported|mmproj|multimodal/i;
 
   // ---- model resolution ----
 
@@ -66,13 +65,12 @@ export class LlmService {
     fellowCharacters: Array<{ name: string; description: string }> = [],
   ): string {
     let prompt = `You are ${character.name}. ${character.description}\nStay in character; never break role.`;
-    prompt +=
-      "\nKeep replies short: 2–5 sentences, one short paragraph. No long monologues.";
+    prompt += "\nKeep replies short: 2–5 sentences, one short paragraph. No long monologues.";
     prompt +=
       "\nWrite character dialogue as plain text. Anything that is not dialogue — descriptions of the " +
       "setting, actions and atmosphere — goes in /* ... */ (for example: /*Yaroslav sits at the bar and takes a sip.*/).";
     if (fellowCharacters.length > 0) {
-      const list = fellowCharacters.map((c) => `${c.name} — ${c.description || 'a character'}`).join('; ');
+      const list = fellowCharacters.map((c) => `${c.name} — ${c.description || "a character"}`).join("; ");
       prompt +=
         `\nThis is a group chat: other characters are also present — ${list}. ` +
         "Each character takes turns to reply. Reply only as yourself (" +
@@ -82,7 +80,7 @@ export class LlmService {
     }
     if (user && user.description.trim()) {
       const name = user.name.trim();
-      prompt += `\nYou are talking to ${name || 'the user'}. ${user.description.trim()}`;
+      prompt += `\nYou are talking to ${name || "the user"}. ${user.description.trim()}`;
     }
     if (fellowCharacters.length > 0) {
       prompt +=
@@ -135,16 +133,13 @@ export class LlmService {
   // [PHOTO] or [PHOTO:] is not a tag and stays literal text.
   extractPhotoRequests(text: string): { text: string; photos: number[] } {
     const photos: number[] = [];
-    const clean = text.replace(
-      /\[PHOTO:\s*(\d+(?:\s*,\s*\d+)*)\s*\][ \t]*/gi,
-      (_match, nums: string) => {
-        for (const part of nums.split(",")) {
-          const n = parseInt(part.trim(), 10);
-          if (Number.isFinite(n) && n > 0) photos.push(n);
-        }
-        return "";
-      },
-    );
+    const clean = text.replace(/\[PHOTO:\s*(\d+(?:\s*,\s*\d+)*)\s*\][ \t]*/gi, (_match, nums: string) => {
+      for (const part of nums.split(",")) {
+        const n = parseInt(part.trim(), 10);
+        if (Number.isFinite(n) && n > 0) photos.push(n);
+      }
+      return "";
+    });
     return { text: clean.replace(/\n{3,}/g, "\n\n").trim(), photos };
   }
 
@@ -153,7 +148,7 @@ export class LlmService {
   // occurrences inside text are removed but do not count as silence.
   parseSilence(reply: string): string | null {
     if (/^\s*\[SILENT\]\s*$/i.test(reply)) return null;
-    return reply.replace(/\[SILENT\]\s*/gi, '').trim();
+    return reply.replace(/\[SILENT\]\s*/gi, "").trim();
   }
 
   // Strips artifact "Name: " prefixes at the start of a reply: the model copies
@@ -162,12 +157,12 @@ export class LlmService {
   // the start of the text; the rest of the text is left as-is.
   stripNamePrefixes(text: string, names: string[]): string {
     const known = [...new Set(names.map((n) => n.trim()).filter(Boolean))].map((n) =>
-      n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+      n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
     );
     if (known.length === 0) return text;
-    const re = new RegExp(`^\\s*(?:${known.join('|')})\\s*:\\s*`, 'i');
+    const re = new RegExp(`^\\s*(?:${known.join("|")})\\s*:\\s*`, "i");
     let out = text;
-    while (re.test(out)) out = out.replace(re, '');
+    while (re.test(out)) out = out.replace(re, "");
     return out.trim();
   }
 
@@ -182,10 +177,10 @@ export class LlmService {
   ): ChatMessage[] {
     if (!multi) return history;
     return history.map((m) => {
-      if (m.role === 'assistant' && m.characterId && characterNames[m.characterId]) {
+      if (m.role === "assistant" && m.characterId && characterNames[m.characterId]) {
         return { ...m, text: `${characterNames[m.characterId]}: ${m.text}` };
       }
-      if (m.role === 'user' && m.userId && userNames[m.userId]) {
+      if (m.role === "user" && m.userId && userNames[m.userId]) {
         return { ...m, text: `${userNames[m.userId]}: ${m.text}` };
       }
       return m;
@@ -269,7 +264,7 @@ export class LlmService {
       // the dialogue is not aborted with a 500 error. A cancel (an aborted
       // signal) is never retried: its error does not look like an image reject.
       const sentImages = history.some((m) => (m.images?.length ?? 0) > 0);
-      if (!sentImages || !LlmService.IMAGE_REJECT_RE.test((err as Error).message)) throw err;
+      if (!sentImages || !TextGenerationService.IMAGE_REJECT_RE.test((err as Error).message)) throw err;
       try {
         const reply = await this.requestCompletion(model, toMessages(false), signal);
         return `⚠️ The model rejected the image — the message was sent without it.\n\n${reply}`;
@@ -281,11 +276,7 @@ export class LlmService {
 
   // One /chat/completions call: the OpenAI-compatible request (the api key,
   // the reasoning level in both spellings) and the reply extraction.
-  private async requestCompletion(
-    model: Model,
-    messages: MessageParam[],
-    signal?: AbortSignal,
-  ): Promise<string> {
+  private async requestCompletion(model: Model, messages: MessageParam[], signal?: AbortSignal): Promise<string> {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     const apiKey = resolveApiKey(model);
     if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
@@ -343,7 +334,7 @@ export class LlmService {
       const parts: ContentPart[] = [];
       if (message.text) parts.push({ type: "text", text: message.text });
       for (const file of images) {
-        parts.push({ type: "image_url", image_url: { url: LlmService.imageDataUrl(file) } });
+        parts.push({ type: "image_url", image_url: { url: TextGenerationService.imageDataUrl(file) } });
       }
       return parts;
     }
@@ -351,7 +342,7 @@ export class LlmService {
   }
 
   private static imageDataUrl(file: string): string {
-    const mime = LlmService.MIME_BY_EXT[path.extname(file).toLowerCase()] ?? "image/png";
+    const mime = TextGenerationService.MIME_BY_EXT[path.extname(file).toLowerCase()] ?? "image/png";
     return `data:${mime};base64,${fs.readFileSync(file).toString("base64")}`;
   }
 }

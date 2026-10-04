@@ -25,15 +25,15 @@ backend/               Express API; also serves the built frontend
     routes.ts          REST API (config, users, characters, chats, messages, avatars, image, files);
                        createApiRouter(imageGeneration, llm, characters) — the
                        services are injected
-    llm/               the LLM domain: the top-level service class
-                       (LlmService.ts — the OpenAI-compatible provider client:
+    text_generation/   the LLM domain: the top-level service class
+                       (TextGenerationService.ts — the OpenAI-compatible provider client:
                        chatCompletion text + image_url, translatePrompt;
                        resolveModel (the chat's model by llmModels key with
                        the first-model fallback); the system prompt,
                        [IMG]/[PHOTO] tag parsing, [SILENT], author labels,
-                       history trimming; DI token LLM) and
-                       LlmService.test.ts — jest unit tests
-    image_generating/  image generation: the driver interface
+                       history trimming; DI token TEXT_GENERATION) and
+                       TextGenerationService.test.ts — jest unit tests
+    image_generation/  image generation: the driver interface
                        (IImageGeneratorDriver.ts; the job model — ImageJob.ts /
                        ImageJobResult.ts), the backends
                        (drivers/SdApiDriver.ts / drivers/LocalProgramDriver.ts),
@@ -219,7 +219,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
 - **Image generation has no `auto` toggle anymore.** `imageGenerators` is a list of
   generators (SD API by presence of `url`, local program by presence of `command`), each with an
   `enabled` flag (defaults to `true` — a disabled generator is never used). At startup
-  (`refreshAvailableGenerators` in `image_generating/ImageGenerationService.ts`) all generators are probed
+  (`refreshAvailableGenerators` in `image_generation/ImageGenerationService.ts`) all generators are probed
   (in parallel); the
   SD API availability is checked via `GET {url}/sdapi/v1/sd-models`, a local program is
   available if `command` is set (and, for an absolute path, if that file exists). **Every
@@ -249,7 +249,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
 - **Self-initiated image generation.** When a generator is available, `systemPromptFor`
   adds an instruction letting the model insert `[IMG:description]` tags into its replies; it may
   also pass reference images by index: `[IMG:description | 1,3]`. The index list ("inventory") is
-  built per request by `ImageGenerationService.imageInventory` (`image_generating/ImageGenerationService.ts`):
+  built per request by `ImageGenerationService.imageInventory` (`image_generation/ImageGenerationService.ts`):
   the character's photos first, then every
   image already in the chat, oldest first; it is appended to the system prompt so the model knows
   what the numbers mean. The backend strips the tags (`extractImageRequests`) and resolves indices
@@ -259,7 +259,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   regeneration) gets a reserved file name that is stored in the message RIGHT AWAY with
   `ChatMessage.imageStatus[name] = 'pending'` (`imagePrompts`/`imageRefs` alongside), the reply is
   saved and returned to the client without waiting, and the generation runs as a background job
-  (`startImageJob` in `image_generating/ImageGenerationService.ts`). The job writes to a temp file and renames it
+  (`startImageJob` in `image_generation/ImageGenerationService.ts`). The job writes to a temp file and renames it
   to the reserved
   name only on success (so a name is never left with a partial image); the jobs of one
   generator are **queued** (one run at a time — a local program / the GPU must not be hit
@@ -278,7 +278,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   after cancelling any job still running for that image.
 - **Sending existing photos without generation.** Independently of the generator, `systemPromptFor`
   (when the inventory is non-empty) instructs the model it can attach an inventory image as-is with a
-  `[PHOTO:1,3]` tag (same numbering as `[IMG]` refs). `extractPhotoRequests` in `LlmService` strips the
+  `[PHOTO:1,3]` tag (same numbering as `[IMG]` refs). `extractPhotoRequests` in `TextGenerationService` strips the
   tags (strict format: numbers only — a bare `[PHOTO]` stays literal text); `appendAssistantReply`
   resolves the indices through `ImageGenerationService.resolveInventoryRefs` (character photos are
   copied into the chat's
@@ -286,7 +286,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   built for every reply, generator or not.
 - **Generation prompts are always English.** The `[IMG:...]` instruction requires English scene
   descriptions. Manually typed prompts (gen mode) and stored Russian prompts (regeneration) are
-  translated to English via the chat's model (`translatePrompt` in `LlmService`, called by
+  translated to English via the chat's model (`translatePrompt` in `TextGenerationService`, called by
   `ImageGenerationService.ensureEnglishPrompt`) before hitting the generator; on translation
   failure the original text is used.
   The final prompt is stored in `ChatMessage.imagePrompts`, so image hover hints show it.
@@ -317,7 +317,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   reply appears as soon as it is generated and the typing indicator shows who is generating
   (`ChatStore.typingCharacterId`). Each character sees the previous replies; a character answers
   only from its own name and may stay **silent** by replying with exactly `[SILENT]` (parsed by
-  `parseSilence` in `LlmService` — a bare tag means silence, inline occurrences are stripped;
+  `parseSilence` in `TextGenerationService` — a bare tag means silence, inline occurrences are stripped;
   `reply === null`). In group chats (more than one character or persona)
   `labelHistory` prefixes history lines with speaker names. "Another message from the AI" (empty
   send) continues with the next character in turn order (same reply queue); "Regenerate" is built
@@ -383,12 +383,12 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
 
 - **DI is a minimal hand-rolled container** (`backend/src/di.ts`, no framework): typed tokens
   (`createToken<T>()`) registered as lazy singletons. The composition root is `index.ts` — it
-  registers `MACHINE_SERVICE`, `LLM`, `CHARACTERS`, `CHATS` and `IMAGE_GENERATION` and resolves
+  registers `MACHINE_SERVICE`, `TEXT_GENERATION`, `CHARACTERS`, `CHATS` and `IMAGE_GENERATION` and resolves
   them once; `routes.ts` receives the services through
   `createApiRouter(imageGeneration, llm, characters, chats)`. Consumers take dependencies via
   constructors and never import the container themselves.
-- **General backend patterns (established by the `image_generating/` refactor).** When a domain
-  grows logic of its own, structure it like `image_generating/` does — these rules generalize it:
+- **General backend patterns (established by the `image_generation/` refactor).** When a domain
+  grows logic of its own, structure it like `image_generation/` does — these rules generalize it:
   - **A domain = a folder + one top-level service class.** `service.ts`-style module globals
     (plain functions + `let`-state) are replaced by a class (`ImageGenerationService`) whose name
     names the file; every cache, registry and map is a private instance field, never a
@@ -408,9 +408,9 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
     `routes.ts`) stays in the routes layer; likewise file serving (`sendImage`) and upload
     normalization (`normalizeChatImages`) are routes'/persistence concerns, not the domain's.
   - **Keep the dependency graph one-way and acyclic** (`routes → service → drivers/machine/
-    config/chats/llm/characters`): the service may call lower-level services and module
+    config/chats/text_generation/characters`): the service may call lower-level services and module
     functions (e.g. `ImageGenerationService` calling `ChatService.importCharacterPhoto` and
-    `LlmService.translatePrompt`), but nothing below it may import the domain back.
+    `TextGenerationService.translatePrompt`), but nothing below it may import the domain back.
     When pulling code into the service, grep the rest of the project for logic that belongs to
     the domain and move what fits (`ensureEnglishPrompt`, `imageInventory`,
     `resolveInventoryRefs` moved from `routes.ts`); leave HTTP/persistence glue behind, but
@@ -419,7 +419,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
     (`MachineService` + `machine-win32.ts` / `machine-posix.ts`); the domain code never
     branches on `process.platform`.
   - **Planned migration (partially done):** `llm.ts`, `characters.ts` and `chats.ts` are
-    already converted (`llm/LlmService.ts`, `characters/CharacterService.ts`,
+    already converted (`text_generation/TextGenerationService.ts`, `characters/CharacterService.ts`,
     `chats/ChatService.ts`); the remaining modules (`users.ts`, `config.ts`) are still
     function-style and are to be converted to this service-class pattern in the future (a
     class per module, DI through the container, state on the instance, routes keep only HTTP
@@ -427,7 +427,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
     module-level state to them; new domains must start as service classes right away.
 - **Single port in production** — `backend/src/index.ts` mounts the API at `/api`, serves the built
   frontend as static files, and falls back to `index.html` for non-`/api` GETs (SPA).
-- **LLM call** (`llm/LlmService.ts`) — `chatCompletion()` posts to `${baseUrl}/chat/completions`. `trimHistory()`
+- **LLM call** (`text_generation/TextGenerationService.ts`) — `chatCompletion()` posts to `${baseUrl}/chat/completions`. `trimHistory()`
   trims the tail to fit `contextSize` (never dropping the system prompt), estimating tokens as
   `ceil(len/4) + images*1000`.
 - **Frontend store pattern (split by meaning).** App state (signals) and actions live in

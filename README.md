@@ -180,10 +180,10 @@ backend/
   src/
     index.ts       # the express server: the API + the frontend statics
     routes.ts      # the REST API (config, characters, chats, image, files)
-    llm/           # the LLM domain: the OpenAI-compatible chat/completions
-                   # call (text + images), prompts, [IMG]/[PHOTO] parsing —
-                   # the LlmService class + its DI token
-    image_generating/ # generation: the driver interface, the SD API / local
+    text_generation/ # the LLM domain: the OpenAI-compatible chat/completions
+                     # call (text + images), prompts, [IMG]/[PHOTO] parsing —
+                     # the TextGenerationService class + its DI token
+    image_generation/ # generation: the driver interface, the SD API / local
                       # program backends, the top-level service class
                       # (background jobs); di.ts — the minimal DI container
     chats.ts       # the chat and the file storage

@@ -15,16 +15,16 @@ import {
 import { ChatService } from "./chats/ChatService";
 import { CharacterService } from "./characters/CharacterService";
 import { cloneUser, getUser, isValidUserId, listUsers, syncUsers } from "./users";
-import { LlmService } from "./llm/LlmService";
-import { ImageGenerationService } from "./image_generating/ImageGenerationService";
-import { ImageJob } from "./image_generating/ImageJob";
+import { TextGenerationService } from "./text_generation/TextGenerationService";
+import { ImageGenerationService } from "./image_generation/ImageGenerationService";
+import { ImageJob } from "./image_generation/ImageJob";
 
 // The API router. The image-generation, LLM, character and chat services are
 // injected (the composition root in index.ts builds the DI container and hands
 // the services in here).
 export function createApiRouter(
   imageGeneration: ImageGenerationService,
-  llm: LlmService,
+  llm: TextGenerationService,
   characters: CharacterService,
   chats: ChatService,
 ): express.Router {
@@ -327,7 +327,8 @@ export function createApiRouter(
     // photo is copied into the chat files/ via importCharacterPhoto).
     const photoReq = llm.extractPhotoRequests(parsed.text);
     const photoIdx = [...new Set(photoReq.photos)];
-    const images: string[] = photoIdx.length > 0 ? imageGeneration.resolveInventoryRefs(chat.id, photoIdx, inventory) : [];
+    const images: string[] =
+      photoIdx.length > 0 ? imageGeneration.resolveInventoryRefs(chat.id, photoIdx, inventory) : [];
     const imagePrompts: Record<string, string> = {};
     const imageRefs: Record<string, string[]> = {};
     const imageStatus: Record<string, "pending" | "failed" | "cancelled"> = {};
