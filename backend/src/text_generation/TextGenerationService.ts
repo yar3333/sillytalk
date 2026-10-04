@@ -48,7 +48,7 @@ export class TextGenerationService {
 
   // ---- prompts and history ----
 
-  // user — the active persona (users/<id>/user.json); if it has a persona
+  // person — the active persona (users/<id>/user.json); if it has a persona
   // description, the model knows who it is talking to. fellowCharacters — the
   // other characters in the chat: in a group chat the prompt explains the reply
   // order and allows staying silent with the [SILENT] tag. canGenerateImages
@@ -59,7 +59,7 @@ export class TextGenerationService {
   // tag works by it too — send an existing image as-is without generation.
   systemPromptFor(
     character: { name: string; description: string },
-    user?: { name: string; description: string } | null,
+    person?: { name: string; description: string } | null,
     canGenerateImages = false,
     imageInventory?: string,
     fellowCharacters: Array<{ name: string; description: string }> = [],
@@ -78,9 +78,9 @@ export class TextGenerationService {
         "Do not copy or paraphrase other characters' replies — write only your own line. " +
         "If someone addresses you by name or asks you a question — reply yourself, do not stay silent.";
     }
-    if (user && user.description.trim()) {
-      const name = user.name.trim();
-      prompt += `\nYou are talking to ${name || "the user"}. ${user.description.trim()}`;
+    if (person && person.description.trim()) {
+      const name = person.name.trim();
+      prompt += `\nYou are talking to ${name || "the user"}. ${person.description.trim()}`;
     }
     if (fellowCharacters.length > 0) {
       prompt +=

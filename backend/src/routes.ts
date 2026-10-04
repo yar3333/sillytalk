@@ -1,7 +1,7 @@
 import express from "express";
 import fs from "fs";
 import path from "path";
-import { Character, Chat, ChatMessage, Model, User } from "./types";
+import { Character, Chat, ChatMessage, Model, Person } from "./types";
 import {
   chatFilesDir,
   characterDir,
@@ -9,23 +9,24 @@ import {
   ensureDirs,
   loadConfig,
   newId,
+  personDir,
   saveConfig,
-  userDir,
 } from "./config";
 import { ChatsService } from "./chats/ChatsService";
 import { CharactersService } from "./characters/CharactersService";
-import { cloneUser, getUser, isValidUserId, listUsers, syncUsers } from "./users";
+import { PersonsService } from "./persons/PersonsService";
 import { TextGenerationService } from "./text_generation/TextGenerationService";
 import { ImageGenerationService } from "./image_generation/ImageGenerationService";
 import { ImageJob } from "./image_generation/ImageJob";
 
-// The API router. The image-generation, LLM, character and chat services are
-// injected (the composition root in index.ts builds the DI container and hands
-// the services in here).
+// The API router. The image-generation, LLM, character, person and chat
+// services are injected (the composition root in index.ts builds the DI
+// container and hands the services in here).
 export function createApiRouter(
   imageGeneration: ImageGenerationService,
   textGeneration: TextGenerationService,
   characters: CharactersService,
+  persons: PersonsService,
   chats: ChatsService,
 ): express.Router {
   const apiRouter = express.Router();
@@ -87,10 +88,10 @@ export function createApiRouter(
     return deleted;
   }
 
-  // The three avatar routes (GET/POST/DELETE) are identical for users/ and characters/.
-  function avatarRoutes(kind: "user" | "character") {
-    const dirFor = (id: string) => (kind === "user" ? userDir(id) : characterDir(id));
-    const valid = (id: string) => (kind === "user" ? isValidUserId(id) : characters.isValidId(id));
+  // The three avatar routes (GET/POST/DELETE) are identical for persons/ and characters/.
+  function avatarRoutes(kind: "person" | "character") {
+    const dirFor = (id: string) => (kind === "person" ? personDir(id) : characterDir(id));
+    const valid = (id: string) => (kind === "person" ? persons.isValidId(id) : characters.isValidId(id));
     return {
       get: (req: express.Request, res: express.Response): void => {
         const id = String(req.params.id);
@@ -136,10 +137,10 @@ export function createApiRouter(
     };
   }
 
-  const userAvatar = avatarRoutes("user");
-  apiRouter.get("/users/:id/avatar", userAvatar.get);
-  apiRouter.post("/users/:id/avatar", userAvatar.post);
-  apiRouter.delete("/users/:id/avatar", userAvatar.delete);
+  const personAvatar = avatarRoutes("person");
+  apiRouter.get("/users/:id/avatar", personAvatar.get);
+  apiRouter.post("/users/:id/avatar", personAvatar.post);
+  apiRouter.delete("/users/:id/avatar", personAvatar.delete);
 
   const characterAvatar = avatarRoutes("character");
   apiRouter.get("/characters/:id/avatar", characterAvatar.get);
@@ -258,7 +259,7 @@ export function createApiRouter(
     // image, no generator required) and [IMG:... | N] references (generation).
     const inventory = imageGeneration.imageInventory(chat, character);
     const inventoryText = inventory.map((it, i) => `#${i + 1} — ${it.label}`).join("\n");
-    const user = chat.userId ? getUser(chat.userId) : (listUsers()[0] ?? null);
+    const person = chat.userId ? persons.get(chat.userId) : (persons.list()[0] ?? null);
     // The other character participants: in a group chat the prompt explains the
     // reply order and allows staying silent.
     const fellows = chat.characterIds
@@ -267,7 +268,7 @@ export function createApiRouter(
       .filter((c): c is Character => c !== null);
     const system = textGeneration.systemPromptFor(
       character,
-      user,
+      person,
       canGenerateImages,
       inventoryText || undefined,
       fellows,
@@ -293,7 +294,7 @@ export function createApiRouter(
         ),
         Object.fromEntries(
           [...new Set(chat.messages.map((m) => m.userId).filter((id): id is string => !!id))].map(
-            (id) => [id, getUser(id)?.name ?? id] as const,
+            (id) => [id, persons.get(id)?.name ?? id] as const,
           ),
         ),
         multi,
@@ -474,36 +475,38 @@ export function createApiRouter(
     sendImage(res, path.join(characterPhotosDir(character.id), path.basename(req.params.name)));
   });
 
-  // ---- users ----
-  // Users are stored in users/<id>/ folders (see users.ts). Each chat picks its
-  // own persona (Chat.userId) — there is none selected in the config.
-  function usersWithAvatars(): Array<User & { hasAvatar: boolean }> {
-    return listUsers().map((user) => ({
-      ...user,
-      hasAvatar: findAvatar(userDir(user.id)) !== null,
+  // ---- users (personas) ----
+  // Persons (persona cards) are stored in users/<id>/ folders (see
+  // persons/PersonsService.ts). Each chat picks its own persona (Chat.userId) —
+  // there is none selected in the config. The API paths, the JSON body field
+  // and the response keys stay "users" (the external contract).
+  function personsWithAvatars(): Array<Person & { hasAvatar: boolean }> {
+    return persons.list().map((person) => ({
+      ...person,
+      hasAvatar: findAvatar(personDir(person.id)) !== null,
     }));
   }
 
   apiRouter.get("/users", (_req, res) => {
-    res.json(usersWithAvatars());
+    res.json(personsWithAvatars());
   });
 
-  // Full sync: creates/updates/deletes users to match the list.
+  // Full sync: creates/updates/deletes persons to match the list.
   apiRouter.put("/users", (req, res) => {
     const { users } = req.body ?? {};
     if (!Array.isArray(users)) {
       res.status(400).json({ error: "Expected a list of users" });
       return;
     }
-    const list: User[] = [];
+    const list: Person[] = [];
     const seen = new Set<string>();
     for (const entry of users) {
       if (!entry || typeof entry !== "object") {
         res.status(400).json({ error: "Invalid user entry" });
         return;
       }
-      const u = entry as Partial<User>;
-      if (!isValidUserId(u.id) || seen.has(u.id)) {
+      const u = entry as Partial<Person>;
+      if (!persons.isValidId(u.id) || seen.has(u.id)) {
         res.status(400).json({ error: `Invalid or duplicate user ID: ${String(u.id)}` });
         return;
       }
@@ -514,20 +517,20 @@ export function createApiRouter(
         description: typeof u.description === "string" ? u.description : "",
       });
     }
-    syncUsers(list);
-    res.json(usersWithAvatars());
+    persons.sync(list);
+    res.json(personsWithAvatars());
   });
 
-  // Clones the user folder (the avatar goes along); the copy is named
+  // Clones the person folder (the avatar goes along); the copy is named
   // "<name> (copy)" in a free <id>-copy* folder. The response carries the new
   // id (the UI opens the copy's edit dialog right away).
   apiRouter.post("/users/:id/clone", (req, res) => {
-    const newId = cloneUser(req.params.id);
+    const newId = persons.clone(req.params.id);
     if (newId === null) {
       res.status(404).json({ error: "User not found" });
       return;
     }
-    res.json({ id: newId, users: usersWithAvatars() });
+    res.json({ id: newId, users: personsWithAvatars() });
   });
 
   // ---- chats ----

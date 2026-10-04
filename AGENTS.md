@@ -23,8 +23,8 @@ backend/               Express API; also serves the built frontend
     di.ts              minimal DI container: typed tokens (createToken<T>) +
                        lazy singletons (register/resolve)
     routes.ts          REST API (config, users, characters, chats, messages, avatars, image, files);
-                       createApiRouter(imageGeneration, textGeneration, characters, chats) — the
-                       services are injected
+                       createApiRouter(imageGeneration, textGeneration, characters, persons, chats) —
+                       the services are injected
     text_generation/   the LLM domain: the top-level service class
                        (TextGenerationService.ts — the OpenAI-compatible provider client:
                        chatCompletion text + image_url, translatePrompt;
@@ -65,10 +65,14 @@ backend/               Express API; also serves the built frontend
                        importCharacterPhoto); DI token DI_CHATS_SERVICE, the
                        root folder and the config loader injected) and
                        ChatsService.test.ts — jest unit tests
-    users.ts           user persistence in users/<id>/ folders
+    persons/           the person (persona card) domain: the top-level service
+                       class (PersonsService.ts — the persona catalog on the
+                       users/<id>/ folders: CRUD, clone, the full-list sync,
+                       the ID validation; DI token DI_PERSONS_SERVICE, the root
+                       folder injected as () => string) and
+                       PersonsService.test.ts — jest unit tests
     config.ts          config load/save, path helpers
     types.ts           shared backend types
-    users.test.ts      jest unit tests (user folders: CRUD, sync)
   jest.config.js       ts-jest setup
 
 frontend/              Angular app
@@ -302,14 +306,17 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   sync: create/update/delete). An on-disk `characters` field in an old config.json is migrated to
   folders at startup (`index.ts`) and stripped by `PUT /api/config` — do not reintroduce a
   `characters` array in the config.
-- **Users are NOT in the config either.** Each user is a folder `~/.config/sillytalk/users/<id>/`
-  with `user.json` holding `{ name, description }` and `avatar.jpg` (user avatar, shown next to user
-  messages). CRUD lives in `users.ts`; `GET/PUT /api/users` mirror the character endpoints. There is
-  **no selected/current user** in the config anymore: each chat stores the **active** persona (whose
-  name new messages are sent under) in `Chat.userId`, chosen when creating a new chat (dialog) or
-  via the header menu. On a fresh install the default user is created with id `default`
-  (previously `me`). The active persona's `description` (when non-empty) is appended to the system
-  prompt by `systemPromptFor(character, user, …)` so the model knows who it is talking to.
+- **Users are NOT in the config either.** Each person (persona card) is a folder
+  `~/.config/sillytalk/users/<id>/` with `user.json` holding `{ name, description }` and `avatar.jpg`
+  (persona avatar, shown next to user messages). CRUD lives in `persons/PersonsService.ts` (the
+  domain concept in the code is `person`/`persons`, type `Person`); `GET/PUT /api/users` mirror the
+  character endpoints — the REST paths, the `users` JSON fields, the `userId` fields and the on-disk
+  layout (`users/`, `user.json`) stay "user"-named. There is **no selected/current user** in the
+  config anymore: each chat stores the **active** persona (whose name new messages are sent under) in
+  `Chat.userId`, chosen when creating a new chat (dialog) or via the header menu. On a fresh install
+  the default person is created with id `default` (previously `me`). The active persona's
+  `description` (when non-empty) is appended to the system prompt by
+  `systemPromptFor(character, person, …)` so the model knows who it is talking to.
 - **Multi-participant chats.** `Chat.characterIds` is the ordered participant list (order =
   answer priority). Every `ChatMessage` carries its author — `characterId` (assistant) /
   `userId` (user) — stored at send time, so switching participants or the active persona never
@@ -387,10 +394,11 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
 
 - **DI is a minimal hand-rolled container** (`backend/src/di.ts`, no framework): typed tokens
   (`createToken<T>()`) registered as lazy singletons. The composition root is `index.ts` — it
-  registers `DI_MACHINE_SERVICE`, `TEXT_GENERATION`, `DI_CHARACTERS_SERVICE`, `DI_CHATS_SERVICE` and
-  `IMAGE_GENERATION` and resolves them once; `routes.ts` receives the services through
-  `createApiRouter(imageGeneration, textGeneration, characters, chats)`. Consumers take dependencies via
-  constructors and never import the container themselves.
+  registers `DI_MACHINE_SERVICE`, `DI_TEXT_GENERATION_SERVICE`, `DI_CHARACTERS_SERVICE`,
+  `DI_PERSONS_SERVICE`, `DI_CHATS_SERVICE` and `DI_IMAGE_GENERATION_SERVICE` and resolves them once;
+  `routes.ts` receives the services through
+  `createApiRouter(imageGeneration, textGeneration, characters, persons, chats)`. Consumers take
+  dependencies via constructors and never import the container themselves.
 - **General backend patterns (established by the `image_generation/` refactor).** When a domain
   grows logic of its own, structure it like `image_generation/` does — these rules generalize it:
   - **A domain = a folder + one top-level service class.** `service.ts`-style module globals
@@ -412,7 +420,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
     `routes.ts`) stays in the routes layer; likewise file serving (`sendImage`) and upload
     normalization (`normalizeChatImages`) are routes'/persistence concerns, not the domain's.
   - **Keep the dependency graph one-way and acyclic** (`routes → service → drivers/machine/
-    config/chats/text_generation/characters`): the service may call lower-level services and module
+    config/chats/text_generation/characters/persons`): the service may call lower-level services and module
     functions (e.g. `ImageGenerationService` calling `ChatsService.importCharacterPhoto` and
     `TextGenerationService.translatePrompt`), but nothing below it may import the domain back.
     When pulling code into the service, grep the rest of the project for logic that belongs to
@@ -423,13 +431,14 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
     (`IMachineService` + `machine/implementations/MachineWindowsService.ts` /
     `MachinePosixService.ts`); the domain code never
     branches on `process.platform`.
-  - **Planned migration (partially done):** `llm.ts`, `characters.ts` and `chats.ts` are
-    already converted (`text_generation/TextGenerationService.ts`, `characters/CharactersService.ts`,
-    `chats/ChatsService.ts`); the remaining modules (`users.ts`, `config.ts`) are still
-    function-style and are to be converted to this service-class pattern in the future (a
-    class per module, DI through the container, state on the instance, routes keep only HTTP
-    glue). Until a module is converted, keep the two styles separate — do not add new
-    module-level state to them; new domains must start as service classes right away.
+  - **Planned migration (partially done):** `llm.ts`, `characters.ts`, `chats.ts` and `users.ts`
+    are already converted (`text_generation/TextGenerationService.ts`,
+    `characters/CharactersService.ts`, `chats/ChatsService.ts`, `persons/PersonsService.ts`); the
+    remaining module (`config.ts`) is still function-style and is to be converted to this
+    service-class pattern in the future (a class per module, DI through the container, state on
+    the instance, routes keep only HTTP glue). Until a module is converted, keep the two styles
+    separate — do not add new module-level state to it; new domains must start as service classes
+    right away.
 - **Single port in production** — `backend/src/index.ts` mounts the API at `/api`, serves the built
   frontend as static files, and falls back to `index.html` for non-`/api` GETs (SPA).
 - **LLM call** (`text_generation/TextGenerationService.ts`) — `chatCompletion()` posts to `${baseUrl}/chat/completions`. `trimHistory()`

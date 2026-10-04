@@ -43,18 +43,21 @@ export function characterPhotosDir(id: string, root: string = charactersDir()): 
   return path.join(characterDir(id, root), 'photos');
 }
 
-// A user is a ~/.config/sillytalk/users/<id>/ folder:
-// the folder name is the user ID, user.json holds name and persona description.
-export function usersDir(): string {
+// A person (the persona card) is a ~/.config/sillytalk/users/<id>/ folder:
+// the folder name is the person ID, user.json holds name and persona
+// description. The on-disk layout (users/, user.json) and the
+// SILLYTALK_USERS_DIR env var are historical — the domain concept in the code
+// is person/persons.
+export function personsDir(): string {
   return process.env.SILLYTALK_USERS_DIR || path.join(CONFIG_DIR, 'users');
 }
 
-export function userDir(id: string, root: string = usersDir()): string {
+export function personDir(id: string, root: string = personsDir()): string {
   return path.join(root, id);
 }
 
-export function userFile(id: string, root: string = usersDir()): string {
-  return path.join(userDir(id, root), 'user.json');
+export function personFile(id: string, root: string = personsDir()): string {
+  return path.join(personDir(id, root), 'user.json');
 }
 
 // The listen address "host:port" -> { host, port } (port defaults to 3210).
@@ -258,7 +261,7 @@ export function ensureDirs(): void {
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
   fs.mkdirSync(CHATS_DIR, { recursive: true });
   fs.mkdirSync(charactersDir(), { recursive: true });
-  fs.mkdirSync(usersDir(), { recursive: true });
+  fs.mkdirSync(personsDir(), { recursive: true });
 }
 
 export function chatsDir(): string {

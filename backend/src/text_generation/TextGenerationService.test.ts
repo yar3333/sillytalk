@@ -64,7 +64,7 @@ describe("systemPromptFor", () => {
     expect(out).toContain("/* ... */");
   });
 
-  it("adds the selected user description when present", () => {
+  it("adds the selected person description when present", () => {
     const out = textGenerationService.systemPromptFor(
       { name: "Alice", description: "A kind fairy" },
       { name: "Bob", description: "Engineer, likes brevity" },

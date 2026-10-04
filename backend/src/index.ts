@@ -3,12 +3,12 @@ import cors from "cors";
 import fs from "fs";
 import path from "path";
 import { createApiRouter } from "./routes";
-import { CONFIG_FILE, charactersDir, chatsDir, ensureDirs, loadConfig, parseListen } from "./config";
-import { listUsers, saveUser } from "./users";
+import { CONFIG_FILE, charactersDir, chatsDir, ensureDirs, loadConfig, parseListen, personsDir } from "./config";
 import { Container } from "./di";
 import { initMachineService, DI_MACHINE_SERVICE } from "./machine/IMachineService";
 import { DI_CHATS_SERVICE, ChatsService } from "./chats/ChatsService";
 import { DI_CHARACTERS_SERVICE, CharactersService } from "./characters/CharactersService";
+import { DI_PERSONS_SERVICE, PersonsService } from "./persons/PersonsService";
 import { DI_IMAGE_GENERATION_SERVICE, ImageGenerationService } from "./image_generation/ImageGenerationService";
 import { DI_TEXT_GENERATION_SERVICE, TextGenerationService } from "./text_generation/TextGenerationService";
 
@@ -20,6 +20,7 @@ const container = new Container();
 container.register(DI_MACHINE_SERVICE, () => initMachineService());
 container.register(DI_TEXT_GENERATION_SERVICE, () => new TextGenerationService());
 container.register(DI_CHARACTERS_SERVICE, () => new CharactersService(() => charactersDir()));
+container.register(DI_PERSONS_SERVICE, () => new PersonsService(() => personsDir()));
 container.register(DI_CHATS_SERVICE, () => new ChatsService(() => chatsDir(), loadConfig));
 container.register(
   DI_IMAGE_GENERATION_SERVICE,
@@ -32,6 +33,7 @@ container.register(
     ),
 );
 const characters = container.resolve(DI_CHARACTERS_SERVICE);
+const persons = container.resolve(DI_PERSONS_SERVICE);
 const chats = container.resolve(DI_CHATS_SERVICE);
 
 // Migration: characters from the old config.json format (the characters field)
@@ -58,7 +60,7 @@ const images = container.resolve(DI_IMAGE_GENERATION_SERVICE);
 const textGeneration = container.resolve(DI_TEXT_GENERATION_SERVICE);
 void images.refreshAvailableGenerators(config.imageGenerators);
 
-// First run (nothing exists yet): create the default character and user.
+// First run (nothing exists yet): create the default character and person.
 if (characters.list().length === 0) {
   characters.save({
     id: "assistant",
@@ -66,13 +68,13 @@ if (characters.list().length === 0) {
     description: "A friendly AI assistant. Replies briefly and to the point.",
   });
 }
-if (listUsers().length === 0) {
-  saveUser({ id: "default", name: "You", description: "" });
+if (persons.list().length === 0) {
+  persons.save({ id: "default", name: "You", description: "" });
 }
 
 const app = express();
 app.use(cors());
-app.use("/api", createApiRouter(images, textGeneration, characters, chats));
+app.use("/api", createApiRouter(images, textGeneration, characters, persons, chats));
 
 // Static built frontend (Angular) + SPA fallback
 const candidates = [

@@ -29,8 +29,9 @@ export type Character = {
   description: string;
 };
 
-// A user is a users/<id>/ folder with user.json (name + persona description).
-export type User = {
+// A person (the persona card) is a users/<id>/ folder with user.json
+// (name + persona description).
+export type Person = {
   id: string;
   name: string;
   description: string;
@@ -65,10 +66,10 @@ export function isSdApiGenerator(g: ImageGenerator): g is SdApiSettings {
   return typeof (g as SdApiSettings).url === 'string';
 }
 
-// Characters and users are not stored in the config: each one is a
-// characters/<id>/ or users/<id>/ folder (see characters/CharactersService.ts / users.ts).
-// There is no selected "current" user anymore: each chat specifies its own
-// persona in the Chat.userId field.
+// Characters and persons are not stored in the config: each one is a
+// characters/<id>/ or users/<id>/ folder (see characters/CharactersService.ts /
+// persons/PersonsService.ts). There is no selected "current" persona anymore:
+// each chat specifies its own persona in the Chat.userId field.
 export type Config = {
   listen: string; // "0.0.0.0:3210" — the server's listen address
   llmModels: Record<string, LlmModel>;
