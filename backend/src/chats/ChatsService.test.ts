@@ -2,10 +2,19 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { ChatsService } from "./ChatsService";
-import { Chat, Config, Model } from "../types";
+import { ConfigurationService } from "../configuration/ConfigurationService";
+import { Chat } from "./Chat";
+import { Config } from "../configuration/Config";
+import { Model } from "../configuration/Model";
 
-// The config is injected as a loader, so the tests point it at an in-memory
-// model list — no real config.json is involved.
+// The config is stubbed, so the tests point the model fallback at an
+// in-memory model list — no real config.json is involved.
+class StubConfigurationService extends ConfigurationService {
+  loadConfig(): Config {
+    return configOf(modelNames);
+  }
+}
+
 function model(name: string): Model {
   return {
     name,
@@ -33,10 +42,7 @@ let chats: ChatsService;
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "sillytalk-chats-"));
   modelNames = ["m1", "m2"];
-  chats = new ChatsService(
-    () => root,
-    () => configOf(modelNames),
-  );
+  chats = new ChatsService(() => root, new StubConfigurationService());
 });
 
 afterEach(() => {
@@ -142,10 +148,7 @@ describe("the model fallback", () => {
 
   it("leaves the chat alone when the config has no models at all", () => {
     modelNames = [];
-    chats = new ChatsService(
-      () => root,
-      () => configOf(modelNames),
-    );
+    chats = new ChatsService(() => root, new StubConfigurationService());
     writeChat("c1", { id: "c1", characterIds: ["a"], userId: "me", modelId: "gone", messages: [] });
     expect(chats.get("c1")?.modelId).toBe("gone");
   });
@@ -230,5 +233,70 @@ describe("importCharacterPhoto", () => {
   it("returns null when the photo does not exist", () => {
     const chat = chats.create(["a"], "m1", "me");
     expect(chats.importCharacterPhoto(chat.id, path.join(root, "nope.png"))).toBeNull();
+  });
+});
+
+describe("normalizeImages", () => {
+  it("saves data URLs, keeps existing file references, drops the rest", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    const dataName = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=");
+    const result = chats.normalizeImages(chat.id, [
+      "data:image/png;base64,aGVsbG8=",
+      dataName,
+      "missing.png",
+      42,
+      null,
+      "",
+    ]);
+    expect(result).toHaveLength(2);
+    expect(result[0]).toMatch(/^img-[0-9a-f]{8}\.png$/);
+    expect(result[1]).toBe(dataName);
+  });
+
+  it("checks only the file name in the chat files/ (paths are reduced to their basename)", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    const name = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=");
+    expect(chats.normalizeImages(chat.id, [path.join("/elsewhere", name)])).toEqual([name]);
+    expect(chats.normalizeImages(chat.id, ["/elsewhere/missing.png"])).toEqual([]);
+  });
+});
+
+describe("setMessageImageStatus", () => {
+  function chatWithPendingMessage(): { chat: Chat; messageId: string } {
+    const chat = chats.create(["a"], "m1", "me");
+    chat.messages.push({
+      id: "m1",
+      role: "assistant",
+      characterId: "a",
+      text: "",
+      images: ["gen-1.png"],
+      imageStatus: { "gen-1.png": "pending" },
+      timestamp: 1,
+    });
+    chats.save(chat);
+    return { chat, messageId: "m1" };
+  }
+
+  it("sets the status and the error of a message image", () => {
+    const { chat, messageId } = chatWithPendingMessage();
+    chats.setMessageImageStatus(chat.id, messageId, "gen-1.png", "failed", "boom");
+    const msg = chats.get(chat.id)!.messages[0];
+    expect(msg.imageStatus).toEqual({ "gen-1.png": "failed" });
+    expect(msg.imageErrors).toEqual({ "gen-1.png": "boom" });
+  });
+
+  it("clears the status and the error when the status is undefined", () => {
+    const { chat, messageId } = chatWithPendingMessage();
+    chats.setMessageImageStatus(chat.id, messageId, "gen-1.png", "failed", "boom");
+    chats.setMessageImageStatus(chat.id, messageId, "gen-1.png", undefined);
+    const msg = chats.get(chat.id)!.messages[0];
+    expect(msg.imageStatus).toBeUndefined();
+    expect(msg.imageErrors).toBeUndefined();
+  });
+
+  it("is a silent no-op for a missing chat or message", () => {
+    expect(() => chats.setMessageImageStatus("nope", "m1", "gen-1.png", "pending")).not.toThrow();
+    const chat = chats.create(["a"], "m1", "me");
+    expect(() => chats.setMessageImageStatus(chat.id, "missing", "gen-1.png", "pending")).not.toThrow();
   });
 });

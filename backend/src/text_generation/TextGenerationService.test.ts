@@ -1,9 +1,13 @@
 import { TextGenerationService } from "./TextGenerationService";
-import { Chat, ChatMessage, Config, Model } from "../types";
+import { ConfigurationService } from "../configuration/ConfigurationService";
+import { Chat } from "../chats/Chat";
+import { ChatMessage } from "../chats/ChatMessage";
+import { Config } from "../configuration/Config";
+import { Model } from "../configuration/Model";
 
 // One service instance for the whole suite — the service is stateless, the
 // tests only need its methods.
-const textGenerationService = new TextGenerationService();
+const textGenerationService = new TextGenerationService(new ConfigurationService());
 
 function msg(text: string, role: "user" | "assistant" = "user"): ChatMessage {
   return { id: Math.random().toString(36), role, text, images: [], timestamp: Date.now() };

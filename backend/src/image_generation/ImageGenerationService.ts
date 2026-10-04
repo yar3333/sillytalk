@@ -2,9 +2,13 @@ import fs from "fs";
 import path from "path";
 import { randomUUID } from "crypto";
 import { ChildProcess } from "child_process";
-import { Character, Chat, Config, ImageGenerator, Model } from "../types";
-import { characterPhotosDir, chatDir, chatFilesDir } from "../config";
+import { Character } from "../characters/Character";
+import { Chat } from "../chats/Chat";
+import { Model } from "../configuration/Model";
+import { PathHelper } from "../configuration/PathHelper";
+import { ConfigurationService } from "../configuration/ConfigurationService";
 import { createToken } from "../di";
+import { ImageGenerator } from "./ImageGenerator";
 import { ChatsService } from "../chats/ChatsService";
 import { TextGenerationService } from "../text_generation/TextGenerationService";
 import { IMachineService } from "../machine/IMachineService";
@@ -31,8 +35,8 @@ export const DI_IMAGE_GENERATION_SERVICE = createToken<ImageGenerationService>("
 
 // The top-level image-generation service: the availability cache, the
 // one-shot generateImages and the background job registry. The dependencies
-// (the machine service, the config loader) are injected; all the state
-// lives on the instance, not in module globals.
+// (the machine, text-generation, chat and configuration services) are
+// injected; all the state lives on the instance, not in module globals.
 export class ImageGenerationService {
   // ---- available generators ----
   // Every enabled and available generator is used: jobs of different
@@ -74,9 +78,9 @@ export class ImageGenerationService {
     // The chat service (importCharacterPhoto for the [PHOTO] references) —
     // the lower-level domain the image refs are copied through.
     private readonly chats: ChatsService,
-    // The config is read through the loader (not injected as a value), so a
-    // job that starts after a settings change probes the current generators.
-    private readonly loadConfig: () => Config,
+    // The configuration service — read on demand, so a job that starts after
+    // a settings change probes the current generators.
+    private readonly configuration: ConfigurationService,
   ) {
     this.drivers = new DriverFactory(machine);
   }
@@ -115,7 +119,7 @@ export class ImageGenerationService {
     if (!driver) {
       throw new Error("Image generation is not configured (no available generator)");
     }
-    const dir = chatFilesDir(chatId);
+    const dir = PathHelper.chatFilesDir(chatId);
     fs.mkdirSync(dir, { recursive: true });
     const name = this.newGeneratedImageName();
     await driver.run(prompt, this.resolveRefPaths(dir, refFilenames), path.join(dir, name));
@@ -135,7 +139,7 @@ export class ImageGenerationService {
   imageInventory(chat: Chat, character: Character | null): InventoryItem[] {
     const items: InventoryItem[] = [];
     if (character) {
-      const photosDir = characterPhotosDir(character.id);
+      const photosDir = PathHelper.characterPhotosDir(character.id);
       if (fs.existsSync(photosDir)) {
         for (const f of fs
           .readdirSync(photosDir)
@@ -145,7 +149,7 @@ export class ImageGenerationService {
         }
       }
     }
-    const filesDir = chatFilesDir(chat.id);
+    const filesDir = PathHelper.chatFilesDir(chat.id);
     for (const m of chat.messages) {
       for (const img of m.images ?? []) {
         const p = path.join(filesDir, path.basename(img));
@@ -164,7 +168,7 @@ export class ImageGenerationService {
   // into the chat (importCharacterPhoto); chat images are taken as-is.
   resolveInventoryRefs(chatId: string, indices: number[], inventory: InventoryItem[]): string[] {
     const refs: string[] = [];
-    const filesDir = chatFilesDir(chatId);
+    const filesDir = PathHelper.chatFilesDir(chatId);
     for (const n of indices) {
       const item = inventory[n - 1];
       if (!item) continue;
@@ -224,7 +228,7 @@ export class ImageGenerationService {
   startImageJob(opts: { chatId: string; name: string; prompt: string; refFilenames: string[] }): ImageJob {
     const { chatId, name, prompt, refFilenames } = opts;
     const key = ImageGenerationService.jobKey(chatId, name);
-    const dir = chatFilesDir(chatId);
+    const dir = PathHelper.chatFilesDir(chatId);
     const target = path.join(dir, name);
     const entry: JobEntry = {
       job: null as unknown as ImageJob,
@@ -243,7 +247,7 @@ export class ImageGenerationService {
         if (entry.cancelled) return { status: "cancelled", hadOld };
         // The chat was deleted while the job waited in the queue — do not
         // recreate its folder with an orphan image.
-        if (!fs.existsSync(chatDir(chatId))) {
+        if (!fs.existsSync(PathHelper.chatDir(chatId))) {
           return { status: "failed", error: "The chat was deleted", hadOld: false };
         }
         fs.mkdirSync(dir, { recursive: true });
@@ -309,7 +313,7 @@ export class ImageGenerationService {
       // first.
       let driver = this.pickDriver();
       if (!driver) {
-        await this.refreshAvailableGenerators(this.loadConfig().imageGenerators);
+        await this.refreshAvailableGenerators(this.configuration.loadConfig().imageGenerators);
         driver = this.pickDriver();
       }
       if (!driver) {

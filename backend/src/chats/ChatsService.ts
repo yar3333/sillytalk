@@ -1,8 +1,10 @@
 import fs from "fs";
 import path from "path";
 import { randomUUID } from "crypto";
-import { Chat, ChatSummary, Config } from "../types";
-import { chatDir, chatFile, chatFilesDir, isDirEntry, listModels, newId } from "../config";
+import { Chat } from "./Chat";
+import { ChatSummary } from "./ChatSummary";
+import { PathHelper } from "../configuration/PathHelper";
+import { ConfigurationService } from "../configuration/ConfigurationService";
 import { createToken } from "../di";
 
 // The DI token of the chat service (registered in index.ts).
@@ -12,12 +14,13 @@ export const DI_CHATS_SERVICE = createToken<ChatsService>("ChatsService");
 // chats/<id>/ folders (chat.json + files/ — the chat's uploaded/generated
 // images). The root folder is read through the accessor (not injected as a
 // value), so the service always sees the current SILLYTALK_CHATS_DIR / data
-// root, and tests can point it at a temp dir; the config loader is injected
-// the same way (the model fallback in get() needs the current model list).
+// root, and tests can point it at a temp dir; the configuration service is
+// injected the same way (the model fallback in get() needs the current model
+// list).
 export class ChatsService {
   constructor(
     private readonly chatsRoot: () => string,
-    private readonly loadConfig: () => Config,
+    private readonly configuration: ConfigurationService,
   ) {}
 
   // The chat list: every folder with a chat.json, newest first (by the
@@ -27,8 +30,8 @@ export class ChatsService {
     if (!fs.existsSync(root)) return [];
     const result: ChatSummary[] = [];
     for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-      if (!isDirEntry(root, entry)) continue;
-      const file = chatFile(entry.name, root);
+      if (!PathHelper.isDirEntry(root, entry)) continue;
+      const file = PathHelper.chatFile(entry.name, root);
       if (!fs.existsSync(file)) continue;
       try {
         const chat = JSON.parse(fs.readFileSync(file, "utf-8")) as Chat;
@@ -45,7 +48,7 @@ export class ChatsService {
   // Reads one chat, repairing the format on the fly (the repaired chat is
   // saved back when anything was fixed).
   get(chatId: string): Chat | null {
-    const file = chatFile(chatId, this.chatsRoot());
+    const file = PathHelper.chatFile(chatId, this.chatsRoot());
     if (!fs.existsSync(file)) return null;
     try {
       const chat = JSON.parse(fs.readFileSync(file, "utf-8")) as Chat;
@@ -71,13 +74,13 @@ export class ChatsService {
     delete legacy.characterId;
     delete legacy.userIds;
     const root = this.chatsRoot();
-    fs.mkdirSync(chatDir(chat.id, root), { recursive: true });
-    fs.writeFileSync(chatFile(chat.id, root), JSON.stringify(chat, null, 2), "utf-8");
+    fs.mkdirSync(PathHelper.chatDir(chat.id, root), { recursive: true });
+    fs.writeFileSync(PathHelper.chatFile(chat.id, root), JSON.stringify(chat, null, 2), "utf-8");
   }
 
   create(characterIds: string[], modelId: string, userId: string): Chat {
     const chat: Chat = {
-      id: newId(),
+      id: PathHelper.newId(),
       characterIds: [...characterIds],
       userId,
       modelId,
@@ -89,7 +92,7 @@ export class ChatsService {
 
   // Deletes the chat together with its folder (the files/ go along).
   delete(chatId: string): boolean {
-    const dir = chatDir(chatId, this.chatsRoot());
+    const dir = PathHelper.chatDir(chatId, this.chatsRoot());
     if (!fs.existsSync(dir)) return false;
     fs.rmSync(dir, { recursive: true, force: true });
     return true;
@@ -106,7 +109,7 @@ export class ChatsService {
       .replace(/[^\w.-]+/g, "_")
       .slice(0, 40);
     const filename = `${base || "img"}-${randomUUID().slice(0, 8)}${ext}`;
-    const dir = chatFilesDir(chatId, this.chatsRoot());
+    const dir = PathHelper.chatFilesDir(chatId, this.chatsRoot());
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, filename), Buffer.from(match[2], "base64"));
     return filename;
@@ -116,10 +119,67 @@ export class ChatsService {
   importCharacterPhoto(chatId: string, photoPath: string): string | null {
     if (!fs.existsSync(photoPath)) return null;
     const filename = `char-${randomUUID().slice(0, 8)}${path.extname(photoPath)}`;
-    const dir = chatFilesDir(chatId, this.chatsRoot());
+    const dir = PathHelper.chatFilesDir(chatId, this.chatsRoot());
     fs.mkdirSync(dir, { recursive: true });
     fs.copyFileSync(photoPath, path.join(dir, filename));
     return filename;
+  }
+
+  // Normalizes the image list to file names in the chat files/: a data URL
+  // is saved as a new file; a string without data: is a reference to an
+  // existing file (kept only when the file is there); anything else is
+  // dropped.
+  normalizeImages(chatId: string, images: unknown[]): string[] {
+    const filesDir = PathHelper.chatFilesDir(chatId, this.chatsRoot());
+    const saved: string[] = [];
+    for (const img of images) {
+      if (typeof img !== "string" || !img) continue;
+      if (img.startsWith("data:")) {
+        saved.push(this.saveImage(chatId, img));
+      } else {
+        const safe = path.basename(img);
+        if (fs.existsSync(path.join(filesDir, safe))) saved.push(safe);
+      }
+    }
+    return saved;
+  }
+
+  // Sets (or clears, when status is undefined) the generation status of one
+  // image of one message, saving the chat. The chat is re-read on every call
+  // so a job finishing never clobbers a concurrent change (a new message,
+  // another job finishing). A missing chat or message is a silent no-op (it
+  // was deleted while the job ran).
+  setMessageImageStatus(
+    chatId: string,
+    messageId: string,
+    image: string,
+    status: "pending" | "failed" | "cancelled" | undefined,
+    error?: string,
+  ): void {
+    const chat = this.get(chatId);
+    if (!chat) return;
+    const msg = chat.messages.find((m) => m.id === messageId);
+    if (!msg) return;
+    let dirty = false;
+    if (status === undefined) {
+      // The image is ready (or no longer belongs to the message): clear its
+      // pending/failed status and the stored error.
+      if (msg.imageStatus && image in msg.imageStatus) {
+        delete msg.imageStatus[image];
+        if (Object.keys(msg.imageStatus).length === 0) delete msg.imageStatus;
+        dirty = true;
+      }
+      if (msg.imageErrors && image in msg.imageErrors) {
+        delete msg.imageErrors[image];
+        if (Object.keys(msg.imageErrors).length === 0) delete msg.imageErrors;
+        dirty = true;
+      }
+    } else {
+      msg.imageStatus = { ...(msg.imageStatus ?? {}), [image]: status };
+      if (error !== undefined) msg.imageErrors = { ...(msg.imageErrors ?? {}), [image]: error };
+      dirty = true;
+    }
+    if (dirty) this.save(chat);
   }
 
   // ---- on-disk format guards ----
@@ -147,7 +207,7 @@ export class ChatsService {
   // The chat's model may have disappeared from the config (renamed/deleted) —
   // attach the first available one so the chat keeps working.
   private ensureModelId(chat: Chat): boolean {
-    const models = listModels(this.loadConfig());
+    const models = this.configuration.listModels(this.configuration.loadConfig());
     if (models.length === 0 || models.some((m) => m.name === chat.modelId)) return false;
     chat.modelId = models[0].name;
     return true;

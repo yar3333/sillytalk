@@ -1,7 +1,7 @@
 import fs from "fs";
 import { ChildProcess } from "child_process";
-import { LocalProgramSettings } from "../../types";
-import { expandPath } from "../../config";
+import { LocalProgramSettings } from "../LocalProgramSettings";
+import { PathHelper } from "../../configuration/PathHelper";
 import { IMachineService } from "../../machine/IMachineService";
 import { IImageGeneratorDriver } from "../IImageGeneratorDriver";
 
@@ -16,13 +16,13 @@ export class LocalProgramDriver implements IImageGeneratorDriver {
     private readonly cfg: LocalProgramSettings,
     private readonly machine: IMachineService,
   ) {
-    this.key = `cmd:${expandPath(cfg.command ?? "")}`;
+    this.key = `cmd:${PathHelper.expandPath(cfg.command ?? "")}`;
   }
 
   // Available if a command is set. If the command looks like an absolute
   // path to a file — check that the file exists.
   available(): Promise<boolean> {
-    const cmd = expandPath(this.cfg.command ?? "").trim();
+    const cmd = PathHelper.expandPath(this.cfg.command ?? "").trim();
     if (!cmd) return Promise.resolve(false);
     if (/^[a-zA-Z]:[\\/]/.test(cmd) || cmd.startsWith("\\\\") || cmd.startsWith("/")) {
       return Promise.resolve(fs.existsSync(cmd));
@@ -54,7 +54,7 @@ export class LocalProgramDriver implements IImageGeneratorDriver {
         .replaceAll("{absolutePathsToInputImages}", refPaths.join(","))
         .replaceAll("{absolutePathToOutputImage}", outPath),
     );
-    const command = expandPath(this.cfg.command);
+    const command = PathHelper.expandPath(this.cfg.command);
     await this.machine.runProgram(command, args, registerChild);
     if (!fs.existsSync(outPath)) {
       throw new Error(

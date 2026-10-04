@@ -1,7 +1,8 @@
 import fs from "fs";
 import path from "path";
-import { Character } from "../types";
-import { characterDir, characterFile, characterPhotosDir, isDirEntry } from "../config";
+import { Character } from "./Character";
+import { PathHelper } from "../configuration/PathHelper";
+import { AvatarFile } from "../shared/AvatarFile";
 import { createToken } from "../di";
 
 // The DI token of the character service (registered in index.ts).
@@ -36,11 +37,24 @@ export class CharactersService {
     if (!fs.existsSync(root)) return [];
     const result: Character[] = [];
     for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-      if (!isDirEntry(root, entry)) continue;
+      if (!PathHelper.isDirEntry(root, entry)) continue;
       const character = this.readCharacterFile(entry.name, root);
       if (character) result.push(character);
     }
     return result.sort((a, b) => a.name.localeCompare(b.name, "en"));
+  }
+
+  // The character list with the starter-set photos and the avatar flag.
+  listWithPhotos(): Array<Character & { photos: string[]; hasAvatar: boolean }> {
+    const root = this.charactersRoot();
+    return this.list().map((character) => {
+      const dir = PathHelper.characterPhotosDir(character.id, root);
+      let photos: string[] = [];
+      if (fs.existsSync(dir)) {
+        photos = fs.readdirSync(dir).filter((f) => /\.(png|jpe?g|webp|gif)$/i.test(f));
+      }
+      return { ...character, photos, hasAvatar: AvatarFile.find(PathHelper.characterDir(character.id, root)) !== null };
+    });
   }
 
   get(id: string): Character | null {
@@ -54,18 +68,18 @@ export class CharactersService {
     if (!this.isValidId(character.id)) {
       throw new Error(`Invalid character ID: ${String(character.id)}`);
     }
-    fs.mkdirSync(characterPhotosDir(character.id, root), { recursive: true });
+    fs.mkdirSync(PathHelper.characterPhotosDir(character.id, root), { recursive: true });
     const data = {
       name: character.name ?? "",
       description: character.description ?? "",
     };
-    fs.writeFileSync(characterFile(character.id, root), JSON.stringify(data, null, 2), "utf-8");
+    fs.writeFileSync(PathHelper.characterFile(character.id, root), JSON.stringify(data, null, 2), "utf-8");
   }
 
   // Deletes the character together with its folder (photos and everything else).
   delete(id: string): boolean {
     if (!this.isValidId(id)) return false;
-    const dir = characterDir(id, this.charactersRoot());
+    const dir = PathHelper.characterDir(id, this.charactersRoot());
     if (!fs.existsSync(dir)) return false;
     fs.rmSync(dir, { recursive: true, force: true });
     return true;
@@ -80,7 +94,7 @@ export class CharactersService {
     const source = this.readCharacterFile(id, root);
     if (!source) return null;
     const newId = this.nextCloneId(id, root);
-    fs.cpSync(characterDir(id, root), characterDir(newId, root), { recursive: true });
+    fs.cpSync(PathHelper.characterDir(id, root), PathHelper.characterDir(newId, root), { recursive: true });
     this.save({ id: newId, name: `${source.name} (copy)`, description: source.description });
     return newId;
   }
@@ -96,11 +110,34 @@ export class CharactersService {
     }
     if (!fs.existsSync(root)) return;
     for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-      if (!isDirEntry(root, entry)) continue;
+      if (!PathHelper.isDirEntry(root, entry)) continue;
       if (!keep.has(entry.name)) {
         fs.rmSync(path.join(root, entry.name), { recursive: true, force: true });
       }
     }
+  }
+
+  // ---- avatar (avatar.<ext> in the character folder) ----
+
+  // The avatar file (the first existing avatar.<ext>), null when absent.
+  findAvatar(id: string): string | null {
+    if (!this.isValidId(id)) return null;
+    return AvatarFile.find(PathHelper.characterDir(id, this.charactersRoot()));
+  }
+
+  // Saves the avatar from an image data URL (replacing any older one).
+  // Throws when the payload is not an image data URL.
+  saveAvatar(id: string, dataUrl: string): void {
+    if (!this.isValidId(id)) {
+      throw new Error(`Invalid character ID: ${String(id)}`);
+    }
+    AvatarFile.save(PathHelper.characterDir(id, this.charactersRoot()), dataUrl);
+  }
+
+  // Deletes the avatar file; returns whether anything was deleted.
+  deleteAvatar(id: string): boolean {
+    if (!this.isValidId(id)) return false;
+    return AvatarFile.delete(PathHelper.characterDir(id, this.charactersRoot()));
   }
 
   // Migration from the old config.json format: character entries are moved
@@ -112,7 +149,7 @@ export class CharactersService {
       if (!entry || typeof entry !== "object") continue;
       const candidate = entry as Partial<Character>;
       if (!this.isValidId(candidate.id)) continue;
-      if (fs.existsSync(characterFile(candidate.id, root))) continue;
+      if (fs.existsSync(PathHelper.characterFile(candidate.id, root))) continue;
       this.save({
         id: candidate.id,
         name: typeof candidate.name === "string" ? candidate.name : candidate.id,
@@ -123,7 +160,7 @@ export class CharactersService {
 
   // Reads character.json of one folder (null when missing or broken).
   private readCharacterFile(id: string, root: string): Character | null {
-    const file = characterFile(id, root);
+    const file = PathHelper.characterFile(id, root);
     if (!fs.existsSync(file)) return null;
     try {
       const data = JSON.parse(fs.readFileSync(file, "utf-8")) as Partial<Character>;

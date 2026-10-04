@@ -22,9 +22,13 @@ backend/               Express API; also serves the built frontend
                        the DI composition root (registers + resolves services)
     di.ts              minimal DI container: typed tokens (createToken<T>) +
                        lazy singletons (register/resolve)
-    routes.ts          REST API (config, users, characters, chats, messages, avatars, image, files);
-                       createApiRouter(imageGeneration, textGeneration, characters, persons, chats) —
-                       the services are injected
+    routes.ts          the thin API assembler:
+                       createApiRouter(imageGeneration, textGeneration,
+                       characters, persons, chats, configuration, reply)
+                       mounts the per-domain routers — every domain folder
+                       keeps its own <domain>.routes.ts (the thin HTTP layer:
+                       parameter parsing, validation, status codes, file
+                       streaming over the services)
     text_generation/   the LLM domain: the top-level service class
                        (TextGenerationService.ts — the OpenAI-compatible provider client:
                        chatCompletion text + image_url, translatePrompt;
@@ -33,22 +37,31 @@ backend/               Express API; also serves the built frontend
                        [IMG]/[PHOTO] tag parsing, [SILENT], author labels,
                        history trimming; DI token TEXT_GENERATION) and
                        TextGenerationService.test.ts — jest unit tests
-    image_generation/  image generation: the driver interface
-                       (IImageGeneratorDriver.ts; the job model — ImageJob.ts /
-                       ImageJobResult.ts), the backends
+    image_generation/  image generation: the generator settings
+                       (ImageGenerator.ts — the union of SdApiSettings.ts /
+                       LocalProgramSettings.ts + the type guards), the driver
+                       interface (IImageGeneratorDriver.ts; the job model —
+                       ImageJob.ts / ImageJobResult.ts), the backends
                        (drivers/SdApiDriver.ts / drivers/LocalProgramDriver.ts),
                        the driver factory (DriverFactory.ts), and the top-level
                        service class (ImageGenerationService.ts —
                        ImageGenerationService: availability cache, one-shot
                        generateImages, the background job registry);
+                       image.routes.ts — the /image routes (the availability
+                       flag + the manual generation);
                        ImageGenerationService.test.ts —
                        jest unit tests (local program, background image jobs)
-    characters/        the character domain: the top-level service class
-                       (CharactersService.ts — the character catalog on the
+    characters/        the character domain: the Character.ts type and the
+                       top-level service class (CharactersService.ts — the
+                       character catalog on the
                        characters/<id>/ folders: CRUD, clone, the full-list
                        sync, the migration from the old config format, the ID
-                       validation; DI token DI_CHARACTERS_SERVICE, the root
-                       folder injected as () => string) and
+                       validation, the avatar (findAvatar/saveAvatar/
+                       deleteAvatar), the list with photos + the avatar flag
+                       (listWithPhotos); DI token DI_CHARACTERS_SERVICE, the
+                       root folder injected as () => string);
+                       characters.routes.ts — the /characters routes (the
+                       catalog sync, the clone, the photos, the avatar);
                        CharactersService.test.ts — jest unit tests
     machine/           the local-generator machine service: the interface +
                        platform selection (IMachineService.ts, DI token
@@ -58,21 +71,54 @@ backend/               Express API; also serves the built frontend
                        (implementations/MachinePosixService.ts — detached
                        process groups, group kill); MachineService.test.ts —
                        jest unit tests (platform selection, command lines)
-    chats/             the chat domain: the top-level service class
+    chats/             the chat domain: the Chat.ts / ChatMessage.ts /
+                       ChatSummary.ts types and the top-level service class
                        (ChatsService.ts — chat + chat-file persistence on the
                        chats/<id>/ folders: CRUD, the format guards, the model
                        fallback, the chat files (saveImage,
-                       importCharacterPhoto); DI token DI_CHATS_SERVICE, the
-                       root folder and the config loader injected) and
+                       importCharacterPhoto, normalizeImages), the per-image
+                       generation status (setMessageImageStatus); DI token
+                       DI_CHATS_SERVICE, the root folder and the configuration
+                       service injected); chats.routes.ts — the /chats routes
+                       (the chat CRUD, the messages, the reply queue, the
+                       per-image generation controls);
                        ChatsService.test.ts — jest unit tests
-    persons/           the person (persona card) domain: the top-level service
-                       class (PersonsService.ts — the persona catalog on the
+    persons/           the person (persona card) domain: the Person.ts type and
+                       the top-level service class (PersonsService.ts — the
+                       persona catalog on the
                        users/<id>/ folders: CRUD, clone, the full-list sync,
-                       the ID validation; DI token DI_PERSONS_SERVICE, the root
-                       folder injected as () => string) and
+                       the ID validation, the avatar (findAvatar/saveAvatar/
+                       deleteAvatar), the list with the avatar flag
+                       (listWithAvatars); DI token DI_PERSONS_SERVICE, the root
+                       folder injected as () => string); persons.routes.ts —
+                       the /users routes (the persona catalog + the avatar);
                        PersonsService.test.ts — jest unit tests
-    config.ts          config load/save, path helpers
-    types.ts           shared backend types
+    configuration/     the configuration domain: the types (Config.ts,
+                       LlmModel.ts, Model.ts), the top-level service class
+                       (ConfigurationService.ts — the config.json load/save
+                       with normalization + JSONC comment stripping, the
+                       defaults, the listen-address parsing, the flat-model
+                       helpers; DI token DI_CONFIGURATION_SERVICE) and
+                       PathHelper.ts — the shared data-layout helpers as a
+                       stateless class with static methods (the data root,
+                       the domain folders, expandPath, newId, isDirEntry);
+                       config.routes.ts — the /config routes;
+                       ConfigurationService.test.ts — jest unit tests
+    reply/             the reply domain: the top-level service class
+                       (ReplyService.ts — the AI-reply orchestration:
+                       appendAssistantReply (system prompt, the history, the
+                       model call, the [SILENT]/[IMG]/[PHOTO] parsing, saving,
+                       the background image jobs), the in-flight reply
+                       registry (beginReply/endReply/cancelReply), the manual
+                       image operations (manualImage, regenerateImage,
+                       cancelImage); DI token DI_REPLY_SERVICE, the five
+                       domain services injected) and
+                       ReplyService.test.ts — jest unit tests
+    shared/            small cross-domain helpers as stateless classes with
+                       static methods: AvatarFile.ts (the avatar.<ext>
+                       find/save/delete, shared by the character and the
+                       person services) and HttpHelper.ts (sendImage — the
+                       file streaming, a routes-layer concern)
   jest.config.js       ts-jest setup
 
 frontend/              Angular app
@@ -206,7 +252,8 @@ The config is **flat**: connection settings live on each `llmModels` entry (`bas
 `apiKey`/`envKey`, `contextSize`) — there is no separate `providers` level. The **key** of
 `llmModels` is both the human-visible name and the internal id a chat references
 (`chat.modelId`); the entry's `id` field is the identifier actually sent to the provider
-(flattened to `Model.name`/`Model.id` in `listModels()`, see `config.ts`). The API key is
+(flattened to `Model.name`/`Model.id` in `listModels()`, see
+`configuration/ConfigurationService.ts`). The API key is
 resolved by `resolveApiKey()`: `envKey` (env var) wins over `apiKey` (literal).
 
 **Environment overrides** (set before server start; used by the e2e suite for isolation):
@@ -272,7 +319,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   name only on success (so a name is never left with a partial image); the jobs of one
   generator are **queued** (one run at a time — a local program / the GPU must not be hit
   concurrently) while jobs of different generators run in parallel. When the job
-  finishes, `routes.ts` updates the message: ok → the status is cleared (the image is ready);
+  finishes, `ReplyService` updates the message: ok → the status is cleared (the image is ready);
   failed/cancelled → `imageStatus[name] = 'failed'` + `imageErrors[name]` (the "broken" image),
   UNLESS an older image existed at the name (a cancelled/failed regeneration) — then the old file
   is kept and the image stays ready. The **frontend polls** the chat (`GET /chats/:id`) on a 1.5 s
@@ -338,8 +385,9 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   **Canceling the generation** — while a reply is being generated the send button is a cancel
   (✕, Enter does the same): the in-flight `POST /reply` fetch is aborted and
   `POST /api/chats/:id/cancel` aborts the model call on the server (one in-flight controller per
-  chat in `inFlightReplies`, the signal goes through `appendAssistantReply` into
-  `chatCompletion`); a cancelled reply saves NO message (no error one either). The queue itself
+  chat in the `ReplyService` in-flight registry, the signal goes through
+  `appendAssistantReply` into `chatCompletion`); a cancelled reply saves NO message (no error
+  one either). The queue itself
   stops via the generation session in `ChatStore` (`cancelGeneration()` + `generationSeq`) —
   silently, without the error banner.
   The header character menu toggles participants (last one cannot be removed) and reorders them
@@ -394,11 +442,15 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
 
 - **DI is a minimal hand-rolled container** (`backend/src/di.ts`, no framework): typed tokens
   (`createToken<T>()`) registered as lazy singletons. The composition root is `index.ts` — it
-  registers `DI_MACHINE_SERVICE`, `DI_TEXT_GENERATION_SERVICE`, `DI_CHARACTERS_SERVICE`,
-  `DI_PERSONS_SERVICE`, `DI_CHATS_SERVICE` and `DI_IMAGE_GENERATION_SERVICE` and resolves them once;
-  `routes.ts` receives the services through
-  `createApiRouter(imageGeneration, textGeneration, characters, persons, chats)`. Consumers take
-  dependencies via constructors and never import the container themselves.
+  registers `DI_MACHINE_SERVICE`, `DI_CONFIGURATION_SERVICE`,
+  `DI_TEXT_GENERATION_SERVICE`, `DI_CHARACTERS_SERVICE`,
+  `DI_PERSONS_SERVICE`, `DI_CHATS_SERVICE`, `DI_IMAGE_GENERATION_SERVICE` and
+  `DI_REPLY_SERVICE` and resolves them once; `routes.ts` (the thin API assembler) receives the
+  services through
+  `createApiRouter(imageGeneration, textGeneration, characters, persons, chats,
+  configuration, reply)` and mounts the per-domain routers (each domain folder keeps its own
+  `<domain>.routes.ts`). Consumers take dependencies via constructors and never import the
+  container themselves.
 - **General backend patterns (established by the `image_generation/` refactor).** When a domain
   grows logic of its own, structure it like `image_generation/` does — these rules generalize it:
   - **A domain = a folder + one top-level service class.** `service.ts`-style module globals
@@ -409,36 +461,47 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
     (`DriverFactory.ts`). Interfaces get their own file named after the type
     (`IImageGeneratorDriver.ts`, `ImageJob.ts`); no barrel `index.ts` — consumers import from
     concrete files.
-  - **Dependencies are injected through the constructor** (`IMachineService`, `() => Config`);
+  - **Dependencies are injected through the constructor** (`IMachineService`, `ConfigurationService`);
     the class is registered in the container under a token defined next to it (`IMAGE_GENERATION`)
     and resolved once at the composition root. Tests instantiate the class directly
     (`new ImageGenerationService(...)`) instead of resetting module state.
   - **The service stays persistence- and HTTP-agnostic.** It speaks in ids and primitives
     (`chatId`, reserved file name), returns results the caller applies (`ImageJob.result`),
-    and never imports express or touches `ChatMessage` persistence. The glue "a job finished →
-    update the message in the chat" (`startChatImageJob` / `setMessageImageStatus` in
-    `routes.ts`) stays in the routes layer; likewise file serving (`sendImage`) and upload
-    normalization (`normalizeChatImages`) are routes'/persistence concerns, not the domain's.
-  - **Keep the dependency graph one-way and acyclic** (`routes → service → drivers/machine/
-    config/chats/text_generation/characters/persons`): the service may call lower-level services and module
-    functions (e.g. `ImageGenerationService` calling `ChatsService.importCharacterPhoto` and
-    `TextGenerationService.translatePrompt`), but nothing below it may import the domain back.
-    When pulling code into the service, grep the rest of the project for logic that belongs to
-    the domain and move what fits (`ensureEnglishPrompt`, `imageInventory`,
-    `resolveInventoryRefs` moved from `routes.ts`); leave HTTP/persistence glue behind, but
-    be able to say why.
+    and never imports express. `ReplyService` is the exception that proves the rule: it is a
+    TOP-LEVEL service that sits above the domain services and orchestrates across them
+    (it saves through `ChatsService` and returns the saved chat / the message / a typed
+    failure for the route to apply). The pure persistence pieces live in the domain they
+    belong to (`ChatsService.setMessageImageStatus`, `ChatsService.normalizeImages`); the
+    "a job finished → update the message" orchestration (`startChatImageJob`) is a private
+    method of `ReplyService`; file serving (`HttpHelper.sendImage`) stays a routes-layer
+    concern, not a domain's.
+  - **Keep the dependency graph one-way and acyclic** (`routes → reply → the domain
+    services → drivers/machine/configuration/...`): the service may call lower-level services
+    and module functions (e.g. `ImageGenerationService` calling
+    `ChatsService.importCharacterPhoto` and `TextGenerationService.translatePrompt`;
+    `ReplyService` calling all five domain services), but nothing below it may import the
+    domain back — that is why the reply orchestration could NOT go into
+    `ChatsService` (which `ImageGenerationService` already depends on) and got its own
+    `reply/` domain. When pulling code into the service, grep the rest of the project for
+    logic that belongs to the domain and move what fits (`ensureEnglishPrompt`,
+    `imageInventory`, `resolveInventoryRefs`, `appendAssistantReply`, the in-flight reply
+    registry moved from `routes.ts`); leave HTTP concerns (validation, status codes, file
+    streaming) in the route files, and be able to say why.
   - **OS/program specifics go behind an interface** selected once at startup
     (`IMachineService` + `machine/implementations/MachineWindowsService.ts` /
     `MachinePosixService.ts`); the domain code never
     branches on `process.platform`.
-  - **Planned migration (partially done):** `llm.ts`, `characters.ts`, `chats.ts` and `users.ts`
-    are already converted (`text_generation/TextGenerationService.ts`,
-    `characters/CharactersService.ts`, `chats/ChatsService.ts`, `persons/PersonsService.ts`); the
-    remaining module (`config.ts`) is still function-style and is to be converted to this
-    service-class pattern in the future (a class per module, DI through the container, state on
-    the instance, routes keep only HTTP glue). Until a module is converted, keep the two styles
-    separate — do not add new module-level state to it; new domains must start as service classes
-    right away.
+  - **Migration done:** every former module-level domain is now a folder with a top-level
+    service class — `text_generation/TextGenerationService.ts`,
+    `characters/CharactersService.ts`, `chats/ChatsService.ts`,
+    `persons/PersonsService.ts`, `configuration/ConfigurationService.ts` (the last one moved out
+    of the function-style `config.ts`; its shared data-layout helpers live in
+    `configuration/PathHelper.ts` as static methods of a stateless `PathHelper`
+    class), `reply/ReplyService.ts` (the AI-reply orchestration, moved out of the
+    former monolithic `routes.ts`, together with the per-domain `<domain>.routes.ts`
+    split). New domains must start as service classes right away — no stateful
+    module globals; new routes go into the domain's `<domain>.routes.ts`, not the
+    assembler.
 - **Single port in production** — `backend/src/index.ts` mounts the API at `/api`, serves the built
   frontend as static files, and falls back to `index.html` for non-`/api` GETs (SPA).
 - **LLM call** (`text_generation/TextGenerationService.ts`) — `chatCompletion()` posts to `${baseUrl}/chat/completions`. `trimHistory()`
@@ -487,9 +550,10 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   local state right away. The typing row intentionally does **not** carry the `.msg` class so it is
   not matched by the e2e selector for the assistant reply
   (`.msg:not(.user):not(.error)`).
-- **Serving images.** `sendImage()` in `routes.ts` streams via `fs.createReadStream(...).pipe(res)` with
+- **Serving images.** `HttpHelper.sendImage()` (`shared/HttpHelper.ts`, used by the per-domain
+  routers) streams via `fs.createReadStream(...).pipe(res)` with
   an explicit Content-Type — **not** `res.sendFile` (which threw NotFoundError for these files). Keep the
-  streaming approach for chat files and character photos.
+  streaming approach for chat files, character photos and avatars.
 - **Frontend dist path.** Angular outputs to `frontend/dist/frontend/browser`. `index.ts` checks that
   path first, then falls back to `frontend/dist/browser`. If you change the Angular output path, update
   both candidates.

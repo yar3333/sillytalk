@@ -1,21 +1,23 @@
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { chatDir, chatFilesDir, chatsDir, loadConfig } from "../config";
+import { PathHelper } from "../configuration/PathHelper";
 import { getMachineService } from "../machine/IMachineService";
 import { ChatsService } from "../chats/ChatsService";
 import { TextGenerationService } from "../text_generation/TextGenerationService";
 import { ImageGenerationService } from "./ImageGenerationService";
-import { ImageGenerator } from "../types";
+import { ImageGenerator } from "./ImageGenerator";
+import { ConfigurationService } from "../configuration/ConfigurationService";
 
 // One service instance for the whole suite — the state (the availability
 // cache and the job registry) lives on the instance, and the tests recompute
 // the availability via refreshAvailableGenerators as needed.
+const configuration = new ConfigurationService();
 const images = new ImageGenerationService(
   getMachineService(),
-  new TextGenerationService(),
-  new ChatsService(() => chatsDir(), loadConfig),
-  loadConfig,
+  new TextGenerationService(configuration),
+  new ChatsService(() => PathHelper.chatsDir(), configuration),
+  configuration,
 );
 
 const chatId = "jest-local-cmd-test";
@@ -59,11 +61,11 @@ beforeAll(() => {
     failFile,
     "@echo off\r\necho stdout line from failing script\r\necho stderr line from failing script 1>&2\r\nexit /b 3\r\n",
   );
-  fs.rmSync(chatFilesDir(chatId), { recursive: true, force: true });
+  fs.rmSync(PathHelper.chatFilesDir(chatId), { recursive: true, force: true });
 });
 
 afterAll(() => {
-  fs.rmSync(chatFilesDir(chatId), { recursive: true, force: true });
+  fs.rmSync(PathHelper.chatFilesDir(chatId), { recursive: true, force: true });
   fs.rmSync(cmdFile, { force: true });
   fs.rmSync(ps1File, { force: true });
   fs.rmSync(failFile, { force: true });
@@ -77,18 +79,18 @@ describeWindows(".cmd/.ps1 generator launch (Windows only)", () => {
   it("runs a .cmd and substitutes the prompt and the absolute output path", async () => {
     const names = await images.generateImages([cmdGen], chatId, "hello world test", []);
     expect(names).toHaveLength(1);
-    const file = path.join(chatFilesDir(chatId), names[0]);
+    const file = path.join(PathHelper.chatFilesDir(chatId), names[0]);
     expect(fs.existsSync(file)).toBe(true);
     const content = fs.readFileSync(file, "utf-8");
     expect(content).toContain("hello world test");
   });
 
   it("passes absolute reference paths to the batch file", async () => {
-    fs.mkdirSync(chatFilesDir(chatId), { recursive: true });
-    const refPath = path.join(chatFilesDir(chatId), "ref.png");
+    fs.mkdirSync(PathHelper.chatFilesDir(chatId), { recursive: true });
+    const refPath = path.join(PathHelper.chatFilesDir(chatId), "ref.png");
     fs.writeFileSync(refPath, "x");
     const names = await images.generateImages([cmdGen], chatId, "hello", ["ref.png"]);
-    const file = path.join(chatFilesDir(chatId), names[0]);
+    const file = path.join(PathHelper.chatFilesDir(chatId), names[0]);
     const content = fs.readFileSync(file, "utf-8");
     expect(content).toContain(refPath);
   });
@@ -96,18 +98,18 @@ describeWindows(".cmd/.ps1 generator launch (Windows only)", () => {
   it("runs a .ps1 through powershell.exe and substitutes the arguments", async () => {
     const names = await images.generateImages([ps1Gen], chatId, "ps prompt test", []);
     expect(names).toHaveLength(1);
-    const file = path.join(chatFilesDir(chatId), names[0]);
+    const file = path.join(PathHelper.chatFilesDir(chatId), names[0]);
     expect(fs.existsSync(file)).toBe(true);
     const content = fs.readFileSync(file, "utf-8");
     expect(content).toContain("ps prompt test");
   });
 
   it("passes comma-joined references to the ps1", async () => {
-    fs.mkdirSync(chatFilesDir(chatId), { recursive: true });
-    const refPath = path.join(chatFilesDir(chatId), "ref.png");
+    fs.mkdirSync(PathHelper.chatFilesDir(chatId), { recursive: true });
+    const refPath = path.join(PathHelper.chatFilesDir(chatId), "ref.png");
     fs.writeFileSync(refPath, "x");
     const names = await images.generateImages([ps1Gen], chatId, "hello", ["ref.png"]);
-    const file = path.join(chatFilesDir(chatId), names[0]);
+    const file = path.join(PathHelper.chatFilesDir(chatId), names[0]);
     const content = fs.readFileSync(file, "utf-8");
     expect(content).toContain(refPath);
   });
@@ -136,9 +138,9 @@ describeWindows(".cmd/.ps1 generator launch (Windows only)", () => {
   });
 
   it("an unlimited generator (maxInputImages 0) accepts all references", async () => {
-    fs.mkdirSync(chatFilesDir(chatId), { recursive: true });
+    fs.mkdirSync(PathHelper.chatFilesDir(chatId), { recursive: true });
     for (const n of ["a.png", "b.png", "c.png"]) {
-      fs.writeFileSync(path.join(chatFilesDir(chatId), n), "x");
+      fs.writeFileSync(path.join(PathHelper.chatFilesDir(chatId), n), "x");
     }
     // 0 = unlimited: three references pass through (the batch file receives them)
     await images.generateImages([cmdGen], chatId, "hello", ["a.png", "b.png", "c.png"]);
@@ -146,9 +148,9 @@ describeWindows(".cmd/.ps1 generator launch (Windows only)", () => {
 });
 
 it("rejects more references than the generator supports", async () => {
-  fs.mkdirSync(chatFilesDir(chatId), { recursive: true });
+  fs.mkdirSync(PathHelper.chatFilesDir(chatId), { recursive: true });
   for (const n of ["a.png", "b.png", "c.png"]) {
-    fs.writeFileSync(path.join(chatFilesDir(chatId), n), "x");
+    fs.writeFileSync(path.join(PathHelper.chatFilesDir(chatId), n), "x");
   }
   const limited: ImageGenerator = { ...ps1Gen, maxInputImages: 2 };
   await expect(images.generateImages([limited], chatId, "hello", ["a.png", "b.png", "c.png"])).rejects.toThrow(
@@ -214,13 +216,13 @@ describe("startImageJob (background generation)", () => {
       }
     }
     // The job refuses to run for a deleted chat — the chat dir must exist.
-    fs.rmSync(chatDir(jobChatId), { recursive: true, force: true });
-    fs.mkdirSync(chatDir(jobChatId), { recursive: true });
+    fs.rmSync(PathHelper.chatDir(jobChatId), { recursive: true, force: true });
+    fs.mkdirSync(PathHelper.chatDir(jobChatId), { recursive: true });
   });
 
   afterAll(async () => {
     await images.refreshAvailableGenerators([]);
-    fs.rmSync(chatDir(jobChatId), { recursive: true, force: true });
+    fs.rmSync(PathHelper.chatDir(jobChatId), { recursive: true, force: true });
     for (const f of [okFile, slowFile, failFile, logFileA, logFileB]) fs.rmSync(f, { force: true });
   });
 
@@ -230,7 +232,7 @@ describe("startImageJob (background generation)", () => {
     const job = images.startImageJob({ chatId: jobChatId, name, prompt: "p", refFilenames: [] });
     const r = await job.result;
     expect(r.status).toBe("ok");
-    const file = path.join(chatFilesDir(jobChatId), name);
+    const file = path.join(PathHelper.chatFilesDir(jobChatId), name);
     expect(fs.existsSync(file)).toBe(true);
     expect(fs.readFileSync(file, "utf-8")).toContain("job ok");
   });
@@ -246,7 +248,7 @@ describe("startImageJob (background generation)", () => {
       expect(r.error).toContain("exited with code 2");
       expect(r.error).toContain("fail line from the job");
     }
-    expect(fs.existsSync(path.join(chatFilesDir(jobChatId), name))).toBe(false);
+    expect(fs.existsSync(path.join(PathHelper.chatFilesDir(jobChatId), name))).toBe(false);
   });
 
   it('a cancel stops the run and resolves to "cancelled", no file left', async () => {
@@ -257,7 +259,7 @@ describe("startImageJob (background generation)", () => {
     const r = await job.result;
     expect(r.status).toBe("cancelled");
     if (r.status === "cancelled") expect(r.hadOld).toBe(false);
-    expect(fs.existsSync(path.join(chatFilesDir(jobChatId), name))).toBe(false);
+    expect(fs.existsSync(path.join(PathHelper.chatFilesDir(jobChatId), name))).toBe(false);
   });
 
   it("cancelAllJobs cancels a running job (the server-shutdown path)", async () => {
@@ -270,13 +272,13 @@ describe("startImageJob (background generation)", () => {
     // "close" event fires only once every pipe holder is gone).
     const r = await job.result;
     expect(r.status).toBe("cancelled");
-    expect(fs.existsSync(path.join(chatFilesDir(jobChatId), name))).toBe(false);
+    expect(fs.existsSync(path.join(PathHelper.chatFilesDir(jobChatId), name))).toBe(false);
   });
 
   it("a failed regeneration keeps the older image (hadOld)", async () => {
     await images.refreshAvailableGenerators([genOf(failFile, false)]);
     const name = "job-keepold.png";
-    const file = path.join(chatFilesDir(jobChatId), name);
+    const file = path.join(PathHelper.chatFilesDir(jobChatId), name);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, "old image");
     const job = images.startImageJob({ chatId: jobChatId, name, prompt: "p", refFilenames: [] });

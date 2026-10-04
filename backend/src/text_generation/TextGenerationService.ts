@@ -1,7 +1,11 @@
 import fs from "fs";
 import path from "path";
-import { Chat, ChatMessage, Config, Model } from "../types";
-import { chatFilesDir, listModels, resolveApiKey } from "../config";
+import { Chat } from "../chats/Chat";
+import { ChatMessage } from "../chats/ChatMessage";
+import { Config } from "../configuration/Config";
+import { Model } from "../configuration/Model";
+import { PathHelper } from "../configuration/PathHelper";
+import { ConfigurationService } from "../configuration/ConfigurationService";
 import { createToken } from "../di";
 
 // The DI token of the LLM service (registered in index.ts).
@@ -20,9 +24,12 @@ type MessageParam = { role: string; content: string | ContentPart[] };
 // and the prompt/history helpers the reply pipeline is built from (the system
 // prompt, the [IMG]/[PHOTO] tag parsing, the [SILENT] handling, author labels,
 // history trimming). The service is stateless — every call works on its
-// arguments; the provider key and the chat file paths are resolved through the
-// lower-level config module.
+// arguments; the provider key and the model list are resolved through the
+// lower-level configuration service, the chat file paths through the shared
+// data layout.
 export class TextGenerationService {
+  constructor(private readonly configuration: ConfigurationService) {}
+
   // Image MIME types by file extension (image_url parts are sent as data URIs).
   private static readonly MIME_BY_EXT: Record<string, string> = {
     ".png": "image/png",
@@ -42,7 +49,7 @@ export class TextGenerationService {
   // (chat.modelId is the llmModels key = Model.name), falling back to the
   // first model so a chat whose model was renamed or deleted keeps working.
   resolveModel(config: Config, chat: Chat): Model | null {
-    const models = listModels(config);
+    const models = this.configuration.listModels(config);
     return models.find((m) => m.name === chat.modelId) ?? models[0] ?? null;
   }
 
@@ -278,7 +285,7 @@ export class TextGenerationService {
   // the reasoning level in both spellings) and the reply extraction.
   private async requestCompletion(model: Model, messages: MessageParam[], signal?: AbortSignal): Promise<string> {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
-    const apiKey = resolveApiKey(model);
+    const apiKey = this.configuration.resolveApiKey(model);
     if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
 
     // The model id may be left empty in the config — then the provider picks the
@@ -325,7 +332,7 @@ export class TextGenerationService {
   // support, the message images as image_url data-URIs (missing files are
   // silently dropped).
   private buildContent(model: Model, message: ChatMessage, chatId: string): string | ContentPart[] {
-    const filesDir = chatFilesDir(chatId);
+    const filesDir = PathHelper.chatFilesDir(chatId);
     const images = (message.images ?? [])
       .map((name) => path.join(filesDir, path.basename(name)))
       .filter((file) => fs.existsSync(file));
