@@ -8,8 +8,9 @@ export interface LlmModel {
   envKey?: string; // the name of an env var holding the key (takes priority over apiKey)
   contextSize: number;
   supportsImages: boolean;
-  // Reasoning level: false/absent — off, a string — the level (one of
-  // reasoningLevels). Sent to the provider as reasoning_effort / reasoning.effort.
+  // Reasoning level: a string — the level (one of reasoningLevels), sent as
+  // reasoning_effort / reasoning.effort; false/absent — off, sent as
+  // chat_template_kwargs.enable_thinking=false (the cross-backend off-switch).
   reasoning?: string | false;
   // The possible reasoning levels; absent — the default set.
   reasoningLevels?: string[];

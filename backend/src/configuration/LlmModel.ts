@@ -8,9 +8,10 @@ export type LlmModel = {
   envKey?: string; // name of an env var holding the key (takes priority over apiKey)
   contextSize: number;
   supportsImages: boolean;
-  // Reasoning level: false/absent — off (nothing is sent to the provider), a
-  // string — the level (one of reasoningLevels), sent as reasoning_effort
-  // (OpenAI / llama.cpp) and reasoning.effort (OpenRouter).
+  // Reasoning level: a string — the level (one of reasoningLevels), sent as
+  // reasoning_effort (OpenAI / llama.cpp) and reasoning.effort (OpenRouter);
+  // false/absent — off, sent as chat_template_kwargs.enable_thinking=false
+  // (the reliable cross-backend switch for a default-on model, e.g. Qwen).
   reasoning?: string | false;
   // The possible reasoning levels; absent — the default set
   // (low, medium, high, xhigh, max).

@@ -297,11 +297,16 @@ export class TextGenerationService {
     if (model.id) payload.model = model.id;
     // The reasoning level (when enabled) is sent in the two common
     // OpenAI-compatible spellings: top-level reasoning_effort (OpenAI,
-    // llama.cpp) and reasoning.effort (OpenRouter). A provider ignores the
-    // field it does not know, so sending both is safe.
+    // llama.cpp) and reasoning.effort (OpenRouter). When the level is off,
+    // chat_template_kwargs.enable_thinking=false is the reliable cross-backend
+    // switch (Qwen/llama.cpp): reasoning_effort alone does not turn thinking
+    // off on llama.cpp, and a default-on hybrid model would keep thinking.
+    // A provider ignores a field it does not know, so this is safe to send.
     if (model.reasoning) {
       payload.reasoning_effort = model.reasoning;
       payload.reasoning = { effort: model.reasoning };
+    } else {
+      payload.chat_template_kwargs = { enable_thinking: false };
     }
 
     const response = await fetch(`${model.baseUrl.replace(/\/+$/, "")}/chat/completions`, {

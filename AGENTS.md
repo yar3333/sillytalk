@@ -271,10 +271,12 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
 
 - `llmModels[].supportsImages: true` — the model accepts images; sent/reference images are passed into the
   prompt as `image_url` data-URIs.
-- `llmModels[].reasoning` — the reasoning level: `false`/absent = off (nothing is sent), a string = the
-  level, sent to the provider in both common OpenAI-compatible spellings at once — top-level
-  `reasoning_effort` (OpenAI, llama.cpp) and `reasoning.effort` (OpenRouter); a provider ignores the
-  field it does not know. `llmModels[].reasoningLevels` — the possible levels (a string list); when
+- `llmModels[].reasoning` — the reasoning level: a string = the level, sent to the provider in both
+  common OpenAI-compatible spellings at once — top-level `reasoning_effort` (OpenAI, llama.cpp) and
+  `reasoning.effort` (OpenRouter); `false`/absent = off, sent as `chat_template_kwargs.enable_thinking=false`
+  (the reliable cross-backend switch — `reasoning_effort` alone does not turn thinking off on llama.cpp,
+  and a default-on hybrid model like Qwen would keep thinking); a provider ignores a field it does not
+  know. `llmModels[].reasoningLevels` — the possible levels (a string list); when
   absent the default set `low, medium, high, xhigh, max` applies (and a level outside the model's list
   is normalized to off on load). Edited in the model dialog ("Reasoning levels" + "Reasoning" pick).
 - **Image generation has no `auto` toggle anymore.** `imageGenerators` is a list of

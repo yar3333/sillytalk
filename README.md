@@ -137,10 +137,11 @@ resolved by `resolveApiKey()`: `envKey` (an environment variable) takes priority
 
 - `llmModels[].supportsImages: true` — the model can receive images in the chat (then the sent/
   reference images are passed into the prompt as `image_url`).
-- `llmModels[].reasoning` — the reasoning level: `false` = off (nothing is sent to the provider), a
-  string — the level. It is sent in both common OpenAI-compatible spellings at once: top-level
-  `reasoning_effort` (OpenAI, llama.cpp) and `reasoning.effort` (OpenRouter) — a provider ignores
-  the field it does not know. `llmModels[].reasoningLevels` — the possible levels; when absent the
+- `llmModels[].reasoning` — the reasoning level: a string — the level, sent in both common
+  OpenAI-compatible spellings at once: top-level `reasoning_effort` (OpenAI, llama.cpp) and
+  `reasoning.effort` (OpenRouter); `false` = off, sent as `chat_template_kwargs.enable_thinking=false`
+  (the reliable cross-backend off-switch — a provider ignores a field it does not know).
+  `llmModels[].reasoningLevels` — the possible levels; when absent the
   default set `low, medium, high, xhigh, max` applies. Edited in the model dialog (the "Reasoning
   levels" input + the "Reasoning" pick).
 - Characters are **not stored in the config**: each one is a separate folder

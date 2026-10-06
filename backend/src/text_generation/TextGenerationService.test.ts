@@ -366,9 +366,11 @@ describe("chatCompletion", () => {
     // reasoning_effort — OpenAI/llama.cpp, reasoning.effort — OpenRouter.
     expect(body.reasoning_effort).toBe("high");
     expect(body.reasoning).toEqual({ effort: "high" });
+    // A level means thinking is on — no off-switch is sent alongside.
+    expect(body).not.toHaveProperty("chat_template_kwargs");
   });
 
-  it("does not send the reasoning fields when the level is off", async () => {
+  it("sends enable_thinking=false (not a level) when the level is off", async () => {
     const fetchMock = jest.fn().mockResolvedValue(jsonRes({ choices: [{ message: { content: "ok" } }] }));
     global.fetch = fetchMock as unknown as typeof fetch;
 
@@ -377,6 +379,9 @@ describe("chatCompletion", () => {
     const body = JSON.parse(init.body) as Record<string, unknown>;
     expect(body).not.toHaveProperty("reasoning_effort");
     expect(body).not.toHaveProperty("reasoning");
+    // Off — the reliable cross-backend switch (Qwen/llama.cpp) is
+    // chat_template_kwargs.enable_thinking=false, not reasoning_effort.
+    expect(body.chat_template_kwargs).toEqual({ enable_thinking: false });
   });
 
   it("does not retry the request on an ordinary provider error", async () => {
