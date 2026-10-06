@@ -40,6 +40,14 @@
 
 .msg {
   flex: 0 1 auto;
+  /* The hover action panel spans 168 px from the bubble's right edge (the
+     leftmost button, ↻, sits at right: 130px, is 36px wide, and the
+     containing block is the padding box inside the 1px border). The bubble's
+     LEFT edge is fixed in the row (the avatar + the gap), so a narrower
+     bubble would push the left buttons (✎ / ↻) past it — over the avatar and
+     out of the history's scroll box, where the overflow clips them and they
+     cannot be reached. */
+  min-width: 172px;
   max-width: calc(100% - 44px);
   padding: 8px 14px;
   border-radius: 14px;

@@ -17,7 +17,12 @@ const JSON_HEADERS = { 'Content-Type': 'application/json' };
 let llm: MockLlm | null = null;
 
 test.beforeAll(async () => {
-  llm = await startMockLlm(300);
+  llm = await startMockLlm(300, {
+    // A user message containing "SHORT" gets a two-letter reply — the
+    // "hover buttons of a short message" test needs an assistant bubble
+    // narrower than the action panel. The other tests do not use the marker.
+    drawReplies: ({ text }) => (text.includes('SHORT') ? 'Ok.' : null),
+  });
 });
 
 test.afterAll(() => {
@@ -110,6 +115,44 @@ test('sending a message and the model reply', async ({ page }) => {
   const text = (await assistant.first().locator('.msg-text').textContent())?.trim() ?? '';
   expect(text.length).toBeGreaterThan(0);
   await page.screenshot({ path: `${SHOTS}/02b-conversation-desktop.png` });
+});
+
+// The hover action panel spans 168 px from the bubble's right edge. For the
+// assistant messages the bubble's LEFT edge is fixed in the row (the avatar +
+// the gap), so a short reply used to push the left buttons (✎ / ↻) past the
+// bubble's left edge — over the avatar and out of the history's scroll box,
+// where the overflow clipped them and they could not be reached. The bubble
+// carries a min-width (message-row.scss) that keeps the whole panel inside.
+test('the hover buttons of a short message stay inside and are clickable', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByTestId('input')).toBeVisible();
+  await page.getByTestId('input').fill('SHORT');
+  await page.getByTestId('send').click();
+  const assistant = page.locator('.msg:not(.user):not(.error)');
+  await expect(assistant.first()).toBeVisible({ timeout: 60000 });
+  const msg = assistant.first();
+  await expect(msg.locator('.msg-text')).toHaveText('Ok.');
+  // All four buttons (the last assistant reply) must lie fully inside the
+  // history's box — the left ones used to be clipped there.
+  const historyBox = (await page.getByTestId('history').boundingBox())!;
+  await msg.hover();
+  const clipped: string[] = [];
+  for (const cls of ['regen', 'edit', 'del', 'del-more']) {
+    const box = await msg.locator(`.msg-edit.${cls}`).boundingBox();
+    if (
+      !box ||
+      box.x < historyBox.x - 1 ||
+      box.x + box.width > historyBox.x + historyBox.width + 1
+    ) {
+      clipped.push(cls);
+    }
+  }
+  expect(clipped).toEqual([]);
+  // The leftmost button (↻) is not only visible — it is clickable: the
+  // regeneration runs and the short reply comes back.
+  await msg.locator('.msg-edit.regen').click();
+  await expect(assistant.first().locator('.msg-text')).toHaveText('Ok.', { timeout: 30000 });
+  await page.screenshot({ path: `${SHOTS}/02c-short-message-buttons.png` });
 });
 
 // The model's reasoning level from the config (reasoning / reasoningLevels)
