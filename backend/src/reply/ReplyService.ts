@@ -197,16 +197,24 @@ export class ReplyService {
       imageStatus: Object.keys(imageStatus).length > 0 ? imageStatus : undefined,
       timestamp: Date.now(),
     };
-    // Regeneration: remove the replaced message now that the new reply is
-    // confirmed (a cancel or an error never reaches here — the original stays).
-    if (replacedMessage && chat.messages[replacedIndex] === replacedMessage) {
-      chat.messages.splice(replacedIndex, 1);
+    // Save the reply into the chat RE-READ from disk: the model call took
+    // seconds, and a concurrent change in the meantime (a message deleted or
+    // added) must not be clobbered by the request-time snapshot. The
+    // regeneration removal rides on the same re-read: the replaced message is
+    // dropped only when it is still the last line (a cancel or an error never
+    // reaches here — the original stays; a manual delete in the meantime
+    // leaves nothing to remove).
+    const fresh = this.chats.get(chat.id);
+    if (!fresh) return null; // the chat was deleted while the model ran
+    if (replacedMessage) {
+      const idx = fresh.messages.findIndex((m) => m.id === replacedMessage.id);
+      if (idx === fresh.messages.length - 1) fresh.messages.splice(idx, 1);
     }
-    chat.messages.push(assistantMsg);
+    fresh.messages.push(assistantMsg);
     // Save the reply (with the reserved "pending" names) BEFORE starting the
     // jobs, so the client already sees the placeholders when the response
     // returns and the jobs update a message that exists on disk.
-    this.chats.save(chat);
+    this.chats.save(fresh);
     for (const job of pendingJobs) {
       this.startChatImageJob(chat.id, assistantMsg.id, job.name, job.prompt, job.refs);
     }
@@ -217,8 +225,9 @@ export class ReplyService {
   // "🖼️ Generated: …" assistant message with the reserved "pending" image name
   // and starts the background job. The prompt is required in English — a
   // non-English one is translated with the chat's model. Returns the saved
-  // chat and the new message.
-  async manualImage(chat: Chat, prompt: string, refs: string[]): Promise<{ chat: Chat; message: ChatMessage }> {
+  // chat and the new message, or null when the chat was deleted while the
+  // translation ran (nothing to save into).
+  async manualImage(chat: Chat, prompt: string, refs: string[]): Promise<{ chat: Chat; message: ChatMessage } | null> {
     const finalPrompt = await this.imageGeneration.ensureEnglishPrompt(this.resolveChatModel(chat), prompt);
     const name = this.imageGeneration.newGeneratedImageName();
     const message: ChatMessage = {
@@ -230,10 +239,15 @@ export class ReplyService {
       imageStatus: { [name]: "pending" },
       timestamp: Date.now(),
     };
-    chat.messages.push(message);
-    this.chats.save(chat);
+    // The chat is re-read from disk: the translation took seconds, and a
+    // concurrent change in the meantime must not be clobbered by the
+    // request-time snapshot (as in appendAssistantReply).
+    const fresh = this.chats.get(chat.id);
+    if (!fresh) return null; // the chat was deleted while translating
+    fresh.messages.push(message);
+    this.chats.save(fresh);
     this.startChatImageJob(chat.id, message.id, name, finalPrompt, refs);
-    return { chat, message };
+    return { chat: fresh, message };
   }
 
   // Regenerates one message image in the BACKGROUND: the stored prompt (or

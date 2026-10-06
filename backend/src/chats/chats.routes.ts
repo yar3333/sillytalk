@@ -156,7 +156,10 @@ export function createChatsRouter(
     const ctrl = reply.beginReply(chat.id);
     try {
       const assistantReply = await reply.appendAssistantReply(chat, model, characterId, ctrl.signal, replaceLast);
-      res.json({ chat, reply: assistantReply });
+      // The service saved the reply into a chat re-read from disk (the
+      // request-time snapshot is stale after the model call) — answer with
+      // the current one.
+      res.json({ chat: chats.get(chat.id) ?? chat, reply: assistantReply });
     } catch (err) {
       if (ctrl.signal.aborted) {
         // The user cancelled: no error message is saved, the chat stays as

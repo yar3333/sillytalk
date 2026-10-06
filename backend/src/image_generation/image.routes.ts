@@ -36,8 +36,13 @@ export function createImageRouter(
         return;
       }
       const refList = Array.isArray(refs) ? (refs as unknown[]).filter((x): x is string => typeof x === "string") : [];
-      const { chat: saved, message } = await reply.manualImage(chat, String(prompt), refList);
-      res.json({ chat: saved, message });
+      const result = await reply.manualImage(chat, String(prompt), refList);
+      if (!result) {
+        // The chat was deleted while the prompt was translating.
+        res.status(404).json({ error: "Chat not found" });
+        return;
+      }
+      res.json({ chat: result.chat, message: result.message });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }

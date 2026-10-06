@@ -463,6 +463,45 @@ test('a group chat with the editing of the old messages', async ({ page }) => {
   await page.screenshot({ path: `${SHOTS}/09d-continued-after-edit.png` });
 });
 
+// Deleting a message while the next reply is generating: the in-flight reply
+// is saved into a chat re-read from disk, so the deletion survives the reply
+// landing (the request-time snapshot must not clobber it and resurrect the
+// deleted line).
+test('deleting a message while the next reply is generating keeps it deleted', async ({
+  page,
+}) => {
+  await llm?.setDelay(3000);
+  try {
+    await fetch(`${API}/chats`, {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ characterIds: ['alice', 'bob'], modelId: 'mock model', userId: 'carol' }),
+    });
+    await page.goto('/');
+    await expect(page.getByTestId('input')).toBeVisible();
+    await page.getByTestId('input').fill('Hello both of you');
+    await page.getByTestId('send').click();
+    // Alice answers; Bob is typing now.
+    const assistant = page.locator('.msg:not(.user):not(.error)');
+    await expect(assistant.first()).toBeVisible({ timeout: 30000 });
+    // Delete Alice's line (the last message) while Bob's reply is in flight.
+    const aliceLine = assistant.first();
+    await aliceLine.hover();
+    const del = aliceLine.locator('.msg-edit.del');
+    await del.click(); // arm
+    await del.click(); // confirm
+    await expect(page.locator('[data-testid=message]')).toHaveCount(1, { timeout: 10000 });
+    // Bob's reply lands — Alice's line must stay deleted.
+    await expect(page.getByTestId('typing')).toBeHidden({ timeout: 30000 });
+    await expect(assistant).toHaveCount(1, { timeout: 10000 });
+    const sender = (await assistant.first().locator('.msg-sender').textContent())?.trim() ?? '';
+    expect(sender).toBe('Bob');
+    await page.screenshot({ path: `${SHOTS}/09e-delete-during-generation.png` });
+  } finally {
+    await llm?.setDelay(300);
+  }
+});
+
 // The entity edit dialogs (character / persona / model) from the top-bar
 // menus: the edit icon per item, the "New" button, and Delete + Clone inside
 // the dialogs. No model calls — pure catalog management.

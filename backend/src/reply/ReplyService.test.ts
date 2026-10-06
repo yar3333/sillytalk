@@ -36,18 +36,31 @@ class StubConfigurationService extends ConfigurationService {
 }
 
 // The model client stubbed: answers with a canned text and records the
-// history it was called with.
+// history it was called with. `modelGate` lets a test park the "model call"
+// (the gate promise) and apply a concurrent change in the meantime.
 class StubTextGeneration extends TextGenerationService {
   replyText = "Hello from the stub.";
   lastHistory: ChatMessage[] = [];
+  modelGate: Promise<void> = Promise.resolve();
   constructor() {
     super(new StubConfigurationService());
   }
   async chatCompletion(_model: Model, _system: string, history: ChatMessage[]): Promise<string> {
     this.lastHistory = history;
+    await this.modelGate;
     return this.replyText;
   }
 }
+
+// A parkable gate: the promise the stub awaits and the release to let it run.
+function gate(): { promise: Promise<void>; release: () => void } {
+  let release!: () => void;
+  const promise = new Promise<void>((r) => (release = r));
+  return { promise, release };
+}
+
+// Yields to the event loop so the parked call is surely on the gate.
+const tick = (ms = 20): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 // A fake of the image generation service: no real generator is spawned — the
 // jobs settle through the configured outcome (setImmediate later), the
@@ -58,6 +71,7 @@ function makeFakeImageGeneration() {
   let nameCounter = 0;
   let outcome: ImageJobResult = { status: "ok" };
   let inventory: InventoryItem[] = [];
+  let promptGate: Promise<void> = Promise.resolve();
 
   const fake = {
     hasAvailableGenerator: (): boolean => true,
@@ -78,7 +92,10 @@ function makeFakeImageGeneration() {
       cancelled.push({ chatId, name });
       return true;
     },
-    ensureEnglishPrompt: async (_model: Model | null, prompt: string): Promise<string> => prompt,
+    ensureEnglishPrompt: async (_model: Model | null, prompt: string): Promise<string> => {
+      await promptGate;
+      return prompt;
+    },
   };
 
   return {
@@ -90,6 +107,9 @@ function makeFakeImageGeneration() {
     },
     setInventory: (items: InventoryItem[]) => {
       inventory = items;
+    },
+    setPromptGate: (g: Promise<void>) => {
+      promptGate = g;
     },
   };
 }
@@ -273,12 +293,63 @@ describe("appendAssistantReply", () => {
     await reply.appendAssistantReply(chat, model(), "alice");
     expect(textGeneration.lastHistory.map((m) => m.id)).toEqual(["u1", "old"]);
   });
+
+  it("does not clobber a message deleted while the model call ran", async () => {
+    const chat = newChat();
+    const g = gate();
+    textGeneration.modelGate = g.promise;
+    const p = reply.appendAssistantReply(chat, model(), "alice");
+    await tick(); // the model call is parked on the gate
+    // The user deletes the message while the model is "running".
+    chats.deleteMessage(chats.get(chat.id)!, "u1", true);
+    g.release();
+    const msg = await p;
+    expect(msg).not.toBeNull();
+    // The deletion survives: the reply is saved into the re-read chat, not
+    // the request-time snapshot (which still carried u1).
+    expect(chats.get(chat.id)!.messages.map((m) => m.id)).toEqual([msg!.id]);
+  });
+
+  it("returns null when the chat is deleted while the model call ran", async () => {
+    const chat = newChat();
+    const g = gate();
+    textGeneration.modelGate = g.promise;
+    const p = reply.appendAssistantReply(chat, model(), "alice");
+    await tick();
+    chats.delete(chat.id);
+    g.release();
+    await expect(p).resolves.toBeNull();
+  });
+
+  it("replaceLast keeps the replaced message deleted when it was deleted in the meantime", async () => {
+    const chat = newChat();
+    chat.messages.push({
+      id: "old",
+      role: "assistant",
+      characterId: "alice",
+      text: "the old line",
+      images: [],
+      timestamp: 2,
+    });
+    chats.save(chat);
+    const g = gate();
+    textGeneration.modelGate = g.promise;
+    const p = reply.appendAssistantReply(chats.get(chat.id)!, model(), "alice", undefined, true);
+    await tick();
+    chats.deleteMessage(chats.get(chat.id)!, "old", true);
+    g.release();
+    const msg = await p;
+    expect(msg).not.toBeNull();
+    expect(chats.get(chat.id)!.messages.map((m) => m.id)).toEqual(["u1", msg!.id]);
+  });
 });
 
 describe("manualImage", () => {
   it("appends the generated-image message with a pending status and starts the job", async () => {
     const chat = newChat();
-    const { chat: saved, message } = await reply.manualImage(chat, "a red fox in the snow", ["ref-1.png"]);
+    const result = await reply.manualImage(chat, "a red fox in the snow", ["ref-1.png"]);
+    expect(result).not.toBeNull();
+    const { chat: saved, message } = result!;
     expect(message.text).toBe("🖼️ Generated: a red fox in the snow");
     const name = message.images[0];
     expect(message.imageStatus).toEqual({ [name]: "pending" });
@@ -288,6 +359,30 @@ describe("manualImage", () => {
     ]);
     expect(chats.get(chat.id)!.messages).toHaveLength(2);
     expect(saved.id).toBe(chat.id);
+  });
+
+  it("does not clobber a message deleted while the translation ran", async () => {
+    const chat = newChat();
+    const g = gate();
+    fake.setPromptGate(g.promise);
+    const p = reply.manualImage(chat, "a red fox", []);
+    await tick(); // the translation is parked on the gate
+    chats.deleteMessage(chats.get(chat.id)!, "u1", true);
+    g.release();
+    const result = await p;
+    expect(result).not.toBeNull();
+    expect(chats.get(chat.id)!.messages.map((m) => m.id)).toEqual([result!.message.id]);
+  });
+
+  it("returns null when the chat is deleted while the translation ran", async () => {
+    const chat = newChat();
+    const g = gate();
+    fake.setPromptGate(g.promise);
+    const p = reply.manualImage(chat, "a red fox", []);
+    await tick();
+    chats.delete(chat.id);
+    g.release();
+    await expect(p).resolves.toBeNull();
   });
 });
 
