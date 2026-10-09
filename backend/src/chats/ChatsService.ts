@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { randomUUID } from "crypto";
+import { DatabaseSync } from "node:sqlite";
 import { Chat } from "./Chat";
 import { ChatMessage } from "./ChatMessage";
 import { ChatSummary } from "./ChatSummary";
@@ -11,61 +12,201 @@ import { createToken } from "../di";
 // The DI token of the chat service (registered in index.ts).
 export const DI_CHATS_SERVICE = createToken<ChatsService>("ChatsService");
 
+// The row shapes of the chats database (node:sqlite, chats.db in the chats
+// root): the chat fields as a JSON blob + one row per message (a JSON blob
+// with seq/timestamp columns for the order and the list query).
+type ChatRow = { data: string };
+type MessageRow = { data: string };
+
 // The top-level chat service: chat + chat-file persistence on top of the
-// chats/<id>/ folders (chat.json + files/ — the chat's uploaded/generated
-// images). The root folder is read through the accessor (not injected as a
+// chats database — the `chats` table holds the chat fields, `messages` one
+// row per message (both as JSON blobs). The images stay files on disk:
+// chats/<id>/files/ is still the folder of the chat's uploaded/generated
+// images. The root folder is read through the accessor (not injected as a
 // value), so the service always sees the current SILLYTALK_CHATS_DIR / data
 // root, and tests can point it at a temp dir; the configuration service is
 // injected the same way (the model fallback in get() needs the current model
 // list).
+//
+// The database is opened lazily on first use; at open the legacy per-chat
+// chat.json folders are imported once. Every write is a single statement or
+// a transaction: the message primitives (addUserMessage, editMessage,
+// deleteMessage, setMessageImageStatus) touch only their own rows, so a
+// background image job finishing can never clobber a concurrent change —
+// the whole-file read-modify-write of the old format had that window.
 export class ChatsService {
   constructor(
     private readonly chatsRoot: () => string,
     private readonly configuration: ConfigurationService,
   ) {}
 
-  // The chat list: every folder with a chat.json, newest first (by the
-  // timestamp of the last message).
-  list(): ChatSummary[] {
+  private dbRef: DatabaseSync | null = null;
+  private closed = false;
+
+  // Closes the database for good (tests do it before wiping a temp root — on
+  // Windows an open database file blocks deleting its folder). Any later use
+  // throws: a late callback (e.g. a background job that settled after the
+  // close) must not resurrect the database file.
+  close(): void {
+    this.dbRef?.close();
+    this.dbRef = null;
+    this.closed = true;
+  }
+
+  // Opens the database on first use: WAL + the schema (idempotent), then the
+  // one-time import of the legacy chat.json folders.
+  private db(): DatabaseSync {
+    if (this.dbRef) return this.dbRef;
+    if (this.closed) throw new Error("The chats database is closed");
     const root = this.chatsRoot();
-    if (!fs.existsSync(root)) return [];
-    const result: ChatSummary[] = [];
-    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    fs.mkdirSync(root, { recursive: true });
+    const db = new DatabaseSync(PathHelper.chatsDatabaseFile(root), { timeout: 5000 });
+    db.exec("PRAGMA journal_mode = WAL");
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS chats (
+        id   TEXT PRIMARY KEY,
+        data TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS messages (
+        chat_id   TEXT NOT NULL,
+        seq       INTEGER NOT NULL,
+        id        TEXT NOT NULL,
+        timestamp INTEGER NOT NULL,
+        data      TEXT NOT NULL,
+        PRIMARY KEY (chat_id, seq)
+      );
+      CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages (chat_id, id);
+    `);
+    this.dbRef = db;
+    this.importLegacyChats(db, root);
+    return db;
+  }
+
+  // Runs fn inside a transaction (the counterpart of the old single-file
+  // write's atomicity: a crash leaves the previous state, never half a chat).
+  private transact(db: DatabaseSync, fn: () => void): void {
+    db.exec("BEGIN");
+    try {
+      fn();
+      db.exec("COMMIT");
+    } catch (err) {
+      db.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
+  // The one-time import of the old format: every chats/<id>/chat.json is
+  // inserted into the database and renamed to chat.json.migrated (kept for
+  // recovery, never read again). A file that does not parse is skipped and
+  // stays as it is — a corrupted chat was skipped by the old list() too.
+  private importLegacyChats(db: DatabaseSync, root: string): void {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(root, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
       if (!PathHelper.isDirEntry(root, entry)) continue;
       const file = PathHelper.chatFile(entry.name, root);
-      if (!fs.existsSync(file)) continue;
+      let raw: string;
       try {
-        const chat = JSON.parse(fs.readFileSync(file, "utf-8")) as Chat;
-        const { messages, ...rest } = chat;
-        const lastMessageAt = messages.length > 0 ? messages[messages.length - 1].timestamp : 0;
-        result.push({ ...rest, messageCount: messages.length, lastMessageAt });
+        raw = fs.readFileSync(file, "utf-8");
       } catch {
-        // skip a corrupted chat
+        continue; // no chat.json — a files/ folder of a chat, not an old chat
+      }
+      try {
+        const chat = JSON.parse(raw) as Chat;
+        if (typeof chat.id !== "string" || !chat.id) chat.id = entry.name;
+        this.normalize(chat);
+        if (!Array.isArray(chat.messages)) chat.messages = [];
+        const known = db.prepare("SELECT 1 AS one FROM chats WHERE id = ?").get(chat.id);
+        if (!known) {
+          const insertMessage = db.prepare(
+            "INSERT INTO messages (chat_id, seq, id, timestamp, data) VALUES (?, ?, ?, ?, ?)",
+          );
+          this.transact(db, () => {
+            db.prepare("INSERT INTO chats (id, data) VALUES (?, ?)").run(chat.id, this.chatData(chat));
+            chat.messages.forEach((msg, seq) => insertMessage.run(chat.id, seq, msg.id, msg.timestamp ?? 0, JSON.stringify(msg)));
+          });
+        }
+        fs.renameSync(file, `${file}.migrated`);
+      } catch {
+        // a corrupted chat: skipped, its file stays for a manual look
+      }
+    }
+  }
+
+  // The chats-table blob of a chat: only the stored fields — the retired
+  // ones (title/createdAt/updatedAt, a single characterId and userIds) are
+  // never serialized.
+  private chatData(chat: Chat): string {
+    return JSON.stringify({
+      id: chat.id,
+      characterIds: chat.characterIds,
+      userId: chat.userId,
+      modelId: chat.modelId,
+    });
+  }
+
+  // The chat list: every row with the message count and the timestamp of the
+  // last message (0 for an empty chat), newest first — one SQL query, no
+  // per-chat file reads.
+  list(): ChatSummary[] {
+    const rows = this.db()
+      .prepare(
+        `SELECT c.data AS data, COUNT(m.seq) AS messageCount, COALESCE(MAX(m.timestamp), 0) AS lastMessageAt
+         FROM chats c LEFT JOIN messages m ON m.chat_id = c.id
+         GROUP BY c.id`,
+      )
+      .all() as (ChatRow & { messageCount: number; lastMessageAt: number })[];
+    const result: ChatSummary[] = [];
+    for (const row of rows) {
+      try {
+        const chat = JSON.parse(row.data) as Chat;
+        result.push({
+          id: chat.id,
+          characterIds: chat.characterIds,
+          userId: chat.userId,
+          modelId: chat.modelId,
+          messageCount: row.messageCount,
+          lastMessageAt: row.lastMessageAt,
+        });
+      } catch {
+        // skip a corrupted row (the blobs are written by save(), so this is
+        // only a guard against a hand-edited database)
       }
     }
     return result.sort((a, b) => b.lastMessageAt - a.lastMessageAt);
   }
 
-  // Reads one chat, repairing the format on the fly (the repaired chat is
-  // saved back when anything was fixed).
+  // Reads one chat (its row + its message rows), repairing the format on the
+  // fly (the repaired chat is saved back when anything was fixed).
   get(chatId: string): Chat | null {
-    const file = PathHelper.chatFile(chatId, this.chatsRoot());
-    if (!fs.existsSync(file)) return null;
+    const db = this.db();
+    const row = db.prepare("SELECT data FROM chats WHERE id = ?").get(chatId) as ChatRow | undefined;
+    if (!row) return null;
+    let chat: Chat;
     try {
-      const chat = JSON.parse(fs.readFileSync(file, "utf-8")) as Chat;
-      // Called as methods (not as a bare-function array) — ensureModelId
-      // needs the instance (the injected config loader).
-      const dirty = this.normalize(chat) || this.ensureModelId(chat);
-      if (dirty) this.save(chat);
-      return chat;
+      chat = JSON.parse(row.data) as Chat;
     } catch {
       return null;
     }
+    const rows = db
+      .prepare("SELECT data FROM messages WHERE chat_id = ? ORDER BY seq")
+      .all(chatId) as MessageRow[];
+    chat.messages = rows.map((m) => JSON.parse(m.data) as ChatMessage);
+    // Called as methods (not as a bare-function array) — ensureModelId
+    // needs the instance (the injected config loader).
+    const dirty = this.normalize(chat) || this.ensureModelId(chat);
+    if (dirty) this.save(chat);
+    return chat;
   }
 
-  // Writes the chat to disk. Old chat.json files may still carry
-  // title/createdAt/updatedAt, a single characterId and userIds — they are
-  // stripped on every write; the fields are no longer stored.
+  // Writes the chat: the fields row + a full rewrite of its message rows in
+  // one transaction (the callers of save mutate the message array in memory
+  // — e.g. the splice-based regenerate path). The primitives below touch
+  // single rows instead.
   save(chat: Chat): void {
     this.normalize(chat);
     const legacy = chat as Record<string, unknown>;
@@ -74,9 +215,17 @@ export class ChatsService {
     delete legacy.updatedAt;
     delete legacy.characterId;
     delete legacy.userIds;
-    const root = this.chatsRoot();
-    fs.mkdirSync(PathHelper.chatDir(chat.id, root), { recursive: true });
-    fs.writeFileSync(PathHelper.chatFile(chat.id, root), JSON.stringify(chat, null, 2), "utf-8");
+    const db = this.db();
+    const upsert = db.prepare(
+      "INSERT INTO chats (id, data) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data",
+    );
+    const clear = db.prepare("DELETE FROM messages WHERE chat_id = ?");
+    const insert = db.prepare("INSERT INTO messages (chat_id, seq, id, timestamp, data) VALUES (?, ?, ?, ?, ?)");
+    this.transact(db, () => {
+      upsert.run(chat.id, this.chatData(chat));
+      clear.run(chat.id);
+      chat.messages.forEach((msg, seq) => insert.run(chat.id, seq, msg.id, msg.timestamp ?? 0, JSON.stringify(msg)));
+    });
   }
 
   create(characterIds: string[], modelId: string, userId: string): Chat {
@@ -91,19 +240,25 @@ export class ChatsService {
     return chat;
   }
 
-  // Deletes the chat together with its folder (the files/ go along).
+  // Deletes the chat — its rows and its folder (the files/ go along).
   delete(chatId: string): boolean {
-    const dir = PathHelper.chatDir(chatId, this.chatsRoot());
-    if (!fs.existsSync(dir)) return false;
-    fs.rmSync(dir, { recursive: true, force: true });
-    return true;
+    const db = this.db();
+    const exists = db.prepare("SELECT 1 AS one FROM chats WHERE id = ?").get(chatId) !== undefined;
+    this.transact(db, () => {
+      db.prepare("DELETE FROM messages WHERE chat_id = ?").run(chatId);
+      db.prepare("DELETE FROM chats WHERE id = ?").run(chatId);
+    });
+    fs.rmSync(PathHelper.chatDir(chatId, this.chatsRoot()), { recursive: true, force: true });
+    return exists;
   }
 
   // ---- messages ----
 
-  // Appends the user message (the chat's active persona is the author) and
-  // saves the chat. `images` is the raw client list: a data URL is saved as a
-  // new file, a file name is kept only when the file is in the chat files/.
+  // Appends the user message (the chat's active persona is the author). A
+  // single row insert — a concurrent change of the other messages (a job
+  // finishing, another send) is not clobbered. `images` is the raw client
+  // list: a data URL is saved as a new file, a file name is kept only when
+  // the file is in the chat files/.
   addUserMessage(chat: Chat, text: string, images: unknown[]): ChatMessage {
     const message: ChatMessage = {
       id: PathHelper.newId(),
@@ -114,27 +269,53 @@ export class ChatsService {
       timestamp: Date.now(),
     };
     chat.messages.push(message);
-    this.save(chat);
+    this.insertMessage(chat.id, message);
     return message;
   }
 
+  // Appends one message row after the last row of the chat.
+  private insertMessage(chatId: string, message: ChatMessage): void {
+    const db = this.db();
+    const { seq } = db
+      .prepare("SELECT COALESCE(MAX(seq), -1) + 1 AS seq FROM messages WHERE chat_id = ?")
+      .get(chatId) as { seq: number };
+    db.prepare("INSERT INTO messages (chat_id, seq, id, timestamp, data) VALUES (?, ?, ?, ?, ?)").run(
+      chatId,
+      seq,
+      message.id,
+      message.timestamp ?? 0,
+      JSON.stringify(message),
+    );
+  }
+
   // Applies an edit to an existing message: the text and/or the image list
-  // (normalized to the chat files/), saving the chat.
+  // (normalized to the chat files/), updating that one row.
   editMessage(chat: Chat, message: ChatMessage, text: string | undefined, images: string[] | undefined): void {
     if (text !== undefined) message.text = text;
     if (images !== undefined) message.images = this.normalizeImages(chat.id, images);
-    this.save(chat);
+    this.db()
+      .prepare("UPDATE messages SET data = ? WHERE chat_id = ? AND id = ?")
+      .run(JSON.stringify(message), chat.id, message.id);
   }
 
   // Deletes a message: only it (single) or it and everything after it (trims
-  // the tail of the dialogue), saving the chat. Returns false when the chat
-  // has no such message.
+  // the tail of the dialogue) — a targeted row delete by the message's
+  // stored order. Returns false when the chat has no such message.
   deleteMessage(chat: Chat, messageId: string, single = false): boolean {
     const idx = chat.messages.findIndex((m) => m.id === messageId);
     if (idx === -1) return false;
     if (single) chat.messages.splice(idx, 1);
     else chat.messages.splice(idx);
-    this.save(chat);
+    const db = this.db();
+    if (single) {
+      db.prepare("DELETE FROM messages WHERE chat_id = ? AND id = ?").run(chat.id, messageId);
+    } else {
+      db.prepare(
+        `DELETE FROM messages
+         WHERE chat_id = ?
+           AND seq >= COALESCE((SELECT seq FROM messages WHERE chat_id = ? AND id = ?), -1)`,
+      ).run(chat.id, chat.id, messageId);
+    }
     return true;
   }
 
@@ -185,8 +366,8 @@ export class ChatsService {
   }
 
   // Sets (or clears, when status is undefined) the generation status of one
-  // image of one message, saving the chat. The chat is re-read on every call
-  // so a job finishing never clobbers a concurrent change (a new message,
+  // image of one message. A single-row read-modify-write, so a job finishing
+  // never clobbers a concurrent change to the other messages (a new message,
   // another job finishing). A missing chat or message is a silent no-op (it
   // was deleted while the job ran).
   setMessageImageStatus(
@@ -196,10 +377,17 @@ export class ChatsService {
     status: "pending" | "failed" | "cancelled" | undefined,
     error?: string,
   ): void {
-    const chat = this.get(chatId);
-    if (!chat) return;
-    const msg = chat.messages.find((m) => m.id === messageId);
-    if (!msg) return;
+    const db = this.db();
+    const row = db.prepare("SELECT data FROM messages WHERE chat_id = ? AND id = ?").get(chatId, messageId) as
+      | MessageRow
+      | undefined;
+    if (!row) return;
+    let msg: ChatMessage;
+    try {
+      msg = JSON.parse(row.data) as ChatMessage;
+    } catch {
+      return;
+    }
     let dirty = false;
     if (status === undefined) {
       // The image is ready (or no longer belongs to the message): clear its
@@ -219,7 +407,9 @@ export class ChatsService {
       if (error !== undefined) msg.imageErrors = { ...(msg.imageErrors ?? {}), [image]: error };
       dirty = true;
     }
-    if (dirty) this.save(chat);
+    if (dirty) {
+      db.prepare("UPDATE messages SET data = ? WHERE chat_id = ? AND id = ?").run(JSON.stringify(msg), chatId, messageId);
+    }
   }
 
   // ---- on-disk format guards ----

@@ -11,6 +11,12 @@ import { ConfigurationService } from "../configuration/ConfigurationService";
 import { Config } from "../configuration/Config";
 import { ImageJobResult } from "./ImageJobResult";
 
+// Isolate the data root: the injected ChatsService and the chat folders used
+// below must not touch the real ~/.config/sillytalk (the accessors read the
+// env on every call).
+const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sillytalk-images-"));
+process.env.SILLYTALK_DATA_DIR = dataRoot;
+
 // The config is stubbed: a job whose driver cache is empty re-probes it, and
 // the tests must not depend on the real config.json contents.
 class EmptyConfigurationService extends ConfigurationService {
@@ -90,6 +96,7 @@ afterAll(() => {
   fs.rmSync(cmdFile, { force: true });
   fs.rmSync(ps1File, { force: true });
   fs.rmSync(failFile, { force: true });
+  fs.rmSync(dataRoot, { recursive: true, force: true });
 });
 
 // The .cmd/.ps1 launch tests run the platform machine service for real, so

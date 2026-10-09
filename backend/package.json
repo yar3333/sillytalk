@@ -3,6 +3,9 @@
   "version": "1.0.2",
   "private": true,
   "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",

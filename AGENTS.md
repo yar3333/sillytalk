@@ -73,7 +73,14 @@ backend/               Express API; also serves the built frontend
     chats/             the chat domain: the Chat.ts / ChatMessage.ts /
                        ChatSummary.ts types and the top-level service class
                        (ChatsService.ts — chat + chat-file persistence on the
-                       chats/<id>/ folders: CRUD, the format guards, the model
+                       chats.db SQLite database (node:sqlite; the chats table
+                       holds the chat fields, messages one row per message —
+                       both as JSON blobs; the images stay files in
+                       chats/<id>/files/; the legacy chat.json folders are
+                       imported once at database open and renamed to
+                       chat.json.migrated; the service opens the database
+                       lazily and close() is final — later use throws): CRUD,
+                       the format guards, the model
                        fallback, the chat files (saveImage,
                        importCharacterPhoto, normalizeImages), the message
                        primitives (addUserMessage, editMessage, deleteMessage),
@@ -172,7 +179,10 @@ e2e/                   Playwright suite
 
 ~/.config/sillytalk/   runtime data (NOT in the repo)
   config.json
-  chats/<chatId>/chat.json (+ files/ — uploaded/generated images)
+  chats/chats.db       (node:sqlite: the chats + messages tables; the legacy
+                       chats/<chatId>/chat.json files are imported at database
+                       open and renamed to chat.json.migrated)
+  chats/<chatId>/files/ — the uploaded/generated images of a chat
   characters/<id>/character.json (+ photos/ — "starter" set, avatar.jpg — character avatar)
   users/<id>/user.json (+ avatar.jpg — user avatar)
   generated/

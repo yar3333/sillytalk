@@ -38,30 +38,50 @@ function configOf(names: string[]): Config {
 let root: string;
 let modelNames: string[];
 let chats: ChatsService;
+// Every service the test opened — all are closed before the temp root is
+// wiped (on Windows an open chats.db blocks deleting its folder).
+let open: ChatsService[];
+
+function makeChats(): ChatsService {
+  const service = new ChatsService(() => root, new StubConfigurationService());
+  open.push(service);
+  return service;
+}
+
+// Reads a chat through a fresh service instance — what a server restart
+// would see (proves the last write reached the database, not just some
+// in-memory state).
+function peek(id: string): Chat | null {
+  const fresh = new ChatsService(() => root, new StubConfigurationService());
+  try {
+    return fresh.get(id);
+  } finally {
+    fresh.close();
+  }
+}
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "sillytalk-chats-"));
   modelNames = ["m1", "m2"];
-  chats = new ChatsService(() => root, new StubConfigurationService());
+  open = [];
+  chats = makeChats();
 });
 
 afterEach(() => {
+  for (const service of open) service.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-// Writes a chat.json directly (bypassing the service) to feed the service a
-// corrupted or legacy-format file.
+// Writes a legacy chat.json directly (bypassing the service) to feed the
+// service an old-format, corrupted or garbage chat on the first database
+// open.
 function writeChat(id: string, chat: Record<string, unknown>): void {
   fs.mkdirSync(path.join(root, id), { recursive: true });
   fs.writeFileSync(path.join(root, id, "chat.json"), JSON.stringify(chat), "utf-8");
 }
 
-function rawChat(id: string): Record<string, unknown> {
-  return JSON.parse(fs.readFileSync(path.join(root, id, "chat.json"), "utf-8"));
-}
-
 describe("create / get / list", () => {
-  it("creates the chat in its folder and reads it back", () => {
+  it("creates the chat and reads it back", () => {
     const chat = chats.create(["alice", "bob"], "m1", "me");
     expect(chat).toEqual({
       id: expect.any(String),
@@ -75,6 +95,13 @@ describe("create / get / list", () => {
 
   it("get returns null for a missing chat", () => {
     expect(chats.get("nope")).toBeNull();
+  });
+
+  it("the data survives a reopen (a fresh service on the same root)", () => {
+    const chat = chats.create(["alice"], "m1", "me");
+    chats.addUserMessage(chat, "hi", []);
+    const seen = peek(chat.id);
+    expect(seen?.messages.map((m) => m.text)).toEqual(["hi"]);
   });
 
   it("list returns summaries without the messages, newest first", () => {
@@ -105,26 +132,79 @@ describe("create / get / list", () => {
   });
 });
 
-describe("get / save normalization", () => {
-  it("get repairs a garbage characterIds and userId and saves it back", () => {
-    writeChat("c1", { id: "c1", characterIds: "alice", userId: 42, modelId: "m1", messages: [] });
-    const chat = chats.get("c1");
-    expect(chat?.characterIds).toEqual([]);
-    expect(chat?.userId).toBe("");
-    // the repair landed on disk
-    expect(rawChat("c1").characterIds).toEqual([]);
-    expect(rawChat("c1").userId).toBe("");
-  });
-
-  it("get drops non-string entries from characterIds", () => {
+describe("the migration from the legacy chat.json folders", () => {
+  it("imports a legacy chat with its messages and renames the file", () => {
     writeChat("c1", {
       id: "c1",
-      characterIds: ["alice", 42, "", "bob"],
+      characterIds: ["alice"],
+      userId: "me",
+      modelId: "m1",
+      messages: [
+        { id: "m1", role: "user", userId: "me", text: "old", images: [], timestamp: 5 },
+        { id: "m2", role: "assistant", characterId: "alice", text: "hi", images: [], timestamp: 6 },
+      ],
+    });
+    const chat = chats.get("c1");
+    expect(chat?.messages.map((m) => m.id)).toEqual(["m1", "m2"]);
+    expect(chats.list().map((c) => c.id)).toEqual(["c1"]);
+    expect(fs.existsSync(path.join(root, "c1", "chat.json"))).toBe(false);
+    expect(fs.existsSync(path.join(root, "c1", "chat.json.migrated"))).toBe(true);
+  });
+
+  it("the retired fields do not survive the import", () => {
+    writeChat("c1", {
+      id: "c1",
+      title: "old title",
+      createdAt: 1,
+      updatedAt: 2,
+      characterId: "alice",
+      userIds: ["me"],
+      characterIds: ["alice"],
       userId: "me",
       modelId: "m1",
       messages: [],
     });
-    expect(chats.get("c1")?.characterIds).toEqual(["alice", "bob"]);
+    const stored = peek("c1") as Record<string, unknown>;
+    expect(stored.title).toBeUndefined();
+    expect(stored.createdAt).toBeUndefined();
+    expect(stored.updatedAt).toBeUndefined();
+    expect(stored.characterId).toBeUndefined();
+    expect(stored.userIds).toBeUndefined();
+    expect(stored.characterIds).toEqual(["alice"]);
+  });
+
+  it("a corrupted legacy file is skipped and stays on disk", () => {
+    writeChat("c1", {} as never);
+    fs.writeFileSync(path.join(root, "c1", "chat.json"), "{oops", "utf-8");
+    expect(chats.get("c1")).toBeNull();
+    expect(fs.existsSync(path.join(root, "c1", "chat.json"))).toBe(true);
+  });
+
+  it("an already imported chat is not re-imported (the row wins)", () => {
+    writeChat("c1", { id: "c1", characterIds: ["a"], userId: "me", modelId: "m1", messages: [] });
+    expect(peek("c1")).not.toBeNull(); // this first open imports it
+    const chat = chats.get("c1")!;
+    chat.characterIds = ["changed"];
+    chats.save(chat);
+    // a folder re-appearing with the old content must not resurrect it
+    writeChat("c1", { id: "c1", characterIds: ["a"], userId: "me", modelId: "m1", messages: [] });
+    expect(peek("c1")?.characterIds).toEqual(["changed"]);
+  });
+});
+
+describe("the format guards", () => {
+  it("a legacy chat with garbage characterIds/userId is repaired on import and persisted", () => {
+    writeChat("c1", {
+      id: "c1",
+      characterIds: ["alice", 42, "", "bob"],
+      userId: 42,
+      modelId: "m1",
+      messages: [],
+    });
+    const chat = chats.get("c1");
+    expect(chat?.characterIds).toEqual(["alice", "bob"]);
+    expect(chat?.userId).toBe("");
+    expect(peek("c1")?.characterIds).toEqual(["alice", "bob"]);
   });
 
   it("save normalizes a garbage chat", () => {
@@ -148,38 +228,13 @@ describe("the model fallback", () => {
 
   it("leaves the chat alone when the config has no models at all", () => {
     modelNames = [];
-    chats = new ChatsService(() => root, new StubConfigurationService());
     writeChat("c1", { id: "c1", characterIds: ["a"], userId: "me", modelId: "gone", messages: [] });
     expect(chats.get("c1")?.modelId).toBe("gone");
   });
 });
 
-describe("legacy fields", () => {
-  it("save strips the fields that are no longer stored", () => {
-    writeChat("c1", {
-      id: "c1",
-      title: "old title",
-      createdAt: 1,
-      updatedAt: 2,
-      characterId: "alice",
-      userIds: ["me"],
-      characterIds: ["alice"],
-      userId: "me",
-      modelId: "m1",
-      messages: [],
-    });
-    chats.save(chats.get("c1")!);
-    const raw = rawChat("c1");
-    expect(raw.title).toBeUndefined();
-    expect(raw.createdAt).toBeUndefined();
-    expect(raw.updatedAt).toBeUndefined();
-    expect(raw.characterId).toBeUndefined();
-    expect(raw.userIds).toBeUndefined();
-  });
-});
-
 describe("delete", () => {
-  it("deletes the chat folder with its files", () => {
+  it("deletes the chat with its folder and files", () => {
     const chat = chats.create(["a"], "m1", "me");
     const filesDir = path.join(root, chat.id, "files");
     fs.mkdirSync(filesDir, { recursive: true });
@@ -206,6 +261,14 @@ describe("the message primitives", () => {
     expect(msg.id).toEqual(expect.any(String));
     expect(msg.timestamp).toEqual(expect.any(Number));
     expect(chats.get(chat.id)!.messages).toEqual([msg]);
+  });
+
+  it("addUserMessage after a save appends after the stored messages", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    chat.messages.push({ id: "m1", role: "user", userId: "me", text: "first", images: [], timestamp: 1 });
+    chats.save(chat);
+    chats.addUserMessage(chat, "second", []);
+    expect(chats.get(chat.id)!.messages.map((m) => m.text)).toEqual(["first", "second"]);
   });
 
   it("editMessage applies the text and the images and saves", () => {
@@ -340,6 +403,17 @@ describe("setMessageImageStatus", () => {
     const msg = chats.get(chat.id)!.messages[0];
     expect(msg.imageStatus).toBeUndefined();
     expect(msg.imageErrors).toBeUndefined();
+  });
+
+  it("does not clobber a message appended while the status was written", () => {
+    const { chat, messageId } = chatWithPendingMessage();
+    // the state a background job holds: the chat as it was before a
+    // concurrent send landed — its status write must touch only its row.
+    chats.addUserMessage(chat, "a concurrent message", []);
+    chats.setMessageImageStatus(chat.id, messageId, "gen-1.png", undefined);
+    const fresh = chats.get(chat.id)!;
+    expect(fresh.messages).toHaveLength(2);
+    expect(fresh.messages[0].imageStatus).toBeUndefined();
   });
 
   it("is a silent no-op for a missing chat or message", () => {

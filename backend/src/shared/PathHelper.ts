@@ -65,8 +65,19 @@ export class PathHelper {
     return path.join(root, chatId);
   }
 
+  // Legacy: the per-chat chat.json file (the old storage format). The
+  // service imports these once at database open and renames them to
+  // chat.json.migrated — see ChatsService.
   static chatFile(chatId: string, root: string = PathHelper.chatsDir()): string {
     return path.join(PathHelper.chatDir(chatId, root), "chat.json");
+  }
+
+  // The chats database (node:sqlite): the chat fields and the messages live
+  // here since the move away from the per-chat chat.json files. The
+  // chats/<id>/ folders survive as the homes of the chat image files
+  // (chats/<id>/files/).
+  static chatsDatabaseFile(root: string = PathHelper.chatsDir()): string {
+    return path.join(root, "chats.db");
   }
 
   static chatFilesDir(chatId: string, root: string = PathHelper.chatsDir()): string {

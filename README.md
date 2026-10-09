@@ -172,7 +172,10 @@ resolved by `resolveApiKey()`: `envKey` (an environment variable) takes priority
   `avatar.jpg` — the avatar
 - Users: `~/.config/sillytalk/users/<id>/` — `user.json` (the name and the persona description);
   `avatar.jpg` — the avatar
-- Chats: `~/.config/sillytalk/chats/<chatId>/chat.json` (+ `files/` — the uploaded/generated images)
+- Chats: `~/.config/sillytalk/chats/chats.db` — a SQLite database (`node:sqlite`) with the chat
+  fields and the messages; the chat images stay files in
+  `~/.config/sillytalk/chats/<chatId>/files/` (the old per-chat `chat.json` files are imported
+  into the database once and renamed to `chat.json.migrated`)
 
 ## Project structure
 
@@ -187,7 +190,7 @@ backend/
     image_generation/ # generation: the driver interface, the SD API / local
                       # program backends, the top-level service class
                       # (background jobs); di.ts — the minimal DI container
-    chats/         # the chat storage in the chats/<id>/ folders —
+    chats/         # the chat storage in the chats.db SQLite database —
                    # the ChatsService class + its DI token
     characters/    # the character storage in the characters/<id>/ folders —
                    # the CharactersService class + its DI token

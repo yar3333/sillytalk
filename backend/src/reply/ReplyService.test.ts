@@ -136,7 +136,12 @@ beforeEach(() => {
   reply = new ReplyService(characters, persons, chats, textGeneration, imageGeneration, new StubConfigurationService());
 });
 
-afterEach(() => {
+afterEach(async () => {
+  // Let the fire-and-forget job.result.then(...) callbacks of the tests that
+  // did not flush settle while the database is still open (close() is final:
+  // a callback landing after it would hit the closed database).
+  await new Promise((resolve) => setImmediate(resolve));
+  chats.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
 
