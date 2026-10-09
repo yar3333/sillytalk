@@ -438,7 +438,11 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   generating — in reply queues it names the character being asked ("Alice is typing") with their
   avatar/letter, falling back to a neutral glyph when the author is unknown.
 - While a reply is generating the send button is a red cancel (✕) — clicking it (or Enter) aborts
-  the generation (see "Canceling the generation" above); it is NOT disabled.
+  the generation (see "Canceling the generation" above); it is NOT disabled. **Editing an existing
+  message overrides this**: while `editTargetId` is set the button is always the save (✓) and saves
+  the edit (a PATCH) even during a generation — the backend re-reads the chat before appending a
+  reply, so the edit and the in-flight reply both persist (like delete-during-generation). The cancel
+  (✕) styling/behaviour applies only outside the editing mode.
 - User and assistant messages are visually distinct (avatar + sender label + colored bubble).
 - **Images**: stretched to the full chat width — the bubble of a message with images grows to the row
   width via the `has-images` class — and capped at two thirds of the viewport height

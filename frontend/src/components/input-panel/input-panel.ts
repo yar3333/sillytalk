@@ -95,10 +95,10 @@ import { UiStore } from '../../services/ui-store';
         <button
           class="send"
           data-testid="send"
-          [class.cancel]="chatStore.sending()"
+          [class.cancel]="chatStore.sending() && !chatStore.editTargetId()"
           (click)="onSend(ta)"
         >
-          {{ chatStore.sending() ? '✕' : chatStore.editTargetId() ? '✓' : imageStore.genMode() ? 'Draw' : '➤' }}
+          {{ chatStore.editTargetId() ? '✓' : chatStore.sending() ? '✕' : imageStore.genMode() ? 'Draw' : '➤' }}
         </button>
       </div>
     </div>
@@ -169,21 +169,31 @@ export class InputPanel {
   // generation mode (Draw) draws an image, otherwise it is a normal message.
   // Keeping it here (not in a store) is what lets the store graph stay acyclic.
   onSend(ta: HTMLTextAreaElement): void {
+    // Editing a message always wins: the button is the save (✓) and saves the
+    // edit, even while a reply is generating in the background (the backend
+    // re-reads the chat before appending a reply, so both the edit and the
+    // in-flight reply persist). Only outside the editing mode the button is
+    // the generation cancel (✕).
+    const text = ta.value;
+    let ok: boolean;
+    if (this.chatStore.editTargetId()) {
+      ok = this.chatStore.saveEdit(text);
+      if (ok) {
+        ta.value = '';
+        this.autosize(ta);
+      }
+      return;
+    }
     // While a reply is generating the button is the cancel (✕) — clicking
     // it (or pressing Enter) aborts the generation instead of sending.
     if (this.chatStore.sending()) {
       // A typed message + Enter would silently cancel the generation; confirm
       // first so the user doesn't lose the in-flight reply by accident.
-      const text = ta.value.trim();
-      if (text && !confirm('Cancel the generation in progress?')) return;
+      if (text.trim() && !confirm('Cancel the generation in progress?')) return;
       this.chatStore.cancelGeneration();
       return;
     }
-    const text = ta.value;
-    let ok: boolean;
-    if (this.chatStore.editTargetId()) {
-      ok = this.chatStore.saveEdit(text);
-    } else if (this.imageStore.genMode()) {
+    if (this.imageStore.genMode()) {
       ok = this.imageStore.draw(text.trim());
       // A draw ignores the 📎 attachments — clear them on a successful send.
       if (ok) this.chatStore.clearPendingImages();

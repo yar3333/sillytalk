@@ -359,6 +359,58 @@ describe('InputPanel — message editing', () => {
     expect(store.pendingImages()).toEqual([]);
     expect(el.querySelector('[data-testid=edit-bar]')).toBeNull();
   });
+
+  // The bug this guards: while a reply was generating the button was the
+  // cancel (✕), so editing an existing message and pressing it aborted the
+  // generation instead of saving the edit. Editing must win: the button is ✓
+  // and saves (PATCH), the in-flight generation keeps running untouched.
+  it('saves the edit while a reply is generating (button = ✓, no cancel)', async () => {
+    const api = TestBed.inject(ApiService) as unknown as {
+      patchMessage: (chatId: string, messageId: string, body: unknown) => Promise<{ chat: Chat }>;
+    };
+    let patched: { chatId: string; messageId: string; body: unknown } | null = null;
+    api.patchMessage = (chatId: string, messageId: string, body: unknown) => {
+      patched = { chatId, messageId, body };
+      const c = store.chat()!;
+      return Promise.resolve({
+        chat: {
+          ...c,
+          messages: c.messages.map((m) =>
+            m.id === messageId ? { ...m, ...(body as Partial<ChatMessage>) } : m,
+          ),
+        },
+      });
+    };
+
+    const { fixture, el } = fixtureWith({
+      id: 'msg-1',
+      role: 'user',
+      text: 'old text',
+      images: [],
+      timestamp: 1,
+    });
+
+    store.sending.set(true);
+    store.startEdit(store.chat()!.messages[0]);
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    const btn = el.querySelector('[data-testid=send]') as HTMLButtonElement;
+    expect(btn.textContent?.trim()).toBe('✓');
+    expect(btn.classList.contains('cancel')).toBe(false);
+
+    const ta = el.querySelector('textarea') as HTMLTextAreaElement;
+    ta.value = 'edited while generating';
+    btn.click();
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    expect(patched).not.toBeNull();
+    expect(patched!.body).toEqual({ text: 'edited while generating', images: [] });
+    // cancelGeneration was NOT called — the generation is still running.
+    expect(store.sending()).toBe(true);
+    expect(store.editTargetId()).toBeNull();
+  });
 });
 
 describe('ChatStore — empty send ("another message from the AI")', () => {

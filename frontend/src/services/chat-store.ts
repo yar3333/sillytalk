@@ -251,10 +251,14 @@ export class ChatStore {
 
   // Saves the edit of the message loaded into the field (the "✓" button).
   // An empty edit (no text, no images) is not saved. Returns true if accepted.
+  // Allowed while a reply is generating: this is a PATCH, not a new generation,
+  // and the backend re-reads the chat before appending a reply, so the edit and
+  // the in-flight reply both persist (like deleteOne/deleteFrom, also allowed
+  // during generation).
   saveEdit(text: string): boolean {
     const c = this.chat();
     const editing = this.editTargetId();
-    if (!c || !editing || this.sending()) return false;
+    if (!c || !editing) return false;
     const trimmed = text.trim();
     const images = this.pendingImages();
     if (!trimmed && images.length === 0) return false;
