@@ -55,11 +55,12 @@ import { avatarLetter, imageHintFor, splitNarration as splitNarrationParts } fro
         >
           🗑
         </button>
-        <!-- Delete this message and everything after it: a confirm() dialog. -->
+        <!-- Delete this message and everything after it: armed the same way. -->
         <button
           class="msg-edit del-more"
-          (click)="chatStore.deleteFrom(message().id)"
-          title="Delete this message and all subsequent ones"
+          [class.armed]="tailDeleteArmed()"
+          (click)="onTailDeleteClick()"
+          title="Delete this message and all subsequent ones (click again to confirm)"
         >
           🧹
         </button>
@@ -154,12 +155,16 @@ export class MessageRow implements OnDestroy {
   readonly message = input.required<ChatMessage>();
   readonly isLast = input.required<boolean>();
 
-  // The "armed" state of the single-delete (🗑) button: the first click turns
-  // it red, a second click within ~2 s deletes the message, otherwise it
-  // disarms. Local to the row — each message has its own component instance
-  // (tracked by id), so the state never leaks between messages.
+  // The "armed" state of the delete buttons: the 🗑 (this message) and the 🧹
+  // (this message + the tail) both confirm with a second click instead of a
+  // dialog — the first click turns the button red, a second click within ~2 s
+  // deletes, otherwise it disarms. Local to the row — each message has its own
+  // component instance (tracked by id), so the state never leaks between
+  // messages.
   private deleteArmed = signal(false);
   private deleteTimer: ReturnType<typeof setTimeout> | null = null;
+  private tailDeleteArmed = signal(false);
+  private tailDeleteTimer: ReturnType<typeof setTimeout> | null = null;
 
   onSingleDeleteClick(): void {
     if (!this.deleteArmed()) {
@@ -181,10 +186,32 @@ export class MessageRow implements OnDestroy {
     this.chatStore.deleteOne(this.message().id);
   }
 
+  onTailDeleteClick(): void {
+    if (!this.tailDeleteArmed()) {
+      this.tailDeleteArmed.set(true);
+      if (this.tailDeleteTimer) clearTimeout(this.tailDeleteTimer);
+      this.tailDeleteTimer = setTimeout(() => {
+        this.tailDeleteArmed.set(false);
+        this.tailDeleteTimer = null;
+      }, 2000);
+      return;
+    }
+    if (this.tailDeleteTimer) {
+      clearTimeout(this.tailDeleteTimer);
+      this.tailDeleteTimer = null;
+    }
+    this.tailDeleteArmed.set(false);
+    this.chatStore.deleteFrom(this.message().id);
+  }
+
   ngOnDestroy(): void {
     if (this.deleteTimer) {
       clearTimeout(this.deleteTimer);
       this.deleteTimer = null;
+    }
+    if (this.tailDeleteTimer) {
+      clearTimeout(this.tailDeleteTimer);
+      this.tailDeleteTimer = null;
     }
   }
 

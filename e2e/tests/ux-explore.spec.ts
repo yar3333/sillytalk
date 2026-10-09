@@ -227,7 +227,7 @@ test('UX 04: cancel during regeneration keeps the original reply', async ({ page
   await page.screenshot({ path: `${SHOTS}/ux-04-regen-cancel-kept.png` });
 });
 
-test('UX 05: delete — single (arm, two clicks) and tail (confirm)', async ({
+test('UX 05: delete — single and tail (both armed, two clicks)', async ({
   page,
 }) => {
   await setDelay(0);
@@ -235,19 +235,17 @@ test('UX 05: delete — single (arm, two clicks) and tail (confirm)', async ({
   await openApp(page);
   await expect(allMsgs(page)).toHaveCount(8);
 
-  // One dialog handler for the whole test, with a mode flag.
-  let dialogMode: 'dismiss' | 'accept' = 'dismiss';
+  // Neither delete button uses a dialog — the confirm is the armed state of the
+  // button, so any dialog during this test is a regression (it gets dismissed).
   let dialogs = 0;
   page.on('dialog', (d) => {
     dialogs += 1;
-    if (dialogMode === 'accept') d.accept();
-    else d.dismiss();
+    d.dismiss();
   });
 
   // ---- Single delete (🗑): the FIRST click only ARMS the button (it turns
   // red) — nothing is removed and no dialog appears. The SECOND click within
   // the ~2 s window deletes the row (optimistic removal). ----
-  dialogMode = 'dismiss';
   const last = allMsgs(page).last();
   await last.hover();
   const delBtn = last.locator('.msg-edit.del');
@@ -284,28 +282,34 @@ test('UX 05: delete — single (arm, two clicks) and tail (confirm)', async ({
   await expect(allMsgs(page)).toHaveCount(6); // nothing removed by the lone click
   step('05 armed state disarms after the window', 1);
 
-  // ---- Tail delete (🧹): a confirm() dialog; accepting it removes the
-  // message and everything after it at once. ----
-  dialogMode = 'accept';
-  dialogs = 0;
+  // ---- Tail delete (🧹): armed exactly like the single delete — the first
+  // click only turns the button red, the second removes the message and
+  // everything after it at once. ----
   const first = allMsgs(page).first();
   await first.hover();
-  await first.locator('.msg-edit.del-more').click();
+  const tailBtn = first.locator('.msg-edit.del-more');
+  await tailBtn.click();
+  await expect(tailBtn).toHaveClass(/armed/);
+  await expect(allMsgs(page)).toHaveCount(6); // armed, the tail is still there
+  const t1 = Date.now();
+  await tailBtn.click(); // confirm
   await expect(allMsgs(page)).toHaveCount(0);
-  expect(dialogs).toBe(1); // the confirm was shown
+  step('05 tail delete (two clicks) -> chat truncated', Date.now() - t1);
+  expect(dialogs).toBe(0); // no confirm dialog
   await page.screenshot({ path: `${SHOTS}/ux-05b-delete-truncated-all.png` });
 
-  // Dismissing the confirm keeps everything.
+  // A lone first click of the tail delete disarms after the ~2 s window and
+  // keeps the messages.
   await seedChat(3); // 6 messages
   await page.goto('/');
   await expect(allMsgs(page)).toHaveCount(6);
-  dialogs = 0;
-  dialogMode = 'dismiss';
   const mid = allMsgs(page).nth(1);
   await mid.hover();
-  await mid.locator('.msg-edit.del-more').click();
-  await page.waitForTimeout(300);
-  expect(dialogs).toBe(1); // the confirm was shown
+  const midTail = mid.locator('.msg-edit.del-more');
+  await midTail.click();
+  await expect(midTail).toHaveClass(/armed/);
+  await page.waitForTimeout(2500);
+  await expect(midTail).not.toHaveClass(/armed/);
   await expect(allMsgs(page)).toHaveCount(6); // nothing removed
 });
 

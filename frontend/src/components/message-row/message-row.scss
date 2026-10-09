@@ -120,9 +120,10 @@
   color: var(--err);
   background: rgba(255, 107, 107, 0.12);
 }
-/* The armed (red) state of the single-delete (🗑): the first click, awaiting
-   the confirming second click within ~2 s. */
-.msg-edit.del.armed {
+/* The armed (red) state of the delete buttons (🗑 and 🧹): the first click,
+   awaiting the confirming second click within ~2 s. */
+.msg-edit.del.armed,
+.msg-edit.del-more.armed {
   color: var(--err);
   background: rgba(255, 107, 107, 0.22);
 }

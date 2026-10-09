@@ -419,18 +419,15 @@ export class ChatStore {
     this.pendingImages.set([]);
   }
 
+  // Deletes the message and everything after it (the 🧹 button). Like deleteOne,
+  // the confirm is the two-click "armed" state in MessageRow, not a dialog —
+  // this action always runs. Optimistic like deleteOne.
   deleteFrom(messageId: string): void {
     const c = this.chat();
     if (!c) return;
     if (this.editTargetId() === messageId) this.cancelEdit();
     const idx = c.messages.findIndex((m) => m.id === messageId);
     if (idx === -1) return;
-    // Deleting a message truncates the tail: warn when more than one message
-    // will be removed (the frequent "delete the last reply" stays one-click).
-    if (idx < c.messages.length - 1) {
-      const n = c.messages.length - idx;
-      if (!confirm(`Delete this message and ${n - 1} more after it?`)) return;
-    }
     // Optimistic: the rows disappear right away (no pause waiting for the
     // full-chat JSON round-trip); the server response replaces the chat,
     // an error restores it via a re-read.
