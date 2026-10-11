@@ -165,7 +165,8 @@ frontend/              Angular app
     input-panel/       input: error banner, gen-mode bar, 📎 attachments, send;
                        orchestrates the "what to send" decision (edit/gen/text)
     new-chat-dialog/   new chat: user + character pick (local selection state)
-    character-dialog/  character edit dialog (name, description, avatar, Delete/Clone)
+    character-dialog/  character edit dialog (name, description, the "Access to all images"
+                       flag, avatar, Delete/Clone)
     user-dialog/       persona edit dialog (name, description, avatar, Delete/Clone)
     model-dialog/      model edit dialog (llmModels entry fields, Delete/Clone)
     settings/          settings modal (listen address / image generation)
@@ -324,11 +325,13 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   adds an instruction letting the model insert `[IMG:description]` tags into its replies; it may
   also pass reference images by index: `[IMG:description | 1,3]`. The index list ("inventory") is
   built per request by `ImageGenerationService.imageInventory` (`image_generation/ImageGenerationService.ts`):
-  the character's photos first, then every
-  image already in the chat, oldest first; it is appended to the system prompt so the model knows
-  what the numbers mean. The backend strips the tags (`extractImageRequests`) and resolves indices
-  to files (`ImageGenerationService.resolveInventoryRefs`; character photos are copied into the
-  chat via `importCharacterPhoto`).
+  the character's own photos first, then — when the character has the `accessAllImages` flag (the
+  "Access to all images" checkbox in its edit dialog, stored in `character.json`) — the photos of
+  the OTHER characters in the chat and the active persona's avatar, then every image already in the
+  chat, oldest first; it is appended to the system prompt so the model knows what the numbers mean.
+  The backend strips the tags (`extractImageRequests`) and resolves indices to files
+  (`ImageGenerationService.resolveInventoryRefs`; character photos and the persona avatar are copied
+  into the chat via `importCharacterPhoto`).
 - **Image generation runs in the BACKGROUND.** Each `[IMG:…]` (or a manual gen-mode draw, or a
   regeneration) gets a reserved file name that is stored in the message RIGHT AWAY with
   `ChatMessage.imageStatus[name] = 'pending'` (`imagePrompts`/`imageRefs` alongside), the reply is
@@ -366,7 +369,9 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   The final prompt is stored in `ChatMessage.imagePrompts`, so image hover hints show it.
 - **Characters are NOT in the config.** Each character is a folder
   `~/.config/sillytalk/characters/<id>/`: the folder name IS the character id, `character.json` holds
-  `{ name, description }`, `photos/` is the fixed "starter" photo set (computed by
+  `{ name, description, accessAllImages }` (`accessAllImages`, default `false`, lets the character
+  reference the other characters' photos and the persona's avatar — see the inventory note above),
+  `photos/` is the fixed "starter" photo set (computed by
   `characterPhotosDir(id)`), and `avatar.jpg` is the character avatar shown next to its messages.
   CRUD lives in `characters/CharactersService.ts`; `GET/PUT /api/characters` read/sync the folders (PUT performs a full
   sync: create/update/delete). An on-disk `characters` field in an old config.json is migrated to

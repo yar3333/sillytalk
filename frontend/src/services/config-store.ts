@@ -137,11 +137,11 @@ export class ConfigStore {
 
   // ---- characters (the characters/ folders — full list sync) ----
   // id === null — creates a new one (the id is generated here).
-  saveCharacter(id: string | null, name: string, description: string): void {
+  saveCharacter(id: string | null, name: string, description: string, accessAllImages: boolean): void {
     const chars = this.characters();
     const next = id
-      ? chars.map((c) => (c.id === id ? { ...c, name, description } : c))
-      : [...chars, { id: 'c' + Date.now(), name, description }];
+      ? chars.map((c) => (c.id === id ? { ...c, name, description, accessAllImages } : c))
+      : [...chars, { id: 'c' + Date.now(), name, description, accessAllImages }];
     this.putCharacters(next);
   }
 

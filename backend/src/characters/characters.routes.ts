@@ -40,6 +40,7 @@ export function createCharactersRouter(characters: CharactersService): express.R
         id: c.id,
         name: typeof c.name === "string" ? c.name : c.id,
         description: typeof c.description === "string" ? c.description : "",
+        accessAllImages: c.accessAllImages === true,
       });
     }
     characters.sync(list);

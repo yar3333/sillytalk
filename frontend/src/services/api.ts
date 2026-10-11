@@ -28,6 +28,9 @@ export interface Character {
   description: string;
   photos?: string[];
   hasAvatar?: boolean; // is there a characters/<id>/avatar.*
+  // when true the character may also reference the photos of the other
+  // characters in the chat and the persona's photo.
+  accessAllImages?: boolean;
 }
 
 // A user is stored in users/<id>/user.json (served by the backend via /api/persons).

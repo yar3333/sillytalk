@@ -3,9 +3,11 @@ import path from "path";
 import { randomUUID } from "crypto";
 import { ChildProcess } from "child_process";
 import { Character } from "../characters/Character";
+import { Person } from "../persons/Person";
 import { Chat } from "../chats/Chat";
 import { Model } from "../configuration/Model";
 import { PathHelper } from "../shared/PathHelper";
+import { AvatarFile } from "../shared/AvatarFile";
 import { ConfigurationService } from "../configuration/ConfigurationService";
 import { createToken } from "../di";
 import { ImageGenerator } from "../configuration/ImageGenerator";
@@ -106,9 +108,17 @@ export class ImageGenerationService {
   // ---- reference-image inventory (the [IMG:... | N] / [PHOTO:N] protocol) ----
 
   // Images the model can reference in the [IMG:description | 1,2] tag:
-  // the character's photos first, then every image already in the chat
-  // (chronological order). The order = the numbers in the tag.
-  imageInventory(chat: Chat, character: Character | null): InventoryItem[] {
+  // the character's own photos first, then (when the character has
+  // "access to all images") the photos of the other characters in the chat
+  // and the active persona's photo, then every image already in the chat
+  // (chronological order). The order = the numbers in the tag. `fellows` is
+  // the other character participants and `person` the active persona.
+  imageInventory(
+    chat: Chat,
+    character: Character | null,
+    fellows: Character[] = [],
+    person: Person | null = null,
+  ): InventoryItem[] {
     const items: InventoryItem[] = [];
     if (character) {
       const photosDir = PathHelper.characterPhotosDir(character.id);
@@ -118,6 +128,25 @@ export class ImageGenerationService {
           .filter((f) => /\.(png|jpe?g|webp|gif)$/i.test(f))
           .sort()) {
           items.push({ path: path.join(photosDir, f), label: "character photo" });
+        }
+      }
+      // With "access to all images" the character may also reference the
+      // photos of the other characters in the chat and the active persona's
+      // photo (for [IMG:...|N] references and [PHOTO:N] as-is sending).
+      if (character.accessAllImages) {
+        for (const fellow of fellows) {
+          const dir = PathHelper.characterPhotosDir(fellow.id);
+          if (!fs.existsSync(dir)) continue;
+          for (const f of fs
+            .readdirSync(dir)
+            .filter((f) => /\.(png|jpe?g|webp|gif)$/i.test(f))
+            .sort()) {
+            items.push({ path: path.join(dir, f), label: `photo of ${fellow.name}` });
+          }
+        }
+        if (person) {
+          const avatar = AvatarFile.find(PathHelper.personDir(person.id));
+          if (avatar) items.push({ path: avatar, label: `photo of ${person.name}` });
         }
       }
     }

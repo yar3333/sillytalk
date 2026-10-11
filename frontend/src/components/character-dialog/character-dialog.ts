@@ -45,6 +45,18 @@ import { UiStore } from '../../services/ui-store';
         [value]="description()"
         (input)="setDescription($event)"
       ></textarea>
+      <label
+        class="check"
+        title="When on, the character may also reference the photos of the other characters in the chat and the persona's photo."
+      >
+        <input
+          type="checkbox"
+          data-testid="char-access-all-images"
+          [checked]="accessAllImages()"
+          (change)="setAccessAllImages($event)"
+        />
+        <span>Access to all images</span>
+      </label>
       <div class="dialog-actions">
         @if (!isNew()) {
           <button class="btn danger" data-testid="char-delete" (click)="remove()">Delete</button>
@@ -67,6 +79,7 @@ export class CharacterDialog implements OnInit {
 
   readonly name = signal('');
   readonly description = signal('');
+  readonly accessAllImages = signal(false);
   readonly isNew = signal(true);
   readonly hasAvatar = signal(false);
   // A cache buster for the avatar preview after upload/removal.
@@ -82,6 +95,7 @@ export class CharacterDialog implements OnInit {
       if (c) {
         this.name.set(c.name);
         this.description.set(c.description);
+        this.accessAllImages.set(!!c.accessAllImages);
         this.hasAvatar.set(!!c.hasAvatar);
       }
     }
@@ -100,6 +114,9 @@ export class CharacterDialog implements OnInit {
   setDescription(e: Event): void {
     this.description.set((e.target as HTMLTextAreaElement).value);
   }
+  setAccessAllImages(e: Event): void {
+    this.accessAllImages.set((e.target as HTMLInputElement).checked);
+  }
 
   save(): void {
     const nm = this.name().trim();
@@ -107,7 +124,7 @@ export class CharacterDialog implements OnInit {
       this.ui.error.set('The name cannot be empty');
       return;
     }
-    this.configStore.saveCharacter(this.isNew() ? null : this.id, nm, this.description().trim());
+    this.configStore.saveCharacter(this.isNew() ? null : this.id, nm, this.description().trim(), this.accessAllImages());
     this.configStore.closeEntityDialog();
   }
 

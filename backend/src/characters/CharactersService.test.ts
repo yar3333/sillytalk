@@ -43,8 +43,23 @@ describe("save / get / list", () => {
       id: "alisa",
       name: "Alice",
       description: "a kind fairy",
+      accessAllImages: false,
     });
     expect(characters.list().map((c) => c.id)).toEqual(["alisa"]);
+  });
+
+  it("persists the access-to-all-images flag and defaults it to false", () => {
+    characters.save({ id: "on", name: "On", description: "", accessAllImages: true });
+    characters.save({ id: "off", name: "Off", description: "" });
+    expect(characters.get("on")?.accessAllImages).toBe(true);
+    expect(characters.get("off")?.accessAllImages).toBe(false);
+    // an old character.json without the field reads back as false
+    fs.writeFileSync(
+      path.join(root, "off", "character.json"),
+      JSON.stringify({ name: "Off", description: "" }),
+      "utf-8",
+    );
+    expect(characters.get("off")?.accessAllImages).toBe(false);
   });
 
   it("creates the photos folder", () => {
@@ -180,7 +195,7 @@ describe("delete", () => {
 
 describe("clone", () => {
   it("copies the folder (photos and avatar go along) with the (copy) name", () => {
-    characters.save({ id: "alice", name: "Alice", description: "a friend" });
+    characters.save({ id: "alice", name: "Alice", description: "a friend", accessAllImages: true });
     fs.writeFileSync(path.join(root, "alice", "photos", "p1.png"), "img");
     fs.writeFileSync(path.join(root, "alice", "avatar.jpg"), "av");
     const newId = characters.clone("alice");
@@ -189,6 +204,7 @@ describe("clone", () => {
       id: "alice-copy",
       name: "Alice (copy)",
       description: "a friend",
+      accessAllImages: true,
     });
     expect(fs.existsSync(path.join(root, "alice-copy", "photos", "p1.png"))).toBe(true);
     expect(fs.existsSync(path.join(root, "alice-copy", "avatar.jpg"))).toBe(true);

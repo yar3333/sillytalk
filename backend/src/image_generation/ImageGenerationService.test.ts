@@ -3,6 +3,9 @@ import os from "os";
 import path from "path";
 import { PathHelper } from "../shared/PathHelper";
 import { createMachineService } from "../machine/IMachineService";
+import { Chat } from "../chats/Chat";
+import { Character } from "../characters/Character";
+import { Person } from "../persons/Person";
 import { ChatsService } from "../chats/ChatsService";
 import { TextGenerationService } from "../text_generation/TextGenerationService";
 import { ImageGenerationService } from "./ImageGenerationService";
@@ -193,6 +196,73 @@ it("does not generate without an available generator", async () => {
   const r = await job.result;
   expect(r.status).toBe("failed");
   if (r.status === "failed") expect(r.error).toMatch(/not configured/);
+});
+
+// ---- reference-image inventory (the [IMG:... | N] / [PHOTO:N] protocol) ----
+describe("imageInventory", () => {
+  const invChatId = "jest-inventory-test";
+  const charsDir = PathHelper.charactersDir();
+  const personsDir = PathHelper.personsDir();
+
+  // A character folder with a starter-set photo set (the path helpers read
+  // the data root through the env set above, so this lands in the temp root).
+  function putCharacter(id: string, name: string, photos: string[]): void {
+    const dir = path.join(charsDir, id, "photos");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(charsDir, id, "character.json"), JSON.stringify({ name, description: "" }));
+    for (const p of photos) fs.writeFileSync(path.join(dir, p), "x");
+  }
+
+  beforeAll(() => {
+    putCharacter("own", "Own", ["a.png", "b.png"]);
+    putCharacter("fellow", "Fellow", ["f.png"]);
+    const pdir = path.join(personsDir, "me");
+    fs.mkdirSync(pdir, { recursive: true });
+    fs.writeFileSync(path.join(pdir, "user.json"), JSON.stringify({ name: "Me", description: "" }));
+    fs.writeFileSync(path.join(pdir, "avatar.jpg"), "av");
+    // one user message with one image already in the chat
+    const filesDir = PathHelper.chatFilesDir(invChatId);
+    fs.mkdirSync(filesDir, { recursive: true });
+    fs.writeFileSync(path.join(filesDir, "u1.png"), "x");
+  });
+
+  afterAll(() => {
+    fs.rmSync(path.join(charsDir, "own"), { recursive: true, force: true });
+    fs.rmSync(path.join(charsDir, "fellow"), { recursive: true, force: true });
+    fs.rmSync(path.join(personsDir, "me"), { recursive: true, force: true });
+    fs.rmSync(PathHelper.chatDir(invChatId), { recursive: true, force: true });
+  });
+
+  const chat: Chat = {
+    id: invChatId,
+    characterIds: ["own", "fellow"],
+    userId: "me",
+    modelId: "m1",
+    messages: [{ id: "m0", role: "user", userId: "me", text: "hi", images: ["u1.png"], timestamp: 1 }],
+  };
+  const own: Character = { id: "own", name: "Own", description: "" };
+  const fellow: Character = { id: "fellow", name: "Fellow", description: "" };
+  const person: Person = { id: "me", name: "Me", description: "" };
+
+  it("lists the own photos and the chat images when the flag is off", () => {
+    const items = images.imageInventory(chat, own, [fellow], person);
+    expect(items.map((i) => i.label)).toEqual(["character photo", "character photo", "image from the user"]);
+  });
+
+  it("adds the fellows' photos and the persona avatar when the flag is on", () => {
+    const items = images.imageInventory(chat, { ...own, accessAllImages: true }, [fellow], person);
+    expect(items.map((i) => i.label)).toEqual([
+      "character photo",
+      "character photo",
+      "photo of Fellow",
+      "photo of Me",
+      "image from the user",
+    ]);
+    // the fellow photo lives in its own character folder, the persona avatar
+    // in the users folder — neither in the chat files/
+    expect(items[2].path).toBe(path.join(charsDir, "fellow", "photos", "f.png"));
+    expect(items[3].path).toBe(path.join(personsDir, "me", "avatar.jpg"));
+  });
 });
 
 // ---- background image jobs (startImageJob) ----

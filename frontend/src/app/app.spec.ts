@@ -697,18 +697,19 @@ describe('ConfigStore — the entity CRUD (models / characters / users)', () => 
     ]);
 
     // create: the id is generated here
-    store.saveCharacter(null, 'C', 'desc');
+    store.saveCharacter(null, 'C', 'desc', false);
     await tick();
     expect(lastCharacters!.map((c) => c.name).sort()).toEqual(['A', 'B', 'C']);
     const created = lastCharacters!.find((c) => c.name === 'C')!;
     expect(created.id).toMatch(/^c\d+$/);
 
-    store.saveCharacter('a', 'A2', 'new desc');
+    store.saveCharacter('a', 'A2', 'new desc', false);
     await tick();
     expect(lastCharacters!.find((c) => c.id === 'a')).toEqual({
       id: 'a',
       name: 'A2',
       description: 'new desc',
+      accessAllImages: false,
     });
 
     store.deleteCharacter('b');

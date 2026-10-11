@@ -86,17 +86,19 @@ export class ReplyService {
     const character = this.characters.get(characterId);
     if (!character) return null;
     const canGenerateImages = this.imageGeneration.hasAvailableGenerator();
-    // The inventory is always needed: it backs both [PHOTO:N] (send a ready
-    // image, no generator required) and [IMG:... | N] references (generation).
-    const inventory = this.imageGeneration.imageInventory(chat, character);
-    const inventoryText = inventory.map((it, i) => `#${i + 1} — ${it.label}`).join("\n");
-    const person = chat.userId ? this.persons.get(chat.userId) : (this.persons.list()[0] ?? null);
     // The other character participants: in a group chat the prompt explains
     // the reply order and allows staying silent.
     const fellows = chat.characterIds
       .filter((id) => id !== characterId)
       .map((id) => this.characters.get(id))
       .filter((c): c is Character => c !== null);
+    const person = chat.userId ? this.persons.get(chat.userId) : (this.persons.list()[0] ?? null);
+    // The inventory is always needed: it backs both [PHOTO:N] (send a ready
+    // image, no generator required) and [IMG:... | N] references (generation).
+    // With the character's "access to all images" it also carries the photos
+    // of the other characters in the chat and the active persona's photo.
+    const inventory = this.imageGeneration.imageInventory(chat, character, fellows, person);
+    const inventoryText = inventory.map((it, i) => `#${i + 1} — ${it.label}`).join("\n");
     const system = this.textGeneration.systemPromptFor(
       character,
       person,
