@@ -115,11 +115,15 @@ export class InputPanel {
   constructor() {
     // Editing from the history: chatStore sets editTargetId — we substitute
     // the message text into the field and focus it; the reset (null) — clear the field.
+    // The text comes from editText (a dedicated signal), NOT from a live chat
+    // lookup: a reply or an image-generation poll re-applies the chat, and that
+    // must not re-run this effect and reset the field while the user types.
     effect(() => {
       // Read the signal BEFORE the ViewChild check: otherwise on the first effect
       // run (ViewChild not ready yet) we would return without reading any signal —
       // and the effect would subscribe to nothing and never run again.
       const id = this.chatStore.editTargetId();
+      const text = this.chatStore.editText();
       const ta = this.taEl?.nativeElement;
       if (!ta) return;
       if (!id) {
@@ -129,9 +133,8 @@ export class InputPanel {
         }
         return;
       }
-      const msg = this.chatStore.chat()?.messages.find((m) => m.id === id);
-      if (msg && ta.value !== msg.text) {
-        ta.value = msg.text;
+      if (ta.value !== text) {
+        ta.value = text;
         this.autosize(ta);
         ta.focus();
       }

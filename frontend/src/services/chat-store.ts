@@ -45,6 +45,12 @@ export class ChatStore {
   readonly pendingImages = signal<string[]>([]);
   // the id of the message loaded into the bottom field for editing (null — normal input)
   readonly editTargetId = signal<string | null>(null);
+  // The original text of the message being edited (editTargetId). Stored
+  // separately (not re-read from the chat) so the input field keeps the text
+  // even while the chat is refreshed — a reply or an image-generation poll
+  // re-applies the chat and must NOT reset the field while the user types.
+  // Read by InputPanel's edit effect.
+  readonly editText = signal<string>('');
 
   // The "New chat" dialog: open + preselected ids (from the current chat).
   readonly newChatOpen = signal(false);
@@ -266,6 +272,7 @@ export class ChatStore {
     // The edit is applied locally right away — no pause waiting for the PATCH;
     // the server response replaces the chat, on error — banner + re-read.
     this.editTargetId.set(null);
+    this.editText.set('');
     this.pendingImages.set([]);
     this.ui.error.set('');
     this.chat.set({
@@ -414,12 +421,14 @@ export class ChatStore {
   // InputPanel substitutes/clears the text (an effect on editTargetId).
   startEdit(m: ChatMessage): void {
     this.editTargetId.set(m.id);
+    this.editText.set(m.text);
     this.pendingImages.set([...m.images]);
     this.ui.error.set('');
   }
 
   cancelEdit(): void {
     this.editTargetId.set(null);
+    this.editText.set('');
     this.pendingImages.set([]);
   }
 

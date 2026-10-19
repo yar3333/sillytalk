@@ -360,6 +360,39 @@ describe('InputPanel — message editing', () => {
     expect(el.querySelector('[data-testid=edit-bar]')).toBeNull();
   });
 
+  // The bug this guards: while editing, an image-generation poll (or a reply)
+  // re-applies the chat — the edit effect must NOT re-read the (still-unchanged)
+  // message text from it and reset the field. The user keeps whatever they type.
+  it('a chat refresh while editing does not reset the typed text', async () => {
+    const { fixture, el } = fixtureWith({
+      id: 'msg-1',
+      role: 'user',
+      text: 'original',
+      images: [],
+      timestamp: 1,
+    });
+
+    store.startEdit(store.chat()!.messages[0]);
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    const ta = el.querySelector('textarea') as HTMLTextAreaElement;
+    ta.value = 'edited text';
+    expect(ta.value).toBe('edited text');
+
+    // The server re-applies the chat — the message is still unedited server-side,
+    // a brand-new conversation object (like an image-generation poll would return).
+    store.applyChat({
+      ...store.chat()!,
+      messages: [{ id: 'msg-1', role: 'user', text: 'original', images: [], timestamp: 1 }],
+    });
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    // The field must keep the in-progress edit, not snap back to the original.
+    expect(ta.value).toBe('edited text');
+  });
+
   // The bug this guards: while a reply was generating the button was the
   // cancel (✕), so editing an existing message and pressing it aborted the
   // generation instead of saving the edit. Editing must win: the button is ✓
