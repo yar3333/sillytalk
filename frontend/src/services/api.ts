@@ -300,10 +300,26 @@ export class ApiService {
   // Regenerates one message image from its stored prompt. The server marks
   // the image "pending" right away (the generation runs in the background)
   // and returns the updated chat; the result arrives with the next poll.
-  regenerateImage(chatId: string, messageId: string, image: string): Promise<{ chat: Chat }> {
+  // An optional `prompt` (the "edit prompt then regenerate" flow) overrides
+  // the stored one.
+  regenerateImage(
+    chatId: string,
+    messageId: string,
+    image: string,
+    prompt?: string,
+  ): Promise<{ chat: Chat }> {
     return this.req(`/chats/${chatId}/messages/${messageId}/regenerate-image`, {
       method: 'POST',
-      body: JSON.stringify({ image }),
+      body: JSON.stringify({ image, prompt }),
+    });
+  }
+
+  // Replaces a ready message image with a file the user picked (a data URL):
+  // the server saves it into the chat files/ and swaps it for the old one.
+  replaceImage(chatId: string, messageId: string, image: string, data: string): Promise<{ chat: Chat }> {
+    return this.req(`/chats/${chatId}/messages/${messageId}/replace-image`, {
+      method: 'POST',
+      body: JSON.stringify({ image, data }),
     });
   }
 

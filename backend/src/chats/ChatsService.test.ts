@@ -327,6 +327,57 @@ describe("saveImage", () => {
   });
 });
 
+describe("replaceMessageImage", () => {
+  it("swaps the image name and drops the old name's generation metadata", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    chat.messages.push({
+      id: "m1",
+      role: "assistant",
+      characterId: "a",
+      text: "🖼️ Generated: a red fox",
+      images: ["gen-1.png"],
+      imagePrompts: { "gen-1.png": "a red fox" },
+      imageRefs: { "gen-1.png": ["ref-1.png"] },
+      imageStatus: { "gen-1.png": "pending" },
+      imageErrors: { "gen-1.png": "GPU exploded" },
+      timestamp: 1,
+    });
+    chats.save(chat);
+    const fresh = chats.get(chat.id)!;
+    const msg = fresh.messages.find((m) => m.id === "m1")!;
+    chats.replaceMessageImage(fresh, msg, "gen-1.png", "user-1.png");
+    const saved = chats.get(chat.id)!.messages.find((m) => m.id === "m1")!;
+    expect(saved.images).toEqual(["user-1.png"]);
+    expect(saved.imagePrompts).toBeUndefined();
+    expect(saved.imageRefs).toBeUndefined();
+    expect(saved.imageStatus).toBeUndefined();
+    expect(saved.imageErrors).toBeUndefined();
+  });
+
+  it("keeps other images and their metadata untouched", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    chat.messages.push({
+      id: "m1",
+      role: "assistant",
+      characterId: "a",
+      text: "two images",
+      images: ["gen-1.png", "gen-2.png"],
+      imagePrompts: { "gen-1.png": "one", "gen-2.png": "two" },
+      imageStatus: { "gen-2.png": "pending" },
+      timestamp: 1,
+    });
+    chats.save(chat);
+    const fresh = chats.get(chat.id)!;
+    const msg = fresh.messages.find((m) => m.id === "m1")!;
+    chats.replaceMessageImage(fresh, msg, "gen-1.png", "user-1.png");
+    const saved = chats.get(chat.id)!.messages.find((m) => m.id === "m1")!;
+    expect(saved.images).toEqual(["user-1.png", "gen-2.png"]);
+    // gen-2 keeps its prompt and status
+    expect(saved.imagePrompts).toEqual({ "gen-2.png": "two" });
+    expect(saved.imageStatus).toEqual({ "gen-2.png": "pending" });
+  });
+});
+
 describe("importCharacterPhoto", () => {
   it("copies the photo into the chat files/ with a char- prefix", () => {
     const chat = chats.create(["a"], "m1", "me");

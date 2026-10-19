@@ -248,6 +248,8 @@ export function createChatsRouter(
   // Regenerates one message image in the BACKGROUND (the domain sequence —
   // cancel the in-flight job, re-translate the prompt, mark "pending" on the
   // same reserved name, start the job — is in ReplyService.regenerateImage).
+  // An optional `prompt` (the "edit prompt then regenerate" flow) overrides
+  // the stored prompt / the message text.
   router.post("/:id/messages/:messageId/regenerate-image", async (req, res) => {
     const chat = chats.get(req.params.id);
     if (!chat) {
@@ -268,7 +270,42 @@ export function createChatsRouter(
       res.status(400).json({ error: "Image generation is not configured" });
       return;
     }
-    const fresh = await reply.regenerateImage(chat, msg, image);
+    const prompt = typeof req.body?.prompt === "string" ? req.body.prompt : undefined;
+    const fresh = await reply.regenerateImage(chat, msg, image, prompt);
+    if (!fresh) {
+      res.status(404).json({ error: "Message not found" });
+      return;
+    }
+    res.json({ chat: fresh });
+  });
+
+  // Replaces a ready message image with a file the user picked (the "replace
+  // with your own image" flow): the data URL is saved into the chat files/ as
+  // a new name and swapped for the old one in the message (the domain part —
+  // save + swap + drop the old generation metadata — is in
+  // ReplyService.replaceImage).
+  router.post("/:id/messages/:messageId/replace-image", (req, res) => {
+    const chat = chats.get(req.params.id);
+    if (!chat) {
+      res.status(404).json({ error: "Chat not found" });
+      return;
+    }
+    const msg = chat.messages.find((m) => m.id === req.params.messageId);
+    if (!msg) {
+      res.status(404).json({ error: "Message not found" });
+      return;
+    }
+    const image = req.body?.image;
+    const data = req.body?.data;
+    if (typeof image !== "string" || !msg.images.includes(image)) {
+      res.status(400).json({ error: "The message has no such image" });
+      return;
+    }
+    if (typeof data !== "string" || !data.startsWith("data:")) {
+      res.status(400).json({ error: "Expected a data URL (data field)" });
+      return;
+    }
+    const fresh = reply.replaceImage(chat, msg, image, data);
     if (!fresh) {
       res.status(404).json({ error: "Message not found" });
       return;

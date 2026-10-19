@@ -298,6 +298,25 @@ export class ChatsService {
       .run(JSON.stringify(message), chat.id, message.id);
   }
 
+  // Swaps one image of a message for another (a user upload replacing a
+  // generated one): the new name replaces the old in the message's image list
+  // and the old name's per-image metadata (prompt/refs/errors/status) is
+  // dropped — the new image is a user file with no generation state. The old
+  // file stays on disk (it may be referenced elsewhere). The new file must
+  // already be saved into the chat files/ by the caller.
+  replaceMessageImage(chat: Chat, message: ChatMessage, oldImage: string, newImage: string): void {
+    message.images = message.images.map((x) => (x === oldImage ? newImage : x));
+    for (const key of ["imagePrompts", "imageRefs", "imageErrors", "imageStatus"] as const) {
+      const map = message[key] as Record<string, unknown> | undefined;
+      if (!map) continue;
+      delete map[oldImage];
+      if (Object.keys(map).length === 0) delete message[key];
+    }
+    this.db()
+      .prepare("UPDATE messages SET data = ? WHERE chat_id = ? AND id = ?")
+      .run(JSON.stringify(message), chat.id, message.id);
+  }
+
   // Deletes a message: only it (single) or it and everything after it (trims
   // the tail of the dialogue) — a targeted row delete by the message's
   // stored order. Returns false when the chat has no such message.

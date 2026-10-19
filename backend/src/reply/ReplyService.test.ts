@@ -417,6 +417,81 @@ describe("regenerateImage", () => {
     const fresh = await reply.regenerateImage(chat, message, "gen-1.png");
     expect(fresh).toBeNull();
   });
+
+  it("regenerates with a user-typed prompt override and stores it", async () => {
+    const { chat, message } = chatWithPendingImage();
+    const fresh = await reply.regenerateImage(chat, message, "gen-1.png", "a blue fox");
+    expect(fake.started).toEqual([{ chatId: chat.id, name: "gen-1.png", prompt: "a blue fox", refFilenames: [] }]);
+    const msg = fresh!.messages.find((m) => m.id === message.id)!;
+    expect(msg.imagePrompts).toEqual({ "gen-1.png": "a blue fox" });
+    expect(msg.imageStatus).toEqual({ "gen-1.png": "pending" });
+  });
+});
+
+describe("replaceImage", () => {
+  it("saves the data URL as a new file, swaps it in and drops the old metadata", () => {
+    const chat = newChat();
+    chat.messages.push({
+      id: "m1",
+      role: "assistant",
+      characterId: "alice",
+      text: "🖼️ Generated: a red fox",
+      images: ["gen-1.png"],
+      imagePrompts: { "gen-1.png": "a red fox" },
+      imageStatus: { "gen-1.png": "pending" },
+      timestamp: 2,
+    });
+    chats.save(chat);
+    const fresh = chats.get(chat.id)!;
+    const msg = fresh.messages.find((m) => m.id === "m1")!;
+    const result = reply.replaceImage(fresh, msg, "gen-1.png", "data:image/png;base64,aGVsbG8=");
+    expect(result).not.toBeNull();
+    const saved = result!.messages.find((m) => m.id === "m1")!;
+    expect(saved.images).toHaveLength(1);
+    const name = saved.images[0];
+    expect(name).toMatch(/^img-[0-9a-f]{8}\.png$/);
+    expect(name).not.toBe("gen-1.png");
+    // the new image is a user upload — no generation state
+    expect(saved.imagePrompts).toBeUndefined();
+    expect(saved.imageStatus).toBeUndefined();
+  });
+
+  it("keeps the old file on disk (it may be referenced elsewhere)", () => {
+    const chat = newChat();
+    chat.messages.push({
+      id: "m1",
+      role: "assistant",
+      characterId: "alice",
+      text: "🖼️ Generated: a red fox",
+      images: ["gen-1.png"],
+      timestamp: 2,
+    });
+    chats.save(chat);
+    const oldPath = path.join(root, "chats", chat.id, "files", "gen-1.png");
+    fs.mkdirSync(path.dirname(oldPath), { recursive: true });
+    fs.writeFileSync(oldPath, "old");
+    const fresh = chats.get(chat.id)!;
+    const msg = fresh.messages.find((m) => m.id === "m1")!;
+    reply.replaceImage(fresh, msg, "gen-1.png", "data:image/png;base64,aGVsbG8=");
+    expect(fs.existsSync(oldPath)).toBe(true);
+  });
+
+  it("returns null when the chat or the message disappeared in the meantime", () => {
+    const chat = newChat();
+    chat.messages.push({
+      id: "m1",
+      role: "assistant",
+      characterId: "alice",
+      text: "🖼️ Generated: a red fox",
+      images: ["gen-1.png"],
+      timestamp: 2,
+    });
+    chats.save(chat);
+    const fresh = chats.get(chat.id)!;
+    const msg = fresh.messages.find((m) => m.id === "m1")!;
+    chats.deleteMessage(fresh, "m1", true);
+    expect(reply.replaceImage(fresh, msg, "gen-1.png", "data:image/png;base64,aGVsbG8=")).toBeNull();
+  });
 });
 
 describe("resolveChatModel", () => {

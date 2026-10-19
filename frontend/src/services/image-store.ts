@@ -123,15 +123,27 @@ export class ImageStore {
     return true;
   }
 
-  // ---- background image jobs: cancel / regenerate ----
+  // ---- background image jobs: cancel / regenerate / replace ----
   // Regenerates one image in the background: the server marks it "pending"
   // right away (the placeholder with the spinner) and the polling picks up
-  // the result when the job finishes.
-  regenerateImage(messageId: string, image: string): Promise<void> {
+  // the result when the job finishes. An optional `prompt` (the "edit prompt
+  // then regenerate" flow) overrides the stored one.
+  regenerateImage(messageId: string, image: string, prompt?: string): Promise<void> {
     const c = this.chatStore.chat();
     if (!c) return Promise.resolve();
     return this.api
-      .regenerateImage(c.id, messageId, image)
+      .regenerateImage(c.id, messageId, image, prompt)
+      .then((res) => this.chatStore.applyChat(res.chat))
+      .catch((e) => this.ui.error.set(String((e as Error).message)));
+  }
+  // Replaces a ready message image with a file the user picked (a data URL):
+  // the server saves it into the chat files/ and swaps it for the old one —
+  // no generation round-trip, the image is ready immediately.
+  replaceImage(messageId: string, image: string, data: string): Promise<void> {
+    const c = this.chatStore.chat();
+    if (!c) return Promise.resolve();
+    return this.api
+      .replaceImage(c.id, messageId, image, data)
       .then((res) => this.chatStore.applyChat(res.chat))
       .catch((e) => this.ui.error.set(String((e as Error).message)));
   }

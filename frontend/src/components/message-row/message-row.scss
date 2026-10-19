@@ -268,6 +268,91 @@
 .img-regen:hover {
   background: rgba(79, 140, 255, 0.85);
 }
+/* The sibling image action buttons (edit the prompt / replace the image with
+   a user file) — a row next to the 🔄 regenerate button, shown on hover the
+   same way. A label (not a button) for the file-picker one, so the hidden
+   input is triggered by the click. */
+.img-edit-prompt,
+.img-replace {
+  position: absolute;
+  top: 8px;
+  width: 34px;
+  height: 34px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 15px;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+.img-edit-prompt {
+  left: 50px;
+}
+.img-replace {
+  left: 92px;
+}
+.msg-img-wrap:hover .img-edit-prompt,
+.msg-img-wrap:hover .img-replace {
+  display: flex;
+}
+.img-edit-prompt:hover,
+.img-replace:hover {
+  background: rgba(79, 140, 255, 0.85);
+}
+
+/* The inline prompt editor: an overlay on top of the image with a textarea
+   and the Regenerate / Cancel actions. */
+.img-edit-panel {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: rgba(0, 0, 0, 0.78);
+  border-radius: 8px;
+  box-sizing: border-box;
+}
+.img-edit-panel textarea {
+  flex: 1 1 auto;
+  resize: none;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border-2);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.4;
+  padding: 8px;
+  outline: none;
+}
+.img-edit-panel textarea:focus {
+  border-color: var(--accent);
+}
+.img-edit-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.img-edit-btn {
+  padding: 5px 14px;
+  border: none;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+.img-edit-btn.primary {
+  background: var(--accent);
+  color: #fff;
+}
+.img-edit-btn:hover {
+  filter: brightness(1.15);
+}
 .img-spinner {
   width: 16px;
   height: 16px;

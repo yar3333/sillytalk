@@ -262,8 +262,16 @@ export class ReplyService {
   // one is kept (the message stays ready). Returns null when the chat or the
   // message disappeared in the meantime (deleted while the request was in
   // flight).
-  async regenerateImage(chat: Chat, message: ChatMessage, image: string): Promise<Chat | null> {
-    const rawPrompt = message.imagePrompts?.[image] || message.text.trim() || "image";
+  // `promptOverride` — a new prompt typed by the user (the "edit prompt then
+  // regenerate" flow): when given, it replaces the stored one (after the
+  // usual English translation) instead of re-using the stored prompt / the
+  // message text.
+  async regenerateImage(chat: Chat, message: ChatMessage, image: string, promptOverride?: string): Promise<Chat | null> {
+    const rawPrompt =
+      (promptOverride && promptOverride.trim()) ||
+      message.imagePrompts?.[image] ||
+      message.text.trim() ||
+      "image";
     const prompt = await this.imageGeneration.ensureEnglishPrompt(this.resolveChatModel(chat), rawPrompt);
     const refs = message.imageRefs?.[image] ?? [];
     // A regeneration in flight for this image is cancelled — one job per image.
@@ -294,6 +302,23 @@ export class ReplyService {
       this.chats.setMessageImageStatus(chat.id, message.id, image, "cancelled", "Generation cancelled");
     }
     return this.chats.get(chat.id);
+  }
+
+  // Replaces a ready image of a message with a file the user picked: the new
+  // image is saved into the chat files/ (a new name), swapped for the old one
+  // in the message's image list, and the old name's per-image metadata
+  // (the generation status/prompt/refs/errors) is dropped — the new image is
+  // a user upload, it has no prompt or generation state of its own. The old
+  // file is not deleted (it may still be referenced elsewhere — e.g. as a
+  // later image's generation reference). Returns the saved chat, or null when
+  // the chat or the message disappeared in the meantime.
+  replaceImage(chat: Chat, message: ChatMessage, image: string, dataUrl: string): Chat | null {
+    const name = this.chats.saveImage(chat.id, dataUrl);
+    const fresh = this.chats.get(chat.id);
+    const fmsg = fresh?.messages.find((m) => m.id === message.id);
+    if (!fresh || !fmsg) return null;
+    this.chats.replaceMessageImage(fresh, fmsg, image, name);
+    return fresh;
   }
 
   // The visible error line of a failed model call: appended as an assistant
