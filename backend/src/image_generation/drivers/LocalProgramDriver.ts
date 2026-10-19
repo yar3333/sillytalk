@@ -19,15 +19,35 @@ export class LocalProgramDriver implements IImageGeneratorDriver {
     this.key = `cmd:${PathHelper.expandPath(cfg.command ?? "")}`;
   }
 
-  // Available if a command is set. If the command looks like an absolute
-  // path to a file — check that the file exists.
+  // Available if a command is set; and, when the command names a script or
+  // executable FILE (an absolute path, a relative path, or a bare name with a
+  // script/executable extension), that file must actually exist — a generator
+  // pointed at a missing script is filtered out here, before it is ever
+  // selected. A bare program name (e.g. `python`, resolved through PATH by the
+  // OS) cannot be narrowed to a file, so it stays available.
   available(): Promise<boolean> {
-    const cmd = PathHelper.expandPath(this.cfg.command ?? "").trim();
+    const cmd = LocalProgramDriver.programPath(this.cfg.command);
     if (!cmd) return Promise.resolve(false);
-    if (/^[a-zA-Z]:[\\/]/.test(cmd) || cmd.startsWith("\\\\") || cmd.startsWith("/")) {
+    if (LocalProgramDriver.namesAFile(cmd)) {
       return Promise.resolve(fs.existsSync(cmd));
     }
     return Promise.resolve(true);
+  }
+
+  // The path the machine service would actually launch: surrounding quotes
+  // are stripped (runProgram does the same before spawning) and `~`/`~/` are
+  // expanded — so the existence check matches what gets spawned.
+  private static programPath(command: string | null | undefined): string {
+    const unquoted = (command ?? "").trim().replace(/^"+|"+$/g, "").trim();
+    return PathHelper.expandPath(unquoted);
+  }
+
+  private static namesAFile(cmd: string): boolean {
+    // An absolute path (Windows drive, UNC, or POSIX root) always names a file.
+    if (/^[a-zA-Z]:[\\/]/.test(cmd) || cmd.startsWith("\\\\") || cmd.startsWith("/")) return true;
+    // A relative path with a separator, or a name with a script/executable
+    // extension, also names a file (e.g. `scripts\\gen.py`, `gen.cmd`).
+    return /[\\/]/.test(cmd) || /\.(bat|cmd|ps1|py|exe|com|sh|pl|cgi)$/i.test(cmd);
   }
 
   async run(

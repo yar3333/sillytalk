@@ -198,6 +198,65 @@ it("does not generate without an available generator", async () => {
   if (r.status === "failed") expect(r.error).toMatch(/not configured/);
 });
 
+// ---- local generator availability (a missing script file is filtered out) ----
+// These only probe the driver's availability (file existence), so they are
+// cross-platform and do not launch anything.
+describe("local generator availability", () => {
+  const existing = path.join(
+    os.tmpdir(),
+    `sillytalk-avail-existing-${process.pid}.${process.platform === "win32" ? "cmd" : "sh"}`,
+  );
+  const gen = (command: string): ImageGenerator => ({ command, args: [], maxInputImages: 0 });
+
+  beforeAll(() => fs.writeFileSync(existing, "x"));
+  afterAll(() => fs.rmSync(existing, { force: true }));
+
+  it("is unavailable for an empty command", async () => {
+    await images.refreshAvailableGenerators([gen("")]);
+    expect(images.hasAvailableGenerator()).toBe(false);
+  });
+
+  it("keeps a generator whose absolute script exists", async () => {
+    await images.refreshAvailableGenerators([gen(existing)]);
+    expect(images.hasAvailableGenerator()).toBe(true);
+  });
+
+  it("filters out an absolute path to a missing script", async () => {
+    const missing = path.join(os.tmpdir(), "sillytalk-no-such-script.py");
+    fs.rmSync(missing, { force: true });
+    await images.refreshAvailableGenerators([gen(missing)]);
+    expect(images.hasAvailableGenerator()).toBe(false);
+  });
+
+  it("filters out a quoted absolute path to a missing script", async () => {
+    const missing = path.join(os.tmpdir(), "sillytalk-no-such-quoted.cmd");
+    fs.rmSync(missing, { force: true });
+    await images.refreshAvailableGenerators([gen(`"${missing}"`)]);
+    expect(images.hasAvailableGenerator()).toBe(false);
+  });
+
+  it("filters out a relative path to a missing script", async () => {
+    await images.refreshAvailableGenerators([gen("missing-dir/no-such-script.py")]);
+    expect(images.hasAvailableGenerator()).toBe(false);
+  });
+
+  it("keeps a relative path to an existing script", async () => {
+    const rel = path.join(".", `sillytalk-avail-rel-${process.pid}.py`);
+    fs.writeFileSync(rel, "x");
+    try {
+      await images.refreshAvailableGenerators([gen(rel)]);
+      expect(images.hasAvailableGenerator()).toBe(true);
+    } finally {
+      fs.rmSync(rel, { force: true });
+    }
+  });
+
+  it("keeps a bare program name (resolved through PATH)", async () => {
+    await images.refreshAvailableGenerators([gen("python")]);
+    expect(images.hasAvailableGenerator()).toBe(true);
+  });
+});
+
 // ---- reference-image inventory (the [IMG:... | N] / [PHOTO:N] protocol) ----
 describe("imageInventory", () => {
   const invChatId = "jest-inventory-test";
