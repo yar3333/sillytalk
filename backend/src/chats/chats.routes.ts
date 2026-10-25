@@ -64,7 +64,7 @@ export function createChatsRouter(
       res.status(404).json({ error: "Chat not found" });
       return;
     }
-    const { characterIds, modelId, userId } = req.body ?? {};
+    const { characterIds, modelId, userId, sampling, systemSuffix } = req.body ?? {};
     // Participants can change at any time; the characterIds order = reply
     // priority (changed with the ↑/↓ buttons in the participants menu).
     if (characterIds !== undefined) {
@@ -79,6 +79,27 @@ export function createChatsRouter(
     // Switching the active persona: old messages stay under their former
     // authors — the author is stored on every message.
     if (userId !== undefined) chat.userId = userId;
+    // Per-chat sampling overrides: only finite numbers are kept (a null /
+    // a missing field clears the whole block — the dialog sends it only
+    // when at least one parameter is set).
+    if (sampling !== undefined) {
+      const s = (sampling ?? {}) as Record<string, unknown>;
+      const num = (v: unknown): number | undefined =>
+        typeof v === "number" && Number.isFinite(v) ? v : undefined;
+      chat.sampling = {
+        temperature: num(s.temperature),
+        minP: num(s.minP),
+        repetitionPenalty: num(s.repetitionPenalty),
+      };
+      if (Object.values(chat.sampling).every((v) => v === undefined)) delete chat.sampling;
+    }
+    // A free-text addition to the system prompt: a trimmed string (empty —
+    // cleared) or nothing — the whole field is removed when absent.
+    if (systemSuffix !== undefined) {
+      const t = typeof systemSuffix === "string" ? systemSuffix.trim() : "";
+      if (t) chat.systemSuffix = t;
+      else delete chat.systemSuffix;
+    }
     chats.save(chat);
     res.json(chat);
   });

@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { Chat } from "../chats/Chat";
+import { Chat, ChatSampling } from "../chats/Chat";
 import { ChatMessage } from "../chats/ChatMessage";
 import { Config } from "../configuration/Config";
 import { Model } from "../configuration/Model";
@@ -237,6 +237,7 @@ export class TextGenerationService {
     chatId: string,
     closingNote?: string,
     signal?: AbortSignal,
+    sampling?: ChatSampling,
   ): Promise<string> {
     const toMessages = (withImages: boolean): MessageParam[] => {
       const msgs: MessageParam[] = [
@@ -265,7 +266,7 @@ export class TextGenerationService {
     };
 
     try {
-      return await this.requestCompletion(model, toMessages(true), signal);
+      return await this.requestCompletion(model, toMessages(true), signal, sampling);
     } catch (err) {
       // A model without an mmproj rejects the image — retry with text only so
       // the dialogue is not aborted with a 500 error. A cancel (an aborted
@@ -273,7 +274,7 @@ export class TextGenerationService {
       const sentImages = history.some((m) => (m.images?.length ?? 0) > 0);
       if (!sentImages || !TextGenerationService.IMAGE_REJECT_RE.test((err as Error).message)) throw err;
       try {
-        const reply = await this.requestCompletion(model, toMessages(false), signal);
+        const reply = await this.requestCompletion(model, toMessages(false), signal, sampling);
         return `⚠️ The model rejected the image — the message was sent without it.\n\n${reply}`;
       } catch {
         throw err;
@@ -283,7 +284,12 @@ export class TextGenerationService {
 
   // One /chat/completions call: the OpenAI-compatible request (the api key,
   // the reasoning level in both spellings) and the reply extraction.
-  private async requestCompletion(model: Model, messages: MessageParam[], signal?: AbortSignal): Promise<string> {
+  private async requestCompletion(
+    model: Model,
+    messages: MessageParam[],
+    signal?: AbortSignal,
+    sampling?: ChatSampling,
+  ): Promise<string> {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     const apiKey = this.configuration.resolveApiKey(model);
     if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
@@ -308,6 +314,13 @@ export class TextGenerationService {
     } else {
       payload.chat_template_kwargs = { enable_thinking: false };
     }
+    // The per-chat sampling overrides (Chat.sampling): a field left undefined
+    // is not sent — the provider applies its own default. Sent in the common
+    // OpenAI-compatible spellings (temperature / min_p / repetition_penalty —
+    // the last one is understood by llama.cpp, vLLM, Aphrodite and OpenRouter).
+    if (sampling?.temperature !== undefined) payload.temperature = sampling.temperature;
+    if (sampling?.minP !== undefined) payload.min_p = sampling.minP;
+    if (sampling?.repetitionPenalty !== undefined) payload.repetition_penalty = sampling.repetitionPenalty;
 
     const response = await fetch(`${model.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
       method: "POST",

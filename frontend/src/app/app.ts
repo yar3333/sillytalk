@@ -3,6 +3,7 @@ import { TopBar } from '../components/top-bar/top-bar';
 import { MessageList } from '../components/message-list/message-list';
 import { InputPanel } from '../components/input-panel/input-panel';
 import { NewChatDialog } from '../components/new-chat-dialog/new-chat-dialog';
+import { ChatSettingsDialog } from '../components/chat-settings-dialog/chat-settings-dialog';
 import { Settings } from '../components/settings/settings';
 import { CharacterDialog } from '../components/character-dialog/character-dialog';
 import { UserDialog } from '../components/user-dialog/user-dialog';
@@ -19,6 +20,7 @@ import { ImageStore } from '../services/image-store';
     MessageList,
     InputPanel,
     NewChatDialog,
+    ChatSettingsDialog,
     Settings,
     CharacterDialog,
     UserDialog,
@@ -54,6 +56,20 @@ import { ImageStore } from '../services/image-store';
               <button class="icon-btn" (click)="chatStore.closeNewChat()" title="Close">✕</button>
             </div>
             <app-new-chat-dialog />
+          </div>
+        </div>
+      }
+
+      <!-- The "Chat settings" dialog: the per-chat sampling overrides
+           (temperature / min-p / repetition penalty). -->
+      @if (chatStore.chatSettingsOpen()) {
+        <div class="modal-backdrop" (click)="chatStore.closeChatSettings()">
+          <div class="modal modal-sm" (click)="$event.stopPropagation()">
+            <div class="modal-head">
+              <span>Chat settings</span>
+              <button class="icon-btn" (click)="chatStore.closeChatSettings()" title="Close">✕</button>
+            </div>
+            <app-chat-settings-dialog />
           </div>
         </div>
       }

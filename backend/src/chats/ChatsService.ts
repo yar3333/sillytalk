@@ -146,6 +146,8 @@ export class ChatsService {
       characterIds: chat.characterIds,
       userId: chat.userId,
       modelId: chat.modelId,
+      sampling: chat.sampling,
+      systemSuffix: chat.systemSuffix,
     });
   }
 
@@ -449,6 +451,35 @@ export class ChatsService {
     if (typeof chat.userId !== "string") {
       chat.userId = "";
       dirty = true;
+    }
+    // sampling: keep only the valid numeric fields (an all-empty object is
+    // dropped entirely so the blob stays small).
+    if (chat.sampling !== undefined) {
+      const s = chat.sampling as Record<string, unknown>;
+      const clean: Record<string, number> = {};
+      for (const [key, range] of [
+        ["temperature", [0, 2]],
+        ["minP", [0, 1]],
+        ["repetitionPenalty", [0, 2]],
+      ] as const) {
+        const v = s[key];
+        if (typeof v === "number" && Number.isFinite(v) && v >= range[0] && v <= range[1]) {
+          clean[key] = v;
+        } else {
+          dirty = true;
+        }
+      }
+      chat.sampling = Object.keys(clean).length > 0 ? (clean as Chat["sampling"]) : undefined;
+    }
+    // systemSuffix: a trimmed non-empty string or nothing. Emptying it in the
+    // dialog is flagged dirty so the cleanup is persisted.
+    if (chat.systemSuffix !== undefined) {
+      const t = typeof chat.systemSuffix === "string" ? chat.systemSuffix.trim() : "";
+      if (t) chat.systemSuffix = t;
+      else {
+        delete chat.systemSuffix;
+        dirty = true;
+      }
     }
     return dirty;
   }

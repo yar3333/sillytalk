@@ -113,6 +113,16 @@ export interface Chat {
   // that participated in the chat are derived from message authors (msg.userId).
   userId: string;
   modelId: string; // the llmModels key of the chosen model
+  // Per-chat sampling overrides for the provider request; a field left
+  // undefined is not sent at all (the provider default applies).
+  sampling?: {
+    temperature?: number;
+    minP?: number;
+    repetitionPenalty?: number;
+  };
+  // A free-text addition appended to the system prompt of every reply in
+  // this chat (empty/absent — nothing is added).
+  systemSuffix?: string;
   messages: ChatMessage[];
 }
 

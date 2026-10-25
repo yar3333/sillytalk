@@ -144,6 +144,9 @@ import {
         @if (chatMenuOpen()) {
           <div class="dropdown chat-dropdown">
             <button class="opt" data-testid="new-chat" (click)="chatStore.newChat()">New chat</button>
+            <button class="opt" data-testid="chat-settings" (click)="chatStore.openChatSettings()">
+              Chat settings…
+            </button>
             <button
               class="opt danger"
               data-testid="delete-chat"

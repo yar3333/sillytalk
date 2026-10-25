@@ -99,13 +99,14 @@ export class ReplyService {
     // of the other characters in the chat and the active persona's photo.
     const inventory = this.imageGeneration.imageInventory(chat, character, fellows, person);
     const inventoryText = inventory.map((it, i) => `#${i + 1} — ${it.label}`).join("\n");
-    const system = this.textGeneration.systemPromptFor(
-      character,
-      person,
-      canGenerateImages,
-      inventoryText || undefined,
-      fellows,
-    );
+    const system =
+      this.textGeneration.systemPromptFor(
+        character,
+        person,
+        canGenerateImages,
+        inventoryText || undefined,
+        fellows,
+      ) + (chat.systemSuffix ? `\n${chat.systemSuffix}` : "");
 
     // In a group chat we label lines with authors — the model must understand
     // who said what. With a single character and a single persona the history
@@ -149,6 +150,7 @@ export class ReplyService {
         "If you have absolutely nothing to add to the conversation, output exactly [SILENT] instead of a reply. " +
         "Keep the reply short: 2–5 sentences, one paragraph.",
       signal,
+      chat.sampling,
     );
 
     // The character may have stayed silent (exactly [SILENT]) — no chat message.

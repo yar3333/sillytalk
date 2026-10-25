@@ -60,6 +60,10 @@ export class ChatStore {
   // "Regenerating…" state in its bubble; the bottom typing row is hidden).
   readonly regenerating = signal(false);
 
+  // The "Chat settings" dialog (the sampling overrides: temperature / min-p /
+  // repetition penalty).
+  readonly chatSettingsOpen = signal(false);
+
   // ---- derived (chat + catalog from ConfigStore) ----
   // The character participants of the chat in priority order (chat.characterIds).
   readonly chatCharacters = computed<Character[]>(() => {
@@ -560,6 +564,34 @@ export class ChatStore {
 
   closeNewChat(): void {
     this.newChatOpen.set(false);
+  }
+
+  // ---- chat settings (sampling overrides) ----
+  openChatSettings(): void {
+    this.chatSettingsOpen.set(true);
+  }
+
+  closeChatSettings(): void {
+    this.chatSettingsOpen.set(false);
+  }
+
+  // Saves the chat settings of the current chat (a PATCH): the sampling
+  // overrides and the system-prompt addition. A fully empty sampling object
+  // and an empty systemSuffix remove the blocks server-side (the provider
+  // defaults apply / nothing is appended).
+  saveChatSettings(settings: {
+    sampling: { temperature?: number; minP?: number; repetitionPenalty?: number };
+    systemSuffix: string;
+  }): void {
+    const c = this.chat();
+    if (!c) return;
+    this.api
+      .patchChat(c.id, { sampling: settings.sampling, systemSuffix: settings.systemSuffix })
+      .then((ch) => {
+        this.setChat(ch);
+        this.chatSettingsOpen.set(false);
+      })
+      .catch((e) => this.ui.error.set(String((e as Error).message)));
   }
 
   confirmNewChat(sel: { userId: string; characterIds: string[] }): void {

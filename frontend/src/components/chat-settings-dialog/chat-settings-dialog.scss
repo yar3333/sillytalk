@@ -1,0 +1,58 @@
+/* The chat-settings dialog: reuses the shared field/dialog styles the other
+   edit dialogs carry (each component keeps its own small copy). */
+.dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  min-width: 340px;
+
+  .field {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+
+    span {
+      width: 150px;
+      color: var(--fg-dim, #aaa);
+      font-size: 13px;
+    }
+
+    input.grow {
+      flex: 1;
+    }
+
+    // The textarea field: the label above, the field below (full width).
+    &.col {
+      flex-direction: column;
+      align-items: stretch;
+
+      span {
+        width: auto;
+      }
+
+      textarea.grow {
+        width: 100%;
+        resize: vertical;
+        font: inherit;
+      }
+    }
+  }
+
+  .dialog-hint {
+    color: var(--fg-dim, #888);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+
+  .dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 8px;
+
+    .spacer {
+      flex: 1;
+    }
+  }
+}
