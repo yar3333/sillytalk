@@ -101,7 +101,9 @@
   flex: none;
   cursor: pointer;
 }
-.chat-date:hover {
+/* the hover highlight covers only the date text — hovering the ⋮ inside
+   the same cell must not light the label up */
+.chat-date-label:hover {
   color: var(--text);
 }
 /* The chat menu — wider than the usual dropdown, centered under the label. */
@@ -111,6 +113,20 @@
   transform: translateX(-50%);
   width: 320px;
   max-width: 90vw;
+}
+
+/* The chat-actions ⋮ inside the date cell: anchors its own dropdown — a
+   containing block, no overflow clip, no extra gap (same flex child). */
+.chat-dots-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  /* a small fixed gap after the date text */
+  margin-left: 10px;
+}
+.chat-dots-wrap .dots {
+  font-size: 18px;
+  padding: 0 6px;
 }
 
 .model-chip {

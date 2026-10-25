@@ -64,7 +64,7 @@ import { ImageStore } from '../services/image-store';
            (temperature / min-p / repetition penalty). -->
       @if (chatStore.chatSettingsOpen()) {
         <div class="modal-backdrop" (click)="chatStore.closeChatSettings()">
-          <div class="modal modal-sm" (click)="$event.stopPropagation()">
+          <div class="modal modal-chat-settings" (click)="$event.stopPropagation()">
             <div class="modal-head">
               <span>Chat settings</span>
               <button class="icon-btn" (click)="chatStore.closeChatSettings()" title="Close">✕</button>

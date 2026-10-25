@@ -1,5 +1,42 @@
 /* The chat-settings dialog: reuses the shared field/dialog styles the other
    edit dialogs carry (each component keeps its own small copy). */
+/* the inputs/textarea: the same dark-gray fields as the settings dialog
+   (settings.scss) — emulated encapsulation means each dialog styles its own */
+input,
+textarea {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: inherit;
+
+  &:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+}
+
+/* the buttons: the same look as the settings dialog (settings.scss) */
+.btn {
+  align-self: flex-start;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.btn:hover {
+  border-color: var(--accent);
+}
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
 .dialog-body {
   display: flex;
   flex-direction: column;

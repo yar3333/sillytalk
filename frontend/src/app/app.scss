@@ -93,6 +93,12 @@
   max-width: 520px;
 }
 
+/* The "Chat settings" dialog: ~1.5x the "New chat" width — the system-prompt
+   textarea wants the room. */
+.modal-chat-settings {
+  max-width: 540px;
+}
+
 /* The close button in the modal headers (the same class as in input-panel —
    the styles do not cross the component boundary, so there is a copy here). */
 .icon-btn {

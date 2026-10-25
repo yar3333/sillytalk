@@ -133,27 +133,51 @@ import {
       </div>
 
       <!-- The chat menu: the "Chat: <date>" label opens it (the chat-management
-           items moved out of the ⋮ menu). It is wider than the usual dropdown. -->
+           items moved out of the ⋮ menu). It is wider than the usual dropdown.
+           The chat-actions ⋮ (settings / delete) lives INSIDE the same cell —
+           no gap between the date and the dots. -->
       <span
         class="chat-date"
         data-testid="chat-date"
         title="Chat menu"
         (click)="$event.stopPropagation(); toggleChatMenu()"
       >
-        {{ chatStore.lastTime() ? 'Chat: ' + chatStore.lastTime() : 'Chat' }}
+        <span class="chat-date-label">{{ chatStore.lastTime() ? 'Chat: ' + chatStore.lastTime() : 'Chat' }}</span>
+        <span class="chat-dots-wrap">
+          <button
+            class="dots"
+            data-testid="chat-dots"
+            title="Chat actions"
+            (click)="$event.stopPropagation(); toggleChatDots()"
+          >
+            ⋮
+          </button>
+          @if (chatDotsOpen()) {
+            <div class="dropdown">
+              <!-- stopPropagation: the dropdown lives INSIDE the .chat-date
+                   cell — without it the click bubbles to the date's handler
+                   and opens the chat menu (e.g. after "cancel" in the delete
+                   confirm the menu popped open). -->
+              <button
+                class="opt"
+                data-testid="chat-settings"
+                (click)="$event.stopPropagation(); chatDotsOpen.set(false); chatStore.openChatSettings()"
+              >
+                Chat settings…
+              </button>
+              <button
+                class="opt danger"
+                data-testid="delete-chat"
+                (click)="$event.stopPropagation(); chatDotsOpen.set(false); chatStore.deleteCurrentChat()"
+              >
+                Delete chat
+              </button>
+            </div>
+          }
+        </span>
         @if (chatMenuOpen()) {
           <div class="dropdown chat-dropdown">
             <button class="opt" data-testid="new-chat" (click)="chatStore.newChat()">New chat</button>
-            <button class="opt" data-testid="chat-settings" (click)="chatStore.openChatSettings()">
-              Chat settings…
-            </button>
-            <button
-              class="opt danger"
-              data-testid="delete-chat"
-              (click)="chatStore.deleteCurrentChat()"
-            >
-              Delete chat
-            </button>
             <div class="dropdown-title">Chats</div>
             <div class="chat-list">
               @for (cs of chatStore.chats(); track cs.id) {
@@ -254,6 +278,7 @@ export class TopBar implements OnInit, OnDestroy {
   readonly userMenuOpen = signal(false);
   readonly modelMenuOpen = signal(false);
   readonly chatMenuOpen = signal(false);
+  readonly chatDotsOpen = signal(false);
   private onDocClick = () => this.closeMenus();
 
   ngOnInit(): void {
@@ -270,6 +295,7 @@ export class TopBar implements OnInit, OnDestroy {
     this.userMenuOpen.set(false);
     this.modelMenuOpen.set(false);
     this.chatMenuOpen.set(false);
+    this.chatDotsOpen.set(false);
   }
 
   // Opening one menu closes the others so they do not overlap.
@@ -313,8 +339,8 @@ export class TopBar implements OnInit, OnDestroy {
       this.chatMenuOpen.set(false);
     }
   }
-  // The chat menu (New chat / Delete / the chat list) opens on the "Chat:
-  // <date>" label in the header.
+  // The chat menu (New chat / the chat list) opens on the "Chat: <date>"
+  // label in the header.
   toggleChatMenu(): void {
     const open = !this.chatMenuOpen();
     this.chatMenuOpen.set(open);
@@ -323,6 +349,19 @@ export class TopBar implements OnInit, OnDestroy {
       this.characterMenuOpen.set(false);
       this.userMenuOpen.set(false);
       this.modelMenuOpen.set(false);
+      this.chatDotsOpen.set(false);
+    }
+  }
+  // The chat-actions menu (⋮ next to the date): chat settings / delete chat.
+  toggleChatDots(): void {
+    const open = !this.chatDotsOpen();
+    this.chatDotsOpen.set(open);
+    if (open) {
+      this.menuOpen.set(false);
+      this.characterMenuOpen.set(false);
+      this.userMenuOpen.set(false);
+      this.modelMenuOpen.set(false);
+      this.chatMenuOpen.set(false);
     }
   }
 
