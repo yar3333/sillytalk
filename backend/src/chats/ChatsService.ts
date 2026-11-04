@@ -3,9 +3,11 @@ import path from "path";
 import { randomUUID } from "crypto";
 import { DatabaseSync } from "node:sqlite";
 import { Chat } from "./Chat";
-import { ChatMessage } from "./ChatMessage";
+import { ChatMessage, ImageGenerationData, isImageMessage } from "./ChatMessage";
 import { ChatSummary } from "./ChatSummary";
 import { PathHelper } from "../shared/PathHelper";
+import { ImageMeta } from "../shared/ImageMeta";
+import { ImageMetaFile } from "../shared/ImageMetaFile";
 import { ConfigurationService } from "../configuration/ConfigurationService";
 import { createToken } from "../di";
 
@@ -183,7 +185,8 @@ export class ChatsService {
   }
 
   // Reads one chat (its row + its message rows), repairing the format on the
-  // fly (the repaired chat is saved back when anything was fixed).
+  // fly (the repaired chat is saved back when anything was fixed) and refreshing
+  // the image cards from the sidecar *.json next to their files.
   get(chatId: string): Chat | null {
     const db = this.db();
     const row = db.prepare("SELECT data FROM chats WHERE id = ?").get(chatId) as ChatRow | undefined;
@@ -202,6 +205,10 @@ export class ChatsService {
     // needs the instance (the injected config loader).
     const dirty = this.normalize(chat) || this.ensureModelId(chat);
     if (dirty) this.save(chat);
+    // The sidecars are not persisted back into the database (they are the
+    // portable copy the user may edit at any time), so this runs on every read
+    // and is guarded by a stat-based cache.
+    this.applySidecars(chat);
     return chat;
   }
 
@@ -256,22 +263,59 @@ export class ChatsService {
 
   // ---- messages ----
 
-  // Appends the user message (the chat's active persona is the author). A
-  // single row insert — a concurrent change of the other messages (a job
-  // finishing, another send) is not clobbered. `images` is the raw client
-  // list: a data URL is saved as a new file, a file name is kept only when
-  // the file is in the chat files/.
-  addUserMessage(chat: Chat, text: string, images: unknown[]): ChatMessage {
+  // Appends a text message (the chat's active persona is the author). A single
+  // row insert — a concurrent change of the other messages (a job finishing,
+  // another send) is not clobbered. A text message carries no images: a picture
+  // is always its own card (addImageMessage).
+  addUserMessage(chat: Chat, text: string): ChatMessage {
     const message: ChatMessage = {
       id: PathHelper.newId(),
       role: "user" as const,
+      kind: "text",
       userId: chat.userId,
       text,
-      images: this.normalizeImages(chat.id, images),
+      images: [],
       timestamp: Date.now(),
     };
     chat.messages.push(message);
     this.insertMessage(chat.id, message);
+    return message;
+  }
+
+  // Appends an image card — the message that carries one picture with its own
+  // description and generation data. The image is referenced by id; the file
+  // itself may not exist yet (a background generation reserves its id in
+  // advance and the status says so).
+  //
+  // The generation data is written into the sidecar *.json next to the file
+  // too, so the picture carries its own story out of the database. A pending
+  // image has no file yet, so its sidecar appears when the generation starts.
+  addImageMessage(
+    chat: Chat,
+    image: string,
+    opts: {
+      userId?: string;
+      description?: string;
+      generation?: ImageGenerationData;
+      status?: "pending" | "failed" | "cancelled";
+      error?: string;
+    } = {},
+  ): ChatMessage {
+    const message: ChatMessage = {
+      id: PathHelper.newId(),
+      role: "user" as const,
+      kind: "image",
+      userId: opts.userId ?? chat.userId,
+      text: opts.description ?? "",
+      images: [image],
+      generation: opts.generation,
+      imageStatus: opts.status ? { [image]: opts.status } : undefined,
+      imageErrors: opts.status && opts.error ? { [image]: opts.error } : undefined,
+      timestamp: Date.now(),
+    };
+    chat.messages.push(message);
+    this.insertMessage(chat.id, message);
+    this.writeSidecar(image, opts.description, opts.generation);
     return message;
   }
 
@@ -290,29 +334,109 @@ export class ChatsService {
     );
   }
 
-  // Applies an edit to an existing message: the text and/or the image list
-  // (normalized to the chat files/), updating that one row.
-  editMessage(chat: Chat, message: ChatMessage, text: string | undefined, images: string[] | undefined): void {
-    if (text !== undefined) message.text = text;
-    if (images !== undefined) message.images = this.normalizeImages(chat.id, images);
+  // Applies a text edit to an existing message — the line of a text message,
+  // the description (caption) of an image card — updating that one row. For a
+  // card the sidecar next to the file is refreshed too, so the two copies of
+  // the description do not drift apart.
+  editMessage(chat: Chat, message: ChatMessage, text: string): void {
+    message.text = text;
     this.db()
       .prepare("UPDATE messages SET data = ? WHERE chat_id = ? AND id = ?")
       .run(JSON.stringify(message), chat.id, message.id);
+    if (isImageMessage(message)) this.writeSidecar(message.images[0], text, message.generation);
   }
 
-  // Swaps one image of a message for another (a user upload replacing a
-  // generated one): the new name replaces the old in the message's image list
-  // and the old name's per-image metadata (prompt/refs/errors/status) is
-  // dropped — the new image is a user file with no generation state. The old
-  // file stays on disk (it may be referenced elsewhere). The new file must
-  // already be saved into the chat files/ by the caller.
+  // The caption of one message row, by ids (a background job that finally knows
+  // what its picture shows has no message object at hand). The sidecar of the
+  // card is refreshed with it. Returns false when the row is gone.
+  setMessageText(chatId: string, messageId: string, text: string): boolean {
+    const db = this.db();
+    const row = db.prepare("SELECT data FROM messages WHERE chat_id = ? AND id = ?").get(chatId, messageId) as
+      | MessageRow
+      | undefined;
+    if (!row) return false;
+    let msg: ChatMessage;
+    try {
+      msg = JSON.parse(row.data) as ChatMessage;
+    } catch {
+      return false;
+    }
+    msg.text = text;
+    db.prepare("UPDATE messages SET data = ? WHERE chat_id = ? AND id = ?").run(JSON.stringify(msg), chatId, messageId);
+    if (isImageMessage(msg)) this.writeSidecar(msg.images[0], text, msg.generation);
+    return true;
+  }
+
+  // Edits an image card: its description (what is on the picture) and its
+  // generation prompt. Both go into the row and into the sidecar, so the two
+  // copies never disagree — the sidecar is the one the user may hand-edit,
+  // the row the one the UI renders.
+  editImageCard(
+    chat: Chat,
+    message: ChatMessage,
+    patch: { description?: string; prompt?: string },
+  ): void {
+    if (patch.description !== undefined) message.text = patch.description;
+    if (patch.prompt !== undefined) {
+      message.generation = { ...(message.generation ?? {}), prompt: patch.prompt };
+    }
+    this.db()
+      .prepare("UPDATE messages SET data = ? WHERE chat_id = ? AND id = ?")
+      .run(JSON.stringify(message), chat.id, message.id);
+    this.writeSidecar(message.images[0], message.text, message.generation);
+  }
+
+  // Points an image message at another file: the id is swapped in the message
+  // (and in its status/error maps), the sidecar moves along with it, and the row
+  // is rewritten. Used when a placeholder gets its real, human-readable file name
+  // — the message the user already sees becomes the picture, no new row.
+  // Returns false when the chat or the message is gone.
+  replaceMessageImageId(chatId: string, messageId: string, oldId: string, newId: string): boolean {
+    const db = this.db();
+    const row = db
+      .prepare("SELECT data FROM messages WHERE chat_id = ? AND id = ?")
+      .get(chatId, messageId) as MessageRow | undefined;
+    if (!row) return false;
+    let msg: ChatMessage;
+    try {
+      msg = JSON.parse(row.data) as ChatMessage;
+    } catch {
+      return false;
+    }
+    if (!msg.images.includes(oldId)) return false;
+    msg.images = msg.images.map((x) => (x === oldId ? newId : x));
+    if (msg.imageStatus && oldId in msg.imageStatus) {
+      msg.imageStatus[newId] = msg.imageStatus[oldId];
+      delete msg.imageStatus[oldId];
+    }
+    if (msg.imageErrors && oldId in msg.imageErrors) {
+      msg.imageErrors[newId] = msg.imageErrors[oldId];
+      delete msg.imageErrors[oldId];
+    }
+    db.prepare("UPDATE messages SET data = ? WHERE chat_id = ? AND id = ?").run(JSON.stringify(msg), chatId, messageId);
+    const from = PathHelper.resolveImageId(oldId);
+    const to = PathHelper.resolveImageId(newId);
+    if (from && to) ImageMetaFile.move(from, to);
+    return true;
+  }
+
+  // Swaps one picture of a message for another (the user replacing a generated
+  // picture with their own file): the new id replaces the old one and the
+  // generation data goes with the old picture — what is there now is a user
+  // upload, with no prompt behind it. The old file stays on disk (another
+  // picture may still use it as a reference, sidecar and all). The new file
+  // must already be saved by the caller.
   replaceMessageImage(chat: Chat, message: ChatMessage, oldImage: string, newImage: string): void {
     message.images = message.images.map((x) => (x === oldImage ? newImage : x));
-    for (const key of ["imagePrompts", "imageRefs", "imageErrors", "imageStatus"] as const) {
+    for (const key of ["imageErrors", "imageStatus"] as const) {
       const map = message[key] as Record<string, unknown> | undefined;
       if (!map) continue;
       delete map[oldImage];
       if (Object.keys(map).length === 0) delete message[key];
+    }
+    if (isImageMessage(message)) {
+      delete message.generation;
+      this.writeSidecar(newImage, message.text, undefined);
     }
     this.db()
       .prepare("UPDATE messages SET data = ? WHERE chat_id = ? AND id = ?")
@@ -341,50 +465,210 @@ export class ChatsService {
   }
 
   // ---- chat files (uploaded/generated images) ----
+  //
+  // A chat image lives in chats/<chatId>/files/ and is named by its path
+  // relative to the data folder ("chats/<id>/files/a-sunset-3f2a1c.png"), which
+  // is what the message stores, what the API carries and what a sidecar lists
+  // as a generation reference.
 
-  // Saves a data URL into the chat files/, returns the file name.
-  saveImage(chatId: string, dataUrl: string, originalName?: string): string {
+  // Saves a data URL into the chat files/, returns the image id. `nameHint` is
+  // the wanted human-readable base name ("a sunset over the sea"); a unique
+  // suffix is appended either way, so two pictures never share a file. `meta`
+  // is written next to the file as its sidecar.
+  saveImage(chatId: string, dataUrl: string, opts: { nameHint?: string; meta?: ImageMeta } = {}): string {
     const match = /^data:([\w/+.-]+);base64,(.+)$/.exec(dataUrl);
     if (!match) throw new Error("Expected a data URL like data:image/...;base64,...");
     const ext = ChatsService.EXT_BY_MIME[match[1]] ?? ".png";
-    const base = (originalName ? path.basename(originalName, path.extname(originalName)) : "img")
-      .replace(/[^\w.-]+/g, "_")
-      .slice(0, 40);
-    const filename = `${base || "img"}-${randomUUID().slice(0, 8)}${ext}`;
+    const filename = `${ChatsService.slugify(opts.nameHint ?? "img", "img")}-${randomUUID().slice(0, 6)}${ext}`;
     const dir = PathHelper.chatFilesDir(chatId, this.chatsRoot());
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, filename), Buffer.from(match[2], "base64"));
-    return filename;
+    const file = path.join(dir, filename);
+    fs.writeFileSync(file, Buffer.from(match[2], "base64"));
+    if (opts.meta) ImageMetaFile.write(file, opts.meta);
+    return PathHelper.imageIdOf(file);
   }
 
-  // Copies a character photo into the chat files/, returns the file name.
+  // The id a generated image will be saved under in the chat files/ (the file
+  // itself appears when the background job finishes — the id is reserved in the
+  // message first). `nameHint` is the human-readable English name (2–5 words).
+  reservedImageId(chatId: string, nameHint: string, extension = ".png"): string {
+    const dir = PathHelper.chatFilesDir(chatId, this.chatsRoot());
+    const filename = `${ChatsService.slugify(nameHint, "image")}-${randomUUID().slice(0, 6)}${extension}`;
+    return PathHelper.imageIdOf(path.join(dir, filename));
+  }
+
+  // Copies a file from anywhere in the data folders into the chat files/,
+  // returns its id (null when the source is missing). The sidecar of the source
+  // is copied along, so an imported picture keeps its description.
+  importImage(chatId: string, sourcePath: string): string | null {
+    if (!fs.existsSync(sourcePath)) return null;
+    const dir = PathHelper.chatFilesDir(chatId, this.chatsRoot());
+    fs.mkdirSync(dir, { recursive: true });
+    const base = ChatsService.slugify(path.basename(sourcePath, path.extname(sourcePath)), "photo");
+    const target = path.join(dir, `${base}-${randomUUID().slice(0, 6)}${path.extname(sourcePath)}`);
+    fs.copyFileSync(sourcePath, target);
+    const id = PathHelper.imageIdOf(target);
+    ImageMetaFile.copy(sourcePath, target);
+    return id;
+  }
+
+  // Copies a character photo into the chat files/ (the 🎨 reference picker),
+  // returns the image id.
   importCharacterPhoto(chatId: string, photoPath: string): string | null {
-    if (!fs.existsSync(photoPath)) return null;
-    const filename = `char-${randomUUID().slice(0, 8)}${path.extname(photoPath)}`;
-    const dir = PathHelper.chatFilesDir(chatId, this.chatsRoot());
-    fs.mkdirSync(dir, { recursive: true });
-    fs.copyFileSync(photoPath, path.join(dir, filename));
-    return filename;
+    return this.importImage(chatId, photoPath);
   }
 
-  // Normalizes the image list to file names in the chat files/: a data URL
-  // is saved as a new file; a string without data: is a reference to an
-  // existing file (kept only when the file is there); anything else is
-  // dropped.
+  // Normalizes an incoming image list into image ids: a data URL is saved as a
+  // new file and an id is kept when its file is there. Anything else — a path
+  // outside the data folders, a missing file, garbage — is dropped.
   normalizeImages(chatId: string, images: unknown[]): string[] {
-    const filesDir = PathHelper.chatFilesDir(chatId, this.chatsRoot());
     const saved: string[] = [];
     for (const img of images) {
       if (typeof img !== "string" || !img) continue;
       if (img.startsWith("data:")) {
         saved.push(this.saveImage(chatId, img));
-      } else {
-        const safe = path.basename(img);
-        if (fs.existsSync(path.join(filesDir, safe))) saved.push(safe);
+        continue;
       }
+      const abs = PathHelper.resolveImageId(img);
+      if (abs && fs.existsSync(abs)) saved.push(PathHelper.imageIdOf(abs));
     }
     return saved;
   }
+
+  // A file-name-safe English slug of 2–5 words: the leading words of the prompt
+  // or name with everything that is not a letter or a digit dropped,
+  // transliterated out of Cyrillic (a Russian prompt reaches the slug through
+  // the translated prompt, but a hand-named file may not) and joined with "-".
+  // Empty input falls back to `fallback`.
+  static slugify(text: string, fallback = "image"): string {
+    const cyrillic: Record<string, string> = {
+      а: "a",
+      б: "b",
+      в: "v",
+      г: "g",
+      д: "d",
+      е: "e",
+      ё: "e",
+      ж: "zh",
+      з: "z",
+      и: "i",
+      й: "y",
+      к: "k",
+      л: "l",
+      м: "m",
+      н: "n",
+      о: "o",
+      п: "p",
+      р: "r",
+      с: "s",
+      т: "t",
+      у: "u",
+      ф: "f",
+      х: "h",
+      ц: "c",
+      ч: "ch",
+      ш: "sh",
+      щ: "sch",
+      ъ: "",
+      ы: "y",
+      ь: "",
+      э: "e",
+      ю: "yu",
+      я: "ya",
+    };
+    const latin = [...text.toLowerCase()].map((ch) => (ch in cyrillic ? cyrillic[ch] : ch)).join("");
+    const slug = latin
+      .split(/[^a-z0-9]+/)
+      .filter((w) => w.length > 0)
+      .slice(0, 5)
+      .join("-")
+      .slice(0, 48)
+      .replace(/^-+|-+$/g, "");
+    return slug || (fallback && fallback !== text ? ChatsService.slugify(fallback, "image") : "") || "image";
+  }
+
+  // ---- the sidecar *.json next to an image ----
+
+  // Writes the description + the generation data next to the image file. Only
+  // called when there is something to say: an upload with no description gets
+  // no sidecar, so the files/ folder is not littered with empty ones.
+  writeSidecar(imageId: string | undefined, description: string | undefined, generation?: ImageGenerationData): void {
+    if (!imageId) return;
+    const file = PathHelper.resolveImageId(imageId);
+    if (!file) return;
+    const meta: ImageMeta = {};
+    if (description && description.trim()) meta.description = description.trim();
+    if (generation) {
+      if (generation.prompt) meta.prompt = generation.prompt;
+      if (generation.refs && generation.refs.length > 0) meta.refs = generation.refs;
+      if (generation.negativePrompt) meta.negativePrompt = generation.negativePrompt;
+      if (generation.source) meta.source = generation.source;
+      if (generation.generator) meta.generator = generation.generator;
+      if (generation.model) meta.model = generation.model;
+      if (generation.width !== undefined) meta.width = generation.width;
+      if (generation.height !== undefined) meta.height = generation.height;
+      if (generation.steps !== undefined) meta.steps = generation.steps;
+    }
+    if (Object.keys(meta).length === 0) return;
+    ImageMetaFile.write(file, meta);
+  }
+
+  // Refreshes the image cards from the sidecars next to their files: the file
+  // next to the picture is the copy the user may edit by hand, so on read it
+  // wins over the snapshot in the database. A card whose file has no sidecar
+  // keeps what the message stores (a pending generation, for instance).
+  //
+  // Runs on every get() — including the client's polling — so the parsed files
+  // are cached per (size, mtime) and re-read only when they actually change.
+  private applySidecars(chat: Chat): void {
+    for (const m of chat.messages) {
+      if (!isImageMessage(m) || m.images.length === 0) continue;
+      const meta = this.sidecarMeta(m.images[0]);
+      if (!meta) continue;
+      if (meta.description !== undefined && meta.description !== m.text) m.text = meta.description;
+      const generation: ImageGenerationData = { ...(m.generation ?? {}) };
+      let dirty = false;
+      for (const key of ["prompt", "negativePrompt", "source", "generator", "model"] as const) {
+        if (meta[key] !== undefined && generation[key] !== meta[key]) {
+          Object.assign(generation, { [key]: meta[key] });
+          dirty = true;
+        }
+      }
+      for (const key of ["width", "height", "steps"] as const) {
+        if (meta[key] !== undefined && generation[key] !== meta[key]) {
+          Object.assign(generation, { [key]: meta[key] });
+          dirty = true;
+        }
+      }
+      if (meta.refs !== undefined && meta.refs.join(",") !== (generation.refs ?? []).join(",")) {
+        generation.refs = meta.refs;
+        dirty = true;
+      }
+      if (dirty) m.generation = generation;
+    }
+  }
+
+  // The sidecar of one image, cached by the file's signature (size + mtime) so
+  // a poll does not re-read and re-parse every picture of the chat.
+  private readonly sidecarCache = new Map<string, { signature: string; meta: ImageMeta | null }>();
+
+  private sidecarMeta(imageId: string): ImageMeta | null {
+    const file = PathHelper.resolveImageId(imageId);
+    if (!file) return null;
+    const signature = ImageMetaFile.signature(file);
+    const cached = this.sidecarCache.get(file);
+    if (cached && cached.signature === signature) return cached.meta;
+    const meta = ImageMetaFile.read(file);
+    this.sidecarCache.set(file, { signature, meta });
+    return meta;
+  }
+
+  // Drops the cached sidecars (a test that rewrote the files behind the
+  // service's back, or a data root that moved).
+  clearSidecarCache(): void {
+    this.sidecarCache.clear();
+  }
+
 
   // Sets (or clears, when status is undefined) the generation status of one
   // image of one message. A single-row read-modify-write, so a job finishing

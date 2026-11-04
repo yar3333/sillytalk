@@ -123,6 +123,15 @@ export class ChatStore {
     if (!t) return '';
     return formatTime(t);
   });
+  // Is it the user's turn to speak: the characters have had their say (the
+  // last line is one of theirs, not an error) and nothing is being generated.
+  // The "draw a picture for my turn" button appears only then.
+  readonly isUserTurn = computed<boolean>(() => {
+    if (this.sending()) return false;
+    const msgs = this.chat()?.messages ?? [];
+    const last = msgs[msgs.length - 1];
+    return last !== undefined && last.role === 'assistant' && !last.error;
+  });
   // Who is answering right now (for the indicator under the history): the name
   // and the avatar of the author whose line is being generated; null — the
   // author is unknown. The "Generating image…" label (while ImageStore is
@@ -259,8 +268,9 @@ export class ChatStore {
     return true;
   }
 
-  // Saves the edit of the message loaded into the field (the "✓" button).
-  // An empty edit (no text, no images) is not saved. Returns true if accepted.
+  // Saves the edit of the message loaded into the field (the "✓" button): the
+  // line of a text message or the description (caption) of an image card. An
+  // empty edit is not saved. Returns true if accepted.
   // Allowed while a reply is generating: this is a PATCH, not a new generation,
   // and the backend re-reads the chat before appending a reply, so the edit and
   // the in-flight reply both persist (like deleteOne/deleteFrom, also allowed
@@ -270,8 +280,7 @@ export class ChatStore {
     const editing = this.editTargetId();
     if (!c || !editing) return false;
     const trimmed = text.trim();
-    const images = this.pendingImages();
-    if (!trimmed && images.length === 0) return false;
+    if (!trimmed) return false;
 
     // The edit is applied locally right away — no pause waiting for the PATCH;
     // the server response replaces the chat, on error — banner + re-read.
@@ -281,12 +290,10 @@ export class ChatStore {
     this.ui.error.set('');
     this.chat.set({
       ...c,
-      messages: c.messages.map((m) =>
-        m.id === editing ? { ...m, text: trimmed, images } : m,
-      ),
+      messages: c.messages.map((m) => (m.id === editing ? { ...m, text: trimmed } : m)),
     });
     this.api
-      .patchMessage(c.id, editing, { text: trimmed, images })
+      .patchMessage(c.id, editing, { text: trimmed })
       .then((res) => this.setChat(res.chat))
       .catch((e) => {
         this.ui.error.set(String((e as Error).message));
@@ -422,11 +429,13 @@ export class ChatStore {
   }
 
   // ---- editing a message in the bottom input field ----
-  // InputPanel substitutes/clears the text (an effect on editTargetId).
+  // InputPanel substitutes/clears the text (an effect on editTargetId). The
+  // field carries text only: a card's picture is not re-attached when its
+  // description is being corrected.
   startEdit(m: ChatMessage): void {
     this.editTargetId.set(m.id);
     this.editText.set(m.text);
-    this.pendingImages.set([...m.images]);
+    this.pendingImages.set([]);
     this.ui.error.set('');
   }
 

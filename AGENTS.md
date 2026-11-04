@@ -31,11 +31,16 @@ backend/               Express API; also serves the built frontend
                        streaming over the services)
     text_generation/   the LLM domain: the top-level service class
                        (TextGenerationService.ts — the OpenAI-compatible provider client:
-                       chatCompletion text + image_url, translatePrompt;
+                       chatCompletion (text + the image_url parts of the
+                       pictures a card shows), translatePrompt and
+                       composeImagePrompt (the JSON plan of the picture of the
+                       user's turn) — all three on the one requestCompletion;
                        resolveModel (the chat's model by llmModels key with
-                       the first-model fallback); the system prompt,
-                       [IMG]/[PHOTO] tag parsing, [SILENT], author labels,
-                       history trimming; DI token TEXT_GENERATION) and
+                       the first-model fallback); the system prompt (which now
+                       says the model itself cannot attach or draw pictures),
+                       the [SILENT] marker, author labels, the text description
+                       of a card in a history line, history trimming;
+                       DI token DI_TEXT_GENERATION_SERVICE) and
                        TextGenerationService.test.ts — jest unit tests
     image_generation/  image generation: the driver
                        interface (IImageGeneratorDriver.ts; the job model —
@@ -44,7 +49,10 @@ backend/               Express API; also serves the built frontend
                        the driver factory (DriverFactory.ts), and the top-level
                        service class (ImageGenerationService.ts —
                        ImageGenerationService: availability cache, the
-                       background job registry);
+                       background job registry keyed by the IMAGE ID the job
+                       writes to; it takes the machine, text-generation and
+                       configuration services and knows nothing about chats,
+                       messages or the database);
                        image.routes.ts — the /image routes (the availability
                        flag + the manual generation);
                        ImageGenerationService.test.ts —
@@ -81,14 +89,24 @@ backend/               Express API; also serves the built frontend
                        chat.json.migrated; the service opens the database
                        lazily and close() is final — later use throws): CRUD,
                        the format guards, the model
-                       fallback, the chat files (saveImage,
-                       importCharacterPhoto, normalizeImages), the message
-                       primitives (addUserMessage, editMessage, deleteMessage),
-                       the per-image generation status (setMessageImageStatus);
+                       fallback, the chat files (saveImage with an English
+                       name hint, reservedImageId, importImage,
+                       importCharacterPhoto, normalizeImages — every picture is
+                       addressed by its data-root-relative ID, never by an
+                       absolute path), the message primitives (addUserMessage,
+                       addImageMessage, editMessage, setMessageText,
+                       deleteMessage), the picture-card edits (editImageCard,
+                       replaceMessageImage, replaceMessageImageId),
+                       the per-image generation status (setMessageImageStatus)
+                       and the sidecar metadata (writeSidecar; get() refreshes
+                       the stored description/prompt from the files next to
+                       the images);
                        DI token DI_CHATS_SERVICE, the root folder and the
                        configuration service injected); chats.routes.ts — the
                        /chats routes
                        (the chat CRUD, the messages, the reply queue, the
+                       picture of the user's turn (POST /:id/auto-image), the
+                       card edit (PATCH /:id/messages/:id/picture), the
                        per-image generation controls);
                        ChatsService.test.ts — jest unit tests
     persons/           the person (persona card) domain: the Person.ts type and
@@ -117,22 +135,36 @@ backend/               Express API; also serves the built frontend
     reply/             the reply domain: the top-level service class
                        (ReplyService.ts — the AI-reply orchestration:
                        appendAssistantReply (system prompt, the history, the
-                       model call, the [SILENT]/[IMG]/[PHOTO] parsing, saving,
-                       the background image jobs), resolveChatModel (the
+                       model call, the [SILENT] parsing, saving a TEXT-ONLY
+                       message — a character never carries a picture),
+                       attachUserImages (the caption message + one image card
+                       per attached picture), requestUserTurnImage (the 📷
+                       picture of the user's turn: a placeholder card at once,
+                       the model's plan + the generation in the background),
+                       resolveChatModel (the
                        chat's model with the first-model fallback),
                        saveErrorMessage (the visible error line), the
                        in-flight reply registry (beginReply/endReply/
                        cancelReply), the manual image operations (manualImage,
-                       regenerateImage, cancelImage); DI token
+                       regenerateImage, editPicture, replaceImage,
+                       cancelImage); DI token
                        DI_REPLY_SERVICE, the six domain services injected) and
                        ReplyService.test.ts — jest unit tests
     shared/            small cross-domain helpers as stateless classes with
                        static methods: AvatarFile.ts (the avatar.<ext>
                        find/save/delete, shared by the character and the
                        person services), HttpHelper.ts (sendImage — the file
-                       streaming, a routes-layer concern) and PathHelper.ts —
+                       streaming, a routes-layer concern), ImageMeta.ts (the
+                       sidecar shape: the open ImageMeta record + the
+                       ImageGenerationRecord written at generation time),
+                       ImageMetaFile.ts (the <image>.json sidecar: read/write
+                       with the unknown keys preserved, move/copy/delete and
+                       the size+mtime signature the read cache keys on) and
+                       PathHelper.ts —
                        the shared data-layout helpers (the data root, the
-                       domain folders, expandPath, newId, isDirEntry)
+                       domain folders, expandPath, newId, isDirEntry, and the
+                       image ID pair imageIdOf/resolveImageId — the latter
+                       refusing any path that escapes the data folders)
   jest.config.js       ts-jest setup
 
 frontend/              Angular app
@@ -148,27 +180,41 @@ frontend/              Angular app
                        image-gen availability, settings dialog, the entity edit
                        dialogs (entityDialog + model/character/user CRUD), loadAll()
     chat-store.ts      ChatStore: current chat + chat list — messages, send
-                       (send/saveEdit), the 📎 attachments (pendingImages), edit,
+                       (send/saveEdit), the 📎 attachments (pendingImages), the
+                       isUserTurn flag (when the 📷 button belongs), edit,
                        chat mgmt, new-chat dialog
     image-store.ts     ImageStore: image GENERATION — genMode/genRefs/generating,
-                       draw(), cancel/regenerate of message images, the
-                       background-job polling; depends ONE-WAY on ChatStore
+                       draw(), requestTurnImage() (the 📷 picture of the user's
+                       turn), cancel/regenerate/replace/editPicture of message
+                       images, the lightbox, the background-job polling;
+                       depends ONE-WAY on ChatStore
     ui-store.ts        UiStore: cross-cutting UI state (global error banner)
-    helpers.ts         pure helpers: chat labels, message counts, image hint
+    helpers.ts         pure helpers: chat labels and times, message counts, the
+                       avatar letter, the narration split, the image hover hint
+                       (imageHintFor), the reasoning-levels list parse
   src/components/      UI components, each with its own .scss (encapsulation!);
                        read state/actions via injected stores — no big input lists
     top-bar/           header: character/user menus (edit icons + "New"),
                        model chip (menu + edit icons), ⋮ menu
     message-list/      history: empty state, messages, typing indicator
-    message-row/       one message: avatar, text, images (spinner/broken/ready),
-                       hover buttons (image actions via ImageStore)
-    input-panel/       input: error banner, gen-mode bar, 📎 attachments, send;
+    message-row/       one message: avatar, text, or the image CARD (the picture
+                       with its caption, prompt and reference count; the
+                       pending/broken/cancelled placeholders; the inline
+                       prompt editor) + the hover buttons (image actions via
+                       ImageStore, the ✎ of a card caption)
+    input-panel/       input: error banner, gen-mode bar, 📎 attachments, the 📷
+                       "picture of my turn" button, send;
                        orchestrates the "what to send" decision (edit/gen/text)
     new-chat-dialog/   new chat: user + character pick (local selection state)
-    character-dialog/  character edit dialog (name, description, the "Access to all images"
-                       flag, avatar, Delete/Clone)
+    character-dialog/  character edit dialog (name, description, avatar,
+                       Delete/Clone)
     user-dialog/       persona edit dialog (name, description, avatar, Delete/Clone)
-    model-dialog/      model edit dialog (llmModels entry fields, Delete/Clone)
+    model-dialog/      model edit dialog (llmModels entry fields, the reasoning
+                       pick + levels, Delete/Clone)
+    chat-settings-dialog/ the per-chat overrides: temperature / min-P /
+                       repetition penalty + the system-prompt addition
+    image-lightbox/    a picture enlarged over a dark backdrop (ImageStore
+                       .lightbox carries the media URL)
     settings/          settings modal (listen address / image generation)
   angular.json         build config (incl. style budgets)
   proxy.conf.json      dev proxy: /api -> http://localhost:3210
@@ -183,10 +229,15 @@ e2e/                   Playwright suite
   chats/chats.db       (node:sqlite: the chats + messages tables; the legacy
                        chats/<chatId>/chat.json files are imported at database
                        open and renamed to chat.json.migrated)
-  chats/<chatId>/files/ — the uploaded/generated images of a chat
+  chats/<chatId>/files/ — the pictures of a chat, every one of them addressable by
+                       its data-root-relative id (<chatId>/files/<slug>-<6hex>.png)
+                       and each with a <name>.png.json sidecar (the description +
+                       the generation data, hand-editable)
   characters/<id>/character.json (+ photos/ — "starter" set, avatar.jpg — character avatar)
   users/<id>/user.json (+ avatar.jpg — user avatar)
-  generated/
+  generated/           — the scratch folder of the local generators (the temp file
+                         of a running job; the finished picture is renamed into
+                         the chat's files/ folder)
 ```
 
 ## Commands
@@ -321,58 +372,104 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   `MachinePosixService.ts`), not in
   the image-generation code. A generator's `maxInputImages` caps how many reference images it accepts
   (0 = unlimited; the backend rejects the request with a clear error before spawning).
-- **Self-initiated image generation.** When a generator is available, `systemPromptFor`
-  adds an instruction letting the model insert `[IMG:description]` tags into its replies; it may
-  also pass reference images by index: `[IMG:description | 1,3]`. The index list ("inventory") is
-  built per request by `ImageGenerationService.imageInventory` (`image_generation/ImageGenerationService.ts`):
-  the character's own photos first, then — when the character has the `accessAllImages` flag (the
-  "Access to all images" checkbox in its edit dialog, stored in `character.json`) — the photos of
-  the OTHER characters in the chat and the active persona's avatar, then every image already in the
-  chat, oldest first; it is appended to the system prompt so the model knows what the numbers mean.
-  The backend strips the tags (`extractImageRequests`) and resolves indices to files
-  (`ImageGenerationService.resolveInventoryRefs`; character photos and the persona avatar are copied
-  into the chat via `importCharacterPhoto`).
-- **Image generation runs in the BACKGROUND.** Each `[IMG:…]` (or a manual gen-mode draw, or a
-  regeneration) gets a reserved file name that is stored in the message RIGHT AWAY with
-  `ChatMessage.imageStatus[name] = 'pending'` (`imagePrompts`/`imageRefs` alongside), the reply is
-  saved and returned to the client without waiting, and the generation runs as a background job
-  (`startImageJob` in `image_generation/ImageGenerationService.ts`). The job writes to a temp file and renames it
-  to the reserved
-  name only on success (so a name is never left with a partial image); the jobs of one
+- **Pictures belong to the user; the model is text-only.** There is no `[IMG:…]` /
+  `[PHOTO:…]` protocol and no `accessAllImages` flag anymore: `systemPromptFor` states plainly that
+  the character cannot send or create images. A picture enters a chat in exactly three ways, and all
+  three of them are user actions:
+  - **📎 attach** (`POST /api/chats/:id/messages`, body `{ text, images: [data URLs] }`, backend
+    `ReplyService.attachUserImages`): the text becomes a user message and every picture becomes its
+    OWN `kind: 'image'` message right after it ("Look at this picture", then a card per picture).
+    A picture the user attached is never re-saved by a later step.
+  - **🎨 gen mode** (the prompt box, `POST /api/image` with body `{ chatId, prompt, refs }`): one
+    image card with the prompt as
+    its generation data; the picture itself is what the generator produced.
+  - **📷 the picture of the user's turn** (`POST /api/chats/:id/auto-image`, backend
+    `ReplyService.requestUserTurnImage`) — see the next bullet.
+  A card is shown with its caption (what is on it), the prompt it was drawn from and the number of
+  references it used (`image-card` / `card-caption` / `card-prompt` / `card-refs`); a model that
+  supports images receives the card as an image part plus a `A picture you are shown, it shows: …`
+  text part, and as `[A picture: …]` in the history text of a model without vision.
+- **The picture of the user's turn (📷).** The button appears in the input bar when a generator is
+  available AND it is the user's turn (the last message is a non-error assistant one —
+  `ChatStore.isUserTurn`). One click calls `POST /api/chats/:id/auto-image`, which
+  **returns immediately** with the chat containing a placeholder image card (pending,
+  `generation.source: 'auto'`) — the rest runs in the background (`runUserTurnImage`) and the client
+  polls, so typing and sending are never blocked. The background half asks the model
+  (`composeImagePrompt`) for a plan: the input is the whole dialogue as TEXT (who is in it, the
+  labeled lines, and a numbered catalogue of the pictures the chat already has — with what each shows,
+  how it got there, who shared it and how long ago), and its own placeholder is left out of both; the
+  output is strict JSON `{"name","description","prompt","refs"}` extracted from whatever wrapping the
+  model chose (`parseJsonPlan`), with `refs` clamped to the catalogue. The placeholder card is then
+  repointed at a file named from the model's 2–5 English words, the description becomes the card's
+  caption, and the generation runs as the usual background job. If the model cannot produce a
+  readable plan the card becomes the broken placeholder with the reason and a Regenerate button — it
+  never stays pending.
+- **Every picture is addressed by an ID that is its path relative to the data folder**
+  (`PathHelper.imageIdOf` / `resolveImageId`, e.g. `chats/<chatId>/files/a-sunset-1a2b3c.png`,
+  `characters/alice/photos/photo1.jpg`). An id is resolved only when it stays inside one of the data
+  folders (`configDir`, `chatsDir`, `charactersDir`, `personsDir`), so an id from a request can never
+  reach an arbitrary file; an unparsable or escaping id resolves to `null` and is rejected with a
+  clear error. `ChatMessage.images` holds ids, `generation.refs` holds ids, the generator receives
+  absolute paths resolved by `ImageGenerationService.resolveRefPaths` (references whose file is gone
+  are dropped, not passed as junk), and the browser loads a picture through the one
+  id-addressed route `GET /api/media?path=<id>` (`ApiService.mediaUrl(id)`). File names are
+  human-readable English: `ChatsService.slugify` transliterates Cyrillic, keeps up to five leading
+  words and lowercases them, so a saved picture is `a-sunset-over-the-sea-1a2b3c.png`; the 6-hex
+  suffix keeps a reserved name unique (`reservedImageId`).
+- **A picture carries its description and generation data in a sidecar next to the file**:
+  `<image>.png.json` — `{ name, description, prompt, negativePrompt, refs, source, generator, model,
+  width, height, steps, createdAt, updatedAt }` (`shared/ImageMeta.ts`, read/written by
+  `shared/ImageMetaFile.ts`). It is **merge-on-write**: keys the app does not know are preserved, so
+  the user can add their own fields and hand-edit the existing ones (a short `<base>.json` alias —
+  `a-red-boat.json` — is read too and removed as soon as the canonical file is rewritten). The
+  sidecar is the authority: `ChatsService.get()` refreshes each card's caption and generation data
+  from it on read (cached by the file's size+mtime signature, so a manual edit is picked up without a
+  restart), and a message row keeps only what the sidecar said when it was written. `source` says how
+  the picture got there: `upload` / `manual` / `auto`. A file the sidecar cannot read (broken JSON)
+  is ignored rather than fatal.
+- **Image generation runs in the BACKGROUND.** Each generation (a gen-mode draw, the picture of the
+  user's turn, or a regeneration) is started with the TARGET IMAGE ID already stored in the card with
+  `ChatMessage.imageStatus[id] = 'pending'`, the message is saved and returned without waiting, and
+  `ImageGenerationService.startImageJob` runs the job (`image_generation/ImageGenerationService.ts`).
+  The job writes to a temp file and renames it to the reserved id only on success (so a name is never
+  left with a partial image), then writes the generation data into the sidecar; the jobs of one
   generator are **queued** (one run at a time — a local program / the GPU must not be hit
-  concurrently) while jobs of different generators run in parallel. When the job
+  concurrently) while jobs of different generators run in parallel. The registry is keyed by the
+  image id, so a job can outlive its message. When the job
   finishes, `ReplyService` updates the message: ok → the status is cleared (the image is ready);
-  failed/cancelled → `imageStatus[name] = 'failed'` + `imageErrors[name]` (the "broken" image),
+  failed/cancelled → `imageStatus[id] = 'failed'` + `imageErrors[id]` (the "broken" image),
   UNLESS an older image existed at the name (a cancelled/failed regeneration) — then the old file
   is kept and the image stays ready. The **frontend polls** the chat (`GET /chats/:id`) on a 1.5 s
   interval while any image of the current chat is `pending` (stops when none are), so a generation
   never blocks sending messages. The UI shows a spinner placeholder with a **Cancel** button while
-  pending and a broken-image placeholder with a **Regenerate** button when failed.
-  `POST /api/chats/:id/messages/:messageId/cancel-image` (body `{ image }`) cancels the in-flight
+  pending (the label says what the app is doing — "Planning and drawing the picture…" for the 📷
+  flow, "Generating the image…" otherwise) and a broken-image placeholder with a **Regenerate**
+  button when failed.
+  `POST /api/chats/:id/messages/:messageId/cancel-image` (body `{ image }` — an id) cancels the in-flight
   job and marks the image failed. `POST /api/chats/:id/messages/:messageId/regenerate-image`
-  (body `{ image }`) re-runs the generator in the background against the SAME reserved name (no
-  file swap, so no later references need repointing — the old `repointImageRefsAfter` is gone),
-  after cancelling any job still running for that image.
-- **Sending existing photos without generation.** Independently of the generator, `systemPromptFor`
-  (when the inventory is non-empty) instructs the model it can attach an inventory image as-is with a
-  `[PHOTO:1,3]` tag (same numbering as `[IMG]` refs). `extractPhotoRequests` in `TextGenerationService` strips the
-  tags (strict format: numbers only — a bare `[PHOTO]` stays literal text); `appendAssistantReply`
-  resolves the indices through `ImageGenerationService.resolveInventoryRefs` (character photos are
-  copied into the chat's
-  `files/`) and attaches the files to the message like any other image. The inventory itself is now
-  built for every reply, generator or not.
-- **Generation prompts are always English.** The `[IMG:...]` instruction requires English scene
-  descriptions. Manually typed prompts (gen mode) and stored Russian prompts (regeneration) are
-  translated to English via the chat's model (`translatePrompt` in `TextGenerationService`, called by
-  `ImageGenerationService.ensureEnglishPrompt`) before hitting the generator; on translation
-  failure the original text is used.
-  The final prompt is stored in `ChatMessage.imagePrompts`, so image hover hints show it.
+  (body `{ image, prompt? }`) re-runs the generator in the background against the SAME id (no
+  file swap, so no later reference needs repointing), after cancelling any job still running for it.
+  `PATCH /api/chats/:id/messages/:messageId/picture` (body `{ description?, prompt? }`) edits what
+  the card says and rewrites the sidecar; `POST /api/chats/:id/messages/:messageId/replace-image`
+  (body `{ image, data }`) repoints the card at a file the user picked — the old picture keeps its
+  own file and sidecar (nothing references it anymore) and the card's generation data is dropped,
+  because the new file was not generated by the app.
+- **Generation prompts are always English.** Manually typed prompts (gen mode) and stored non-English
+  prompts (regeneration) are translated to English via the chat's model (`translatePrompt` in
+  `TextGenerationService`, called by `ImageGenerationService.ensureEnglishPrompt`) before hitting the
+  generator; on translation failure the original text is used. The 📷 planning call asks for English
+  outright, so it needs no translation.
+  The final prompt lives on the card (`generation.prompt`) and in its sidecar, so the caption line
+  and the hover hint show it.
 - **Characters are NOT in the config.** Each character is a folder
   `~/.config/sillytalk/characters/<id>/`: the folder name IS the character id, `character.json` holds
-  `{ name, description, accessAllImages }` (`accessAllImages`, default `false`, lets the character
-  reference the other characters' photos and the persona's avatar — see the inventory note above),
+  `{ name, description }`,
   `photos/` is the fixed "starter" photo set (computed by
   `characterPhotosDir(id)`), and `avatar.jpg` is the character avatar shown next to its messages.
+  The photos and the avatar are ordinary pictures of a character folder, so they can be addressed by
+  an image id (`characters/alice/photos/photo1.jpg`) like any other — there is no separate reference
+  machinery for them and no "access to all images" flag (the characters do not attach pictures at
+  all).
   CRUD lives in `characters/CharactersService.ts`; `GET/PUT /api/characters` read/sync the folders (PUT performs a full
   sync: create/update/delete). An on-disk `characters` field in an old config.json is migrated to
   folders at startup (`index.ts`) and stripped by `PUT /api/config` — do not reintroduce a
@@ -387,7 +484,8 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   `Chat.userId`, chosen when creating a new chat (dialog) or via the header menu. On a fresh install
   the default person is created with id `default` (previously `me`). The active persona's
   `description` (when non-empty) is appended to the system prompt by
-  `systemPromptFor(character, person, …)` so the model knows who it is talking to.
+  `systemPromptFor(character, person, …)` so the model knows who it is talking to. A chat also
+  carries its own `sampling` overrides and a `systemSuffix` — see "Per-chat settings" below.
 - **Multi-participant chats.** `Chat.characterIds` is the ordered participant list (order =
   answer priority). Every `ChatMessage` carries its author — `characterId` (assistant) /
   `userId` (user) — stored at send time, so switching participants or the active persona never
@@ -431,12 +529,25 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   "+ New character" button), active persona (opens the persona menu — click switches the active
   persona, ✎ edit icon per item, "+ New persona"), model chip (opens the **model menu** — the model
   pick, ✎ edit icon per item, "+ New model"; the chip is the ONLY model picker — the "⋮" menu has no
-  model submenu), a "Chat: <last-message date>" label (clickable — opens the **chat menu**: new chat,
-  delete chat, the chat list; wider than the usual dropdown, centered under the label, always
-  visible), and a "⋮" menu (settings only now). Opening any one of these menus closes the others —
+  model submenu), a "Chat: <last-message date>" label (clickable — opens the **chat menu**: new chat
+  + the chat list; wider than the usual dropdown, centered under the label, always visible) with a
+  **chat-actions ⋮ right next to it in the same cell** ("Chat settings…" and "Delete chat" — the chat
+  management moved out of the label's own menu), and a "⋮" menu (settings only now).
+  Opening any one of these menus closes the others —
   they must never overlap. The persona/model menus are single-select (the active row is highlighted,
   no ●/○ mark); the character menu keeps the ●/○ mark (membership is a multi-select toggle) and its
   rows are ordered by reply priority, so the ↑/↓ arrows reorder the menu itself.
+- **Per-chat settings** (the chat-actions ⋮ → "Chat settings…", `chat-settings-dialog`): the
+  sampling overrides of THIS chat — temperature / min-P / repetition penalty — plus a free-text
+  **system-prompt addition**. An empty field means "do not override" (the provider default); all
+  three sampling fields empty clear the whole block server-side. Stored on the chat as
+  `Chat.sampling = { temperature?, minP?, repetitionPenalty? }` and `Chat.systemSuffix`, saved with
+  `PATCH /api/chats/:id` (the only place they are set — `POST /api/chats` takes just the
+  participants, the persona and the model). `ReplyService.appendAssistantReply`
+  appends `systemSuffix` to the system prompt of every reply in the chat, and `sampling` goes into
+  every model call of the chat — the replies and the 📷 picture-planning call alike — as
+  `temperature` / `min_p` / `repetition_penalty`, each sent only when it is set (`requestCompletion`
+  in `TextGenerationService`).
 - **Entity edit dialogs** (character-dialog / user-dialog / model-dialog): one per item, opened from
   the ✎ icons / "+ New" buttons above. They carry **Save/Cancel**, **Delete** (a confirm; only in
   edit mode) and **Clone** (only in edit mode). Models are saved through the config (a rename
@@ -459,11 +570,20 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   reply, so the edit and the in-flight reply both persist (like delete-during-generation). The cancel
   (✕) styling/behaviour applies only outside the editing mode.
 - User and assistant messages are visually distinct (avatar + sender label + colored bubble).
-- **Images**: stretched to the full chat width — the bubble of a message with images grows to the row
-  width via the `has-images` class — and capped at two thirds of the viewport height
+- **A picture is a message of its own** (`kind: 'image'` — an image CARD, `image-card`), never an
+  attachment glued to a text bubble: attaching a picture with a caption produces the caption message
+  followed by one card per picture. A card is stretched to the full chat width — its bubble grows to
+  the row width via the `has-images` class — and capped at two thirds of the viewport height
   (`width:100%; max-height:2/3vh; object-fit:contain`); when the height cap kicks in and the image
-  ends up narrower than the row, `object-fit:contain` centers it. The images are block-level: the
-  text is above and below them, never beside.
+  ends up narrower than the row, `object-fit:contain` centers it. Everything is block-level and in
+  order: the picture, then its caption (`card-caption`), then the prompt it was drawn from
+  (`card-prompt`) and how many references it used (`card-refs`) — the text of a message is above and
+  below the images, never beside.
+- **📷 is a turn affordance, not a generator switch.** It shows only when a generator is available
+  AND the last message is a plain assistant answer (`ChatStore.isUserTurn`), so it never competes
+  with the 🎨 prompt box, the edit mode, or a turn that already has the user's message in it. One
+  click adds the placeholder card and the button steps back (the card is the user's message now, so
+  it is the characters' turn); the planning and the drawing happen behind the placeholder.
 - Responsive for both desktop and phone.
 
 ## Architecture notes
@@ -490,11 +610,13 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
     (`IImageGeneratorDriver.ts`, `ImageJob.ts`); no barrel `index.ts` — consumers import from
     concrete files.
   - **Dependencies are injected through the constructor** (`IMachineService`, `ConfigurationService`);
-    the class is registered in the container under a token defined next to it (`IMAGE_GENERATION`)
+    the class is registered in the container under a token defined next to it
+    (`DI_IMAGE_GENERATION_SERVICE`)
     and resolved once at the composition root. Tests instantiate the class directly
     (`new ImageGenerationService(...)`) instead of resetting module state.
   - **The service stays persistence- and HTTP-agnostic.** It speaks in ids and primitives
-    (`chatId`, reserved file name), returns results the caller applies (`ImageJob.result`),
+    (the target image id, the prompt, the reference ids), returns results the caller applies
+    (`ImageJob.result`),
     and never imports express. `ReplyService` is the exception that proves the rule: it is a
     TOP-LEVEL service that sits above the domain services and orchestrates across them
     (it saves through `ChatsService` and returns the saved chat / the message / a typed
@@ -506,13 +628,17 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   - **Keep the dependency graph one-way and acyclic** (`routes → reply → the domain
     services → drivers/machine/configuration/...`): the service may call lower-level services
     and module functions (e.g. `ImageGenerationService` calling
-    `ChatsService.importCharacterPhoto` and `TextGenerationService.translatePrompt`;
+    `TextGenerationService.translatePrompt`;
     `ReplyService` calling all six domain services), but nothing below it may import the
     domain back — that is why the reply orchestration could NOT go into
-    `ChatsService` (which `ImageGenerationService` already depends on) and got its own
-    `reply/` domain. When pulling code into the service, grep the rest of the project for
+    `ChatsService` (which the reply pipeline depends on) and got its own
+    `reply/` domain, and why the picture of the user's turn lives in `reply/`
+    (`requestUserTurnImage` — it needs the chat store, the model and the generator at once)
+    while the picture STORAGE (`ChatsService.addImageMessage`, the sidecar refresh on read)
+    and the picture PLANNING (`TextGenerationService.composeImagePrompt`) sit in their own
+    domains. When pulling code into the service, grep the rest of the project for
     logic that belongs to the domain and move what fits (`ensureEnglishPrompt`,
-    `imageInventory`, `resolveInventoryRefs`, `appendAssistantReply`, the in-flight reply
+    `appendAssistantReply`, the in-flight reply
     registry moved from `routes.ts`); leave HTTP concerns (validation, status codes, file
     streaming) in the route files, and be able to say why.
   - **OS/program specifics go behind an interface** selected once at startup
@@ -538,14 +664,21 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   (`inject(...)`) instead of long `input()`/`output()` lists from a parent. `App` is a thin
   shell (shell + `chatStore.bootstrap()` in `ngOnInit`). Split:
   - `ChatStore` — current chat + chat list: messages, `send`/`saveEdit`, the 📎 attachments
-    (`pendingImages`), edit, chat mgmt, new-chat dialog. Injects `ConfigStore` + `UiStore`.
+    (`pendingImages`), `isUserTurn` (the last message is a plain assistant answer — the only moment
+    the 📷 button belongs), edit, chat mgmt, new-chat dialog. Injects `ConfigStore` + `UiStore`.
+    Editing a message never re-attaches its picture: `startEdit` clears `pendingImages` and
+    `saveEdit` patches the text only (a card's caption is edited through `ImageStore.editPicture`).
   - `ImageStore` — the image-GENERATION domain: `genMode`/`genRefs`/`generating`, `draw()`,
-    `cancelImage`/`regenerateImage`, and the background-job polling (re-reads the chat on a
+    `requestTurnImage()` (the 📷 picture of the user's turn — it only fires the request and applies
+    the chat with the placeholder card; the background job and the polling do the rest),
+    `cancelImage`/`regenerateImage`/`replaceImage`/`editPicture`, the `lightbox`, and the
+    background-job polling (re-reads the chat on a
     1.5 s interval while any image is "pending"). Injects `ChatStore` (one-way) + `ConfigStore`
     + `UiStore`. It reads the current chat / character / edit target and applies the server chat
     back through `ChatStore.applyChat()`. The "what to send" decision (edit → `saveEdit`,
     gen-mode → `draw`, else → `send`) is orchestrated by `InputPanel`, which is what keeps the
-    graph acyclic — `ChatStore` never reads `ImageStore`.
+    graph acyclic — `ChatStore` never reads `ImageStore` (the 📷 button lives in `InputPanel` too and
+    asks `ChatStore.isUserTurn()` and `ImageStore.canGen()` there).
   - `ConfigStore` — config + catalogs (models/users/characters), image-gen availability,
     settings dialog (`settingsOpen`/`editingConfig`/`saveSettings`), `loadAll()`. Injects `UiStore`.
   - `UiStore` — cross-cutting UI: the global error banner (written by stores + components).
@@ -562,6 +695,10 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
     200; the UI renders it as a red bubble (`.msg.error`).
   - Operational/network failure (e.g. the image-gen program fails to spawn, chat not found) → non-2xx →
     the root `error` signal → a dismissable red banner above the input.
+  - A picture that did not happen (the plan could not be read, the generator failed or was
+    cancelled) is NOT an error banner and never an error message: the card itself becomes the broken
+    placeholder with the reason (`imageErrors[id]`, `img-error-text`) and a Regenerate button,
+    because the failure belongs to that one picture, not to the conversation.
 
 ## Conventions & gotchas (read before editing)
 
@@ -613,10 +750,15 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   that sleeps, fails on "fail" prompts, and is slow on "slow" ones — plain `node` instead of
   a bash script, because "bash" on Windows may be a WSL stub without a distro). `beforeAll` starts the
   mock LLM, `beforeEach` points the config's `llmModels`/`imageGenerators` at the mocks, so
-  the run is fast and does not depend on the user's real models. The mock LLM answers
-  "Mock reply from <character name>." (the name is read from the system prompt); the
-  ux-explore suite passes a `drawReplies` option so it can test the model-initiated
-  `[IMG:...]` / `[PHOTO:1]` tags. The "hanging model" cancel test in `app.spec.ts` still
+  the run is fast and does not depend on the user's real models. The mock LLM recognizes the
+  three kinds of call by their system prompt: a chat reply answers
+  "Mock reply from <character name>." (the name is read from the system prompt, and a
+  `customReplies` option can override the wording); a prompt translation ("Translate …")
+  answers with an English description that keeps the "fail"/"slow" markers so a test can steer
+  the generator; the picture planning of the user's turn ("You plan one picture …") answers
+  with the JSON plan the suite sets through `MockLlm.setImagePlan` — `setImagePlan(null)` makes
+  it answer with prose instead, which is how the "the model could not plan it" path is covered.
+  The "hanging model" cancel test in `app.spec.ts` still
   spins up its own never-answering server (on top of the mocks).
 - `beforeEach` also creates the catalog via the API (`PUT /persons`: Carol + Dave;
   `PUT /characters`: Alice + Bob) and clears all chats so each test opens a fresh empty chat.
@@ -626,10 +768,21 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   ● in-chat / ○ out), `model-option` (a model-menu row opened by the chip),
   `char-edit`/`user-edit`/`model-edit` (the ✎ row icons), `new-character`/`new-persona`/`new-model`
   (the "+ New" buttons), `user-option-row`/`model-option-row` (a row wrapper), `chat-date` (the
-  "Chat: <date>" label that opens the chat menu), `new-chat`,
-  `settings`, `delete-chat`, `history`, `message`, `msg-sender`, `input`, `send` (➤ normally; ✕
+  "Chat: <date>" label that opens the chat menu) with a **chat-actions ⋮ right next to it in the
+  same cell** (`chat-dots` — `chat-settings` "Chat settings…" and `delete-chat` live in its dropdown,
+  not in the label's own menu), `new-chat` / `new-chat-dialog` / `new-chat-confirm`, `user-name`,
+  `settings`, `history`, `message`, `msg-sender`, `msg-edit` (the ✎ of a message,
+  and of a picture card — it edits the caption), `input`, `send` (➤ normally; ✕
   while a reply is generating — it is the cancel then), `attach`,
-  `gen-toggle`, `error-banner`, `typing`. The entity dialogs: `character-dialog`/`user-dialog`/
+  `gen-toggle`, `auto-image` (the 📷 picture of the user's turn; only then),
+  `error-banner`, `typing`. The picture card: `image-card`, `card-caption`,
+  `card-prompt`, `card-refs`, and inside it the state placeholders `img-pending`
+  (+ `img-cancel`), `img-cancelled` / `img-broken` (+ `img-regen`, `img-error-text`) and the
+  ready picture's `img-regenerate` / `img-edit-prompt` / `img-replace` (the ✎ prompt editor is
+  `img-prompt-input` + `img-prompt-save`/`img-prompt-cancel`) + `lightbox`/`lightbox-close`. The entity dialogs: `character-dialog`/`user-dialog`/
   `model-dialog` + `char-name-input`/`user-name-input`/`model-name-input`/`model-id-input` and
-  `char-save`/`char-clone`/`char-delete` (the `user-*`/`model-*` analogues).
+  `char-save`/`char-clone`/`char-delete` (the `user-*`/`model-*` analogues); the model dialog also
+  has `model-reasoning-select` + `model-reasoning-levels-input`. The per-chat dialog:
+  `chat-settings-dialog` + `chat-temp-input`/`chat-minp-input`/`chat-reppen-input`/
+  `chat-sysprompt-input` + `chat-settings-save`.
 - The suite captures screenshots into `e2e/screenshots/`.

@@ -26,11 +26,8 @@ export interface Character {
   id: string;
   name: string;
   description: string;
-  photos?: string[];
+  photos?: string[]; // the character's "starter" photo set (🎨 reference picker)
   hasAvatar?: boolean; // is there a characters/<id>/avatar.*
-  // when true the character may also reference the photos of the other
-  // characters in the chat and the persona's photo.
-  accessAllImages?: boolean;
 }
 
 // A user is stored in users/<id>/user.json (served by the backend via /api/persons).
@@ -83,7 +80,14 @@ export interface AppConfig {
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
+  // 'text' (default) — a line of the dialogue; 'image' — an image card: one
+  // picture with its own description and generation data. Only the user
+  // produces cards; a character reply is text.
+  kind?: 'text' | 'image';
+  // A text message: the line. An image card: what is on the picture.
   text: string;
+  // Image identifiers — paths relative to the data folder
+  // ("chats/<chatId>/files/a-sunset-3f2a1c.png"). A card carries exactly one.
   images: string[];
   timestamp: number;
   error?: boolean;
@@ -91,17 +95,33 @@ export interface ChatMessage {
   // a character (characters/<id>); stored at send time.
   characterId?: string;
   userId?: string;
-  // Prompts of the generated images (file name -> prompt) — for regeneration.
-  imagePrompts?: Record<string, string>;
-  // References of each generated image (file name -> names in the chat files/).
-  imageRefs?: Record<string, string[]>;
-  // Generation status of the message's images (file name -> status): only
-  // the images still being generated ("pending") or whose generation failed
-  // ("failed") or was cancelled ("cancelled") are listed — a name absent from
-  // the map is a ready image.
+  // The card's generation data (absent when the user uploaded the file).
+  generation?: ImageGenerationData;
+  // Generation status of the message's images (id -> status): only the images
+  // still being generated ("pending") or whose generation failed ("failed") or
+  // was cancelled ("cancelled") are listed — an id absent from the map is a
+  // ready image.
   imageStatus?: Record<string, 'pending' | 'failed' | 'cancelled'>;
-  // The reason a generated image is "failed" (file name -> error text).
+  // The reason a generated image is "failed" (id -> error text).
   imageErrors?: Record<string, string>;
+}
+
+// How a picture was made: the prompt it was drawn from, the pictures it was
+// drawn from, and who asked for it. The same block lives in the sidecar *.json
+// next to the file, where the user can edit it by hand.
+export interface ImageGenerationData {
+  prompt?: string;
+  refs?: string[];
+  negativePrompt?: string;
+  // upload — the user attached it; manual — the 🎨 mode; auto — the picture of
+  // the user's turn, planned by the model.
+  source?: 'upload' | 'manual' | 'auto';
+  generator?: string;
+  model?: string;
+  width?: number;
+  height?: number;
+  steps?: number;
+  createdAt?: string;
 }
 
 export interface Chat {
@@ -242,16 +262,20 @@ export class ApiService {
     return this.req<{ deleted: boolean }>('/chats/' + id, { method: 'DELETE' });
   }
 
-  importPhoto(chatId: string, characterId: string, photo: string): Promise<{ name: string }> {
-    return this.req<{ name: string }>('/chats/' + chatId + '/import-photo', {
+  // Imports a character photo into the chat files/ as a 🎨 reference; the
+  // answer is the new image id.
+  importPhoto(chatId: string, characterId: string, photo: string): Promise<{ id: string }> {
+    return this.req<{ id: string }>('/chats/' + chatId + '/import-photo', {
       method: 'POST',
       body: JSON.stringify({ characterId, photo }),
     });
   }
 
-  // Saves the user message; the characters' replies are separate nextReply calls.
-  postMessage(id: string, text: string, images: string[]): Promise<{ chat: Chat }> {
-    return this.req<{ chat: Chat }>('/chats/' + id + '/messages', {
+  // Saves what the user sends: their text becomes a text message and every
+  // attached picture an image card right after it. The characters' replies are
+  // separate nextReply calls.
+  postMessage(id: string, text: string, images: string[]): Promise<{ chat: Chat; messages: ChatMessage[] }> {
+    return this.req<{ chat: Chat; messages: ChatMessage[] }>('/chats/' + id + '/messages', {
       method: 'POST',
       body: JSON.stringify({ text, images }),
     });
@@ -282,14 +306,23 @@ export class ApiService {
     return this.req(`/chats/${id}/cancel`, { method: 'POST' });
   }
 
-  // Message edit: the text and the image list (a data URL — a new image,
-  // a file name — an already uploaded one).
-  patchMessage(
+  // Message edit: the text of a line, or the description (caption) of a card.
+  patchMessage(chatId: string, messageId: string, patch: { text: string }): Promise<{ chat: Chat }> {
+    return this.req('/chats/' + chatId + '/messages/' + messageId, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    });
+  }
+
+  // Edits what a card says about its picture: the description (what is on it)
+  // and the prompt to redraw it with. The sidecar next to the file is updated
+  // along with the message.
+  patchPicture(
     chatId: string,
     messageId: string,
-    patch: { text: string; images: string[] },
+    patch: { description?: string; prompt?: string },
   ): Promise<{ chat: Chat }> {
-    return this.req('/chats/' + chatId + '/messages/' + messageId, {
+    return this.req('/chats/' + chatId + '/messages/' + messageId + '/picture', {
       method: 'PATCH',
       body: JSON.stringify(patch),
     });
@@ -307,11 +340,10 @@ export class ApiService {
     });
   }
 
-  // Regenerates one message image from its stored prompt. The server marks
-  // the image "pending" right away (the generation runs in the background)
-  // and returns the updated chat; the result arrives with the next poll.
-  // An optional `prompt` (the "edit prompt then regenerate" flow) overrides
-  // the stored one.
+  // Regenerates a card's picture from its stored prompt. The server marks it
+  // "pending" right away (the generation runs in the background) and returns
+  // the updated chat; the result arrives with the next poll. An optional
+  // `prompt` (the "edit prompt then regenerate" flow) overrides the stored one.
   regenerateImage(
     chatId: string,
     messageId: string,
@@ -353,13 +385,21 @@ export class ApiService {
     });
   }
 
+  // The picture of the user's turn: the model plans it from the dialogue and
+  // the generator draws it, both in the background. The answer comes back with
+  // the placeholder card already in the chat, so the user can go on writing.
+  autoImage(chatId: string): Promise<{ chat: Chat }> {
+    return this.req(`/chats/${chatId}/auto-image`, { method: 'POST' });
+  }
+
   // Whether the active image generator is available (the first available one from the config).
   imageStatus(): Promise<{ available: boolean }> {
     return this.req<{ available: boolean }>('/image/status');
   }
 
-  mediaUrl(chatId: string, name: string): string {
-    return API + '/chats/' + chatId + '/files/' + encodeURIComponent(name);
+  // The URL of an image by its id (a path relative to the data folder).
+  mediaUrl(id: string): string {
+    return API + '/media?path=' + encodeURIComponent(id);
   }
 
   photoUrl(characterId: string, name: string): string {

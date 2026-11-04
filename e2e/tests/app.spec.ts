@@ -21,7 +21,7 @@ test.beforeAll(async () => {
     // A user message containing "SHORT" gets a two-letter reply — the
     // "hover buttons of a short message" test needs an assistant bubble
     // narrower than the action panel. The other tests do not use the marker.
-    drawReplies: ({ text }) => (text.includes('SHORT') ? 'Ok.' : null),
+    customReplies: ({ text }) => (text.includes('SHORT') ? 'Ok.' : null),
   });
 });
 
@@ -464,7 +464,6 @@ test('a group chat with the editing of the old messages', async ({ page }) => {
     const text = (await assistant.nth(i).locator('.msg-text').textContent())?.trim() ?? '';
     expect(text.length).toBeGreaterThan(0);
     expect(text).not.toContain('[SILENT]');
-    expect(text).not.toContain('[IMG:');
     expect(text).not.toContain('⚠️');
   }
   await page.screenshot({ path: `${SHOTS}/09b-group-replies.png` });

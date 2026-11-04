@@ -218,28 +218,6 @@
   font-style: italic;
 }
 
-.msg-images {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 8px;
-}
-.msg-images img {
-  /* The images: stretched to the full chat width (the bubble grows via
-     .has-images), never taller than two thirds of the viewport; when the
-     height cap kicks in and the image ends up narrower than the row,
-     object-fit: contain centers it. Block layout — the text is above and
-     below the images, never beside (a UI invariant). */
-  display: block;
-  width: 100%;
-  height: auto;
-  max-height: calc(100vh * 2 / 3);
-  object-fit: contain;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  cursor: pointer;
-}
-
 /* the message image regeneration button */
 .msg-img-wrap {
   position: relative;
@@ -434,6 +412,55 @@
 }
 .img-regen-btn:hover {
   filter: brightness(1.15);
+}
+
+/* ---------- the image card ---------- */
+
+/* One picture with what the app knows about it: the caption (what is on it),
+   the prompt it was drawn from and how many references it used. The text lines
+   sit under the image, never beside it (the layout invariant). */
+.card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+.card-body .msg-img-wrap img,
+.card-body .img-placeholder {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: calc(100vh * 2 / 3);
+  object-fit: contain;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.card-body .msg-img-wrap img {
+  /* A click enlarges the picture (the lightbox), so it must look clickable. */
+  cursor: zoom-in;
+}
+.card-body .img-placeholder {
+  border-style: dashed;
+  aspect-ratio: 3 / 2;
+  max-height: 220px;
+}
+.card-caption {
+  font-size: 14px;
+  line-height: 1.45;
+}
+/* The stored generation prompt: readable but clearly not part of the
+   dialogue — two lines, the whole text in the hover hint. */
+.card-prompt {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted);
+  font-style: italic;
+  overflow-wrap: anywhere;
+}
+.card-refs {
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.02em;
 }
 
 /* ---------- responsive ---------- */

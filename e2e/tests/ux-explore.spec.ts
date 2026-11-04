@@ -115,24 +115,14 @@ async function openApp(page: Page): Promise<void> {
 
 const assistantMsgs = (page: Page) => page.locator('.msg:not(.user):not(.error)');
 const allMsgs = (page: Page) => page.locator('[data-testid=message]');
-
-// The model-initiated image tags: when the user asks the model to draw, it
-// inserts an [IMG:...] tag; when it should show a photo, a [PHOTO:1] tag.
-// Everything else — the default "Mock reply from <name>.".
-function drawReplies(args: { text: string; name: string }): string | null {
-  if (/draw|picture/i.test(args.text)) {
-    return 'Here, I made this for you.\n[IMG:a small red circle on a white background]';
-  }
-  if (/photo|show me/i.test(args.text)) {
-    return 'Of course, here you go.\n[PHOTO:1]';
-  }
-  return null;
-}
+// A picture card (the message kind that carries an image) and its ready image.
+const cards = (page: Page) => page.getByTestId('image-card');
+const cardImages = (page: Page) => page.locator('[data-testid=image-card] img');
 
 // ------------------------------------------------------------------ setup
 test.beforeAll(async () => {
   issues = [];
-  llm = await startMockLlm(300, { drawReplies });
+  llm = await startMockLlm(300);
 });
 
 test.afterAll(() => {
@@ -140,9 +130,26 @@ test.afterAll(() => {
   llm = null;
 });
 
+// What the mock answers to the picture-planning call of the user's turn (null
+// = the model does not produce a readable plan).
+async function setPlan(plan: {
+  name?: string;
+  description?: string;
+  prompt?: string;
+  refs?: number[];
+} | null): Promise<void> {
+  if (llm) await llm.setImagePlan(plan);
+}
+
 test.beforeEach(async () => {
   issues = [];
   await setDelay(300);
+  await setPlan({
+    name: 'red circle on paper',
+    description: 'A red circle drawn on a white paper sheet',
+    prompt: 'a red circle on a white background',
+    refs: [],
+  });
   await setupCatalog();
   await clearChats();
 });
@@ -380,7 +387,7 @@ test('UX 08: edit flow — focus, edit bar, save and cancel', async ({ page }) =
   await expect(page.getByTestId('input')).toHaveValue('');
 });
 
-test('UX 09: attachments — preview, remove, send with an image', async ({ page }) => {
+test('UX 09: attachments — preview, remove, send as a picture card', async ({ page }) => {
   const attach = path.join(ASSETS, 'attach.png');
   fs.writeFileSync(attach, makePng(240, 160, 200, 120, 40));
   await setDelay(300);
@@ -390,16 +397,24 @@ test('UX 09: attachments — preview, remove, send with an image', async ({ page
   await page.screenshot({ path: `${SHOTS}/ux-09a-attached.png` });
   await page.locator('.thumb-x').click();
   await expect(page.locator('.pending-thumb')).toHaveCount(0);
-  // Re-attach and send.
+  // Re-attach and send: the text and the picture become TWO user messages —
+  // what was typed and a card holding the picture.
   await page.setInputFiles('[data-testid=attach] input', attach);
   await page.getByTestId('input').fill('Look at this picture');
   await page.getByTestId('send').click();
-  await expect(page.locator('.msg.user').first()).toBeVisible();
-  await expect(page.locator('.msg.user .msg-images img').first()).toBeVisible({
-    timeout: 15000,
-  });
-  await expect(assistantMsgs(page).first()).toBeVisible({ timeout: 15000 });
+  await expect(page.locator('.msg.user').first()).toContainText('Look at this picture');
+  const card = page.locator('.msg.user').filter({ has: page.getByTestId('image-card') });
+  await expect(card.locator('img').first()).toBeVisible({ timeout: 15000 });
   await page.screenshot({ path: `${SHOTS}/ux-09b-image-sent.png` });
+  await expect(assistantMsgs(page).first()).toBeVisible({ timeout: 15000 });
+  await expect(page.getByTestId('typing')).toBeHidden({ timeout: 15000 });
+  // A picture with no text at all is just the card. It has to wait for its
+  // turn: during a generation the send button is the cancel, so the reply
+  // above has to finish first.
+  await page.setInputFiles('[data-testid=attach] input', attach);
+  await page.getByTestId('send').click();
+  await expect(cards(page)).toHaveCount(2, { timeout: 15000 });
+  await page.screenshot({ path: `${SHOTS}/ux-09c-picture-only.png` });
 });
 
 test('UX 10: gen mode — draw, pending, ready; cancel -> broken; fail', async ({ page }) => {
@@ -409,7 +424,7 @@ test('UX 10: gen mode — draw, pending, ready; cancel -> broken; fail', async (
   await expect(page.locator('.gen-bar')).toBeVisible();
   await page.screenshot({ path: `${SHOTS}/ux-10a-gen-mode.png` });
 
-  // Draw: the placeholder appears in an assistant message right away…
+  // Draw: a placeholder card appears right away…
   await page.getByTestId('input').fill('a red circle');
   const t0 = Date.now();
   await page.getByTestId('send').click();
@@ -419,7 +434,9 @@ test('UX 10: gen mode — draw, pending, ready; cancel -> broken; fail', async (
   // …the chat is NOT blocked while the image generates in the background.
   await expect(page.getByTestId('send')).toHaveText('➤');
   await expect(page.getByTestId('img-pending')).toBeHidden({ timeout: 20000 });
-  await expect(page.locator('.msg-images img').first()).toBeVisible();
+  await expect(cardImages(page).first()).toBeVisible();
+  // The card says what the picture was drawn from.
+  await expect(page.getByTestId('card-prompt')).toContainText('red circle');
   step('10 image ready total', Date.now() - t0);
   await page.screenshot({ path: `${SHOTS}/ux-10c-ready.png` });
 
@@ -446,25 +463,62 @@ test('UX 10: gen mode — draw, pending, ready; cancel -> broken; fail', async (
   await page.screenshot({ path: `${SHOTS}/ux-10e-failed.png` });
 });
 
-test('UX 11: model-initiated [IMG] and [PHOTO:1]', async ({ page }) => {
-  await setDelay(400);
+test('UX 11: the picture of the user turn (the 📷 button)', async ({ page }) => {
+  await setDelay(200);
   await openApp(page);
-  await page.getByTestId('input').fill('please draw a picture for me');
+  // The button belongs to the user turn only: an empty chat has none.
+  await expect(page.getByTestId('auto-image')).toHaveCount(0);
+  await page.getByTestId('input').fill('Tell me about the weather');
   await page.getByTestId('send').click();
   await expect(assistantMsgs(page).first()).toBeVisible({ timeout: 15000 });
-  // The [IMG] tag became a pending placeholder INSIDE the reply message.
-  await expect(page.getByTestId('img-pending')).toBeVisible({ timeout: 15000 });
-  await page.screenshot({ path: `${SHOTS}/ux-11a-img-tag-pending.png` });
-  await expect(page.getByTestId('img-pending')).toBeHidden({ timeout: 25000 });
-  await expect(page.locator('.msg-images img').first()).toBeVisible();
-  await page.screenshot({ path: `${SHOTS}/ux-11b-img-tag-ready.png` });
+  // Now it is the user's turn — the 📷 appeared.
+  await expect(page.getByTestId('auto-image')).toBeVisible();
+  await page.screenshot({ path: `${SHOTS}/ux-11a-turn-button.png` });
 
-  await page.getByTestId('input').fill('show me a photo');
+  const before = await allMsgs(page).count();
+  await page.getByTestId('auto-image').click();
+  // The placeholder card is in the chat right away (the plan + the drawing run
+  // in the background), showing what the app is doing at the moment.
+  await expect(page.getByTestId('img-pending')).toBeVisible({ timeout: 10000 });
+  await expect(page.getByTestId('img-pending')).toContainText('Planning and drawing');
+  expect(await allMsgs(page).count()).toBe(before + 1);
+  // The user is not blocked: the input and the send button work as usual.
+  await expect(page.getByTestId('send')).toHaveText('➤');
+  await page.screenshot({ path: `${SHOTS}/ux-11b-placeholder.png` });
+
+  // The placeholder turns into the planned picture with its caption.
+  await expect(page.getByTestId('img-pending')).toBeHidden({ timeout: 25000 });
+  await expect(cardImages(page).first()).toBeVisible();
+  await expect(page.getByTestId('card-caption')).toContainText('red circle');
+  await page.screenshot({ path: `${SHOTS}/ux-11c-planned-picture.png` });
+
+  // The picture is the user's own message now, so it is the characters' turn:
+  // the 📷 steps back until they answer.
+  await expect(page.getByTestId('auto-image')).toHaveCount(0);
+});
+
+test('UX 11b: a plan the model cannot make leaves a broken card, not a dead one', async ({
+  page,
+}) => {
+  await setDelay(100);
+  await setPlan(null); // the model answers the planning call with prose
+  await openApp(page);
+  await page.getByTestId('input').fill('Hi!');
   await page.getByTestId('send').click();
-  await expect(assistantMsgs(page)).toHaveCount(2, { timeout: 15000 });
-  // The [PHOTO:1] attaches the character photo with no pending state.
-  await expect(page.locator('.msg-images img').nth(1)).toBeVisible({ timeout: 15000 });
-  await page.screenshot({ path: `${SHOTS}/ux-11c-photo-tag.png` });
+  await expect(assistantMsgs(page).first()).toBeVisible({ timeout: 15000 });
+  await page.getByTestId('auto-image').click();
+  await expect(page.getByTestId('img-pending')).toBeVisible({ timeout: 10000 });
+  // The placeholder never hangs: it becomes the broken card with the reason
+  // and a Regenerate button, and the chat keeps working.
+  await expect(page.getByTestId('img-broken')).toBeVisible({ timeout: 20000 });
+  await expect(page.getByTestId('img-error-text')).toBeVisible();
+  await expect(page.getByTestId('img-regen')).toBeVisible();
+  await page.screenshot({ path: `${SHOTS}/ux-11b2-unplannable.png` });
+  // Regenerating it with the same plan fails the same way, and the user can
+  // still send a message meanwhile.
+  await page.getByTestId('input').fill('anyway, how are you?');
+  await page.getByTestId('send').click();
+  await expect(assistantMsgs(page)).toHaveCount(2, { timeout: 20000 });
 });
 
 test('UX 12: model failure -> red error bubble', async ({ page }) => {
@@ -607,17 +661,19 @@ test('UX 15: mobile — layout, message actions without hover, menus', async ({ 
   await page.screenshot({ path: `${SHOTS}/ux-15g-mobile-settings.png` });
 });
 
-test('UX 16: clicking a chat image adds a gen reference silently (no lightbox)', async ({
+test('UX 16: clicking a card picture opens the lightbox and makes it a reference', async ({
   page,
 }) => {
   await setDelay(200);
   await openApp(page);
-  await page.getByTestId('input').fill('please draw a picture');
+  await page.getByTestId('input').fill('Hello Alice');
   await page.getByTestId('send').click();
-  await expect(page.locator('.msg-images img').first()).toBeVisible({ timeout: 30000 });
-  // Click the image: it opens the lightbox (enlarged) AND adds a generation
-  // reference — the action is now visible, no longer silent.
-  await page.locator('.msg-images img').first().click();
+  await expect(assistantMsgs(page).first()).toBeVisible({ timeout: 15000 });
+  await page.getByTestId('auto-image').click();
+  await expect(cardImages(page).first()).toBeVisible({ timeout: 30000 });
+  // Click the picture: it opens the lightbox (enlarged) AND adds a generation
+  // reference — the action is visible, not silent.
+  await cardImages(page).first().click();
   await expect(page.getByTestId('lightbox')).toBeVisible({ timeout: 5000 });
   await page.screenshot({ path: `${SHOTS}/ux-16-lightbox.png` });
   // The reference is really there: opening the gen mode shows the chip.

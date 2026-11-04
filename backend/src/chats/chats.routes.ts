@@ -1,15 +1,18 @@
 import express from "express";
-import path from "path";
 import { CharactersService } from "../characters/CharactersService";
-import { PathHelper } from "../shared/PathHelper";
 import { ImageGenerationService } from "../image_generation/ImageGenerationService";
 import { ReplyService } from "../reply/ReplyService";
-import { HttpHelper } from "../shared/HttpHelper";
 import { ChatsService } from "./ChatsService";
 
-// The /chats routes: the chat CRUD, the messages (send/edit/delete), the
-// reply queue (POST /reply — one participant's line at a time — and
-// /cancel), and the per-image generation controls (regenerate/cancel).
+// The /chats routes: the chat CRUD, the messages (a text line and the image
+// cards the user attaches), the reply queue (POST /reply — one participant's
+// line at a time — and /cancel), the picture of the user's turn (auto-image)
+// and the per-picture controls (regenerate / cancel / replace / edit).
+//
+// An image is addressed by its id — a path relative to the data folder — and
+// served by the /media route in routes.ts, so the files route used to hang off
+// the chat folder is gone.
+//
 // The domain logic lives in the services (ChatsService, ReplyService); this
 // file is the thin HTTP layer: parsing, validation, status codes.
 export function createChatsRouter(
@@ -25,6 +28,13 @@ export function createChatsRouter(
     if (typeof v === "string" && v) return [v];
     if (!Array.isArray(v)) return [];
     return v.filter((x): x is string => typeof x === "string" && x.length > 0);
+  }
+
+  // The image in a request body: a string that one of the message's cards
+  // actually carries.
+  function imageOf(body: unknown, images: string[]): string | null {
+    const image = (body as { image?: unknown })?.image;
+    return typeof image === "string" && images.includes(image) ? image : null;
   }
 
   router.get("/", (_req, res) => {
@@ -108,11 +118,8 @@ export function createChatsRouter(
     res.json({ deleted: chats.delete(req.params.id) });
   });
 
-  router.get("/:id/files/:name", (req, res) => {
-    HttpHelper.sendImage(res, path.join(PathHelper.chatFilesDir(req.params.id), path.basename(req.params.name)));
-  });
-
-  // Imports a character photo into the chat files/ (for use as a reference)
+  // Imports a character photo into the chat files/ (a reference for the 🎨
+  // mode); the answer is the new image id.
   router.post("/:id/import-photo", (req, res) => {
     const chat = chats.get(req.params.id);
     if (!chat) {
@@ -126,27 +133,38 @@ export function createChatsRouter(
       return;
     }
     const photoPath = characters.photoFile(character.id, String(photo));
-    const name = photoPath ? chats.importCharacterPhoto(chat.id, photoPath) : null;
-    if (!name) {
+    const id = photoPath ? chats.importCharacterPhoto(chat.id, photoPath) : null;
+    if (!id) {
       res.status(404).json({ error: "Photo not found" });
       return;
     }
-    res.json({ name });
+    res.json({ id });
   });
 
   // ---- messages ----
 
-  // Saves the user message. The characters' replies are requested by the
-  // frontend one at a time (POST /reply) — that way it knows who is "typing"
-  // now and adds lines as they are generated.
+  // Saves what the user sent: their text becomes a text message and every
+  // attached picture an image card right after it. The characters' replies are
+  // requested by the frontend one at a time (POST /reply) — that way it knows
+  // who is "typing" now and adds lines as they are generated.
   router.post("/:id/messages", (req, res) => {
-    const chat = chats.get(req.params.id);
-    if (!chat) {
+    const body = req.body ?? {};
+    const text = typeof body.text === "string" ? body.text : "";
+    const images = Array.isArray(body.images) ? body.images : [];
+    if (!text.trim() && images.length === 0) {
+      res.status(400).json({ error: "A message needs a text or a picture" });
+      return;
+    }
+    const result = reply.attachUserImages(req.params.id, text, images);
+    if (!result) {
       res.status(404).json({ error: "Chat not found" });
       return;
     }
-    chats.addUserMessage(chat, req.body?.text ?? "", req.body?.images ?? []);
-    res.json({ chat });
+    if (result.messages.length === 0) {
+      res.status(400).json({ error: "No readable message or picture in the request" });
+      return;
+    }
+    res.json({ chat: result.chat, messages: result.messages });
   });
 
   // The reply of a SINGLE chat character. The frontend calls it for each
@@ -220,8 +238,30 @@ export function createChatsRouter(
     res.json({ chat });
   });
 
-  // Edits an existing message: the text and/or the image list
-  // (a data URL — a new image, a file name — an already uploaded one).
+  // ---- the picture of the user's turn ----
+
+  // Plans and draws a picture for the user's next turn from the whole
+  // dialogue. The answer comes back as soon as the placeholder card is saved:
+  // the model call and the generation run in the background and the client
+  // sees the result through the usual polling, so the user can write and send
+  // their own message meanwhile.
+  router.post("/:id/auto-image", (req, res) => {
+    if (!imageGeneration.hasAvailableGenerator()) {
+      res.status(400).json({ error: "Image generation is not configured" });
+      return;
+    }
+    const fresh = reply.requestUserTurnImage(req.params.id);
+    if (!fresh) {
+      res.status(404).json({ error: "Chat not found" });
+      return;
+    }
+    res.json({ chat: fresh });
+  });
+
+  // ---- one message ----
+
+  // Edits the text of a message: the line of a text message, the description
+  // (caption) of an image card.
   router.patch("/:id/messages/:messageId", (req, res) => {
     const chat = chats.get(req.params.id);
     if (!chat) {
@@ -233,16 +273,12 @@ export function createChatsRouter(
       res.status(404).json({ error: "Message not found" });
       return;
     }
-    const { text, images } = req.body ?? {};
+    const { text } = req.body ?? {};
     if (text !== undefined && typeof text !== "string") {
       res.status(400).json({ error: "Expected text (text field)" });
       return;
     }
-    if (images !== undefined && !Array.isArray(images)) {
-      res.status(400).json({ error: "Expected an image list (images field)" });
-      return;
-    }
-    chats.editMessage(chat, msg, text, images as string[] | undefined);
+    chats.editMessage(chat, msg, typeof text === "string" ? text : msg.text);
     res.json({ chat });
   });
 
@@ -266,11 +302,12 @@ export function createChatsRouter(
   // frontend deletes the last message (DELETE /messages/:id) and requests one
   // line (POST /reply with its author) — no separate route is needed.
 
-  // Regenerates one message image in the BACKGROUND (the domain sequence —
-  // cancel the in-flight job, re-translate the prompt, mark "pending" on the
-  // same reserved name, start the job — is in ReplyService.regenerateImage).
-  // An optional `prompt` (the "edit prompt then regenerate" flow) overrides
-  // the stored prompt / the message text.
+  // ---- one picture of a card ----
+
+  // Regenerates the card's picture in the BACKGROUND (cancel the in-flight
+  // job, re-translate the prompt, mark "pending" on the same id, start the
+  // job — the sequence is in ReplyService.regenerateImage). An optional
+  // `prompt` overrides the stored one.
   router.post("/:id/messages/:messageId/regenerate-image", async (req, res) => {
     const chat = chats.get(req.params.id);
     if (!chat) {
@@ -282,8 +319,8 @@ export function createChatsRouter(
       res.status(404).json({ error: "Message not found" });
       return;
     }
-    const image = req.body?.image;
-    if (typeof image !== "string" || !msg.images.includes(image)) {
+    const image = imageOf(req.body, msg.images);
+    if (!image) {
       res.status(400).json({ error: "The message has no such image" });
       return;
     }
@@ -300,11 +337,9 @@ export function createChatsRouter(
     res.json({ chat: fresh });
   });
 
-  // Replaces a ready message image with a file the user picked (the "replace
-  // with your own image" flow): the data URL is saved into the chat files/ as
-  // a new name and swapped for the old one in the message (the domain part —
-  // save + swap + drop the old generation metadata — is in
-  // ReplyService.replaceImage).
+  // Replaces the card's picture with a file the user picked (a data URL): the
+  // new image is saved under its own id and the card loses its generation data
+  // (the domain part is in ReplyService.replaceImage).
   router.post("/:id/messages/:messageId/replace-image", (req, res) => {
     const chat = chats.get(req.params.id);
     if (!chat) {
@@ -316,9 +351,9 @@ export function createChatsRouter(
       res.status(404).json({ error: "Message not found" });
       return;
     }
-    const image = req.body?.image;
+    const image = imageOf(req.body, msg.images);
     const data = req.body?.data;
-    if (typeof image !== "string" || !msg.images.includes(image)) {
+    if (!image) {
       res.status(400).json({ error: "The message has no such image" });
       return;
     }
@@ -334,9 +369,8 @@ export function createChatsRouter(
     res.json({ chat: fresh });
   });
 
-  // Cancels the in-flight generation of one message image (the domain part —
-  // cancel the job + mark the image "cancelled" — is in
-  // ReplyService.cancelImage).
+  // Cancels the in-flight generation of the card's picture (the domain part —
+  // cancel the job + mark it "cancelled" — is in ReplyService.cancelImage).
   router.post("/:id/messages/:messageId/cancel-image", (req, res) => {
     const chat = chats.get(req.params.id);
     if (!chat) {
@@ -348,12 +382,47 @@ export function createChatsRouter(
       res.status(404).json({ error: "Message not found" });
       return;
     }
-    const image = req.body?.image;
-    if (typeof image !== "string" || !msg.images.includes(image)) {
+    const image = imageOf(req.body, msg.images);
+    if (!image) {
       res.status(400).json({ error: "The message has no such image" });
       return;
     }
     const fresh = reply.cancelImage(chat, msg, image);
+    res.json({ chat: fresh });
+  });
+
+  // Edits what the card says about its picture: the description (what is on
+  // it) and the prompt it should be redrawn with. The sidecar *.json next to
+  // the file is updated along with the message, so the copy the user can
+  // hand-edit never lags behind.
+  router.patch("/:id/messages/:messageId/picture", (req, res) => {
+    const chat = chats.get(req.params.id);
+    if (!chat) {
+      res.status(404).json({ error: "Chat not found" });
+      return;
+    }
+    const msg = chat.messages.find((m) => m.id === req.params.messageId);
+    if (!msg) {
+      res.status(404).json({ error: "Message not found" });
+      return;
+    }
+    const { description, prompt } = req.body ?? {};
+    if (description !== undefined && typeof description !== "string") {
+      res.status(400).json({ error: "Expected description (string)" });
+      return;
+    }
+    if (prompt !== undefined && typeof prompt !== "string") {
+      res.status(400).json({ error: "Expected prompt (string)" });
+      return;
+    }
+    const fresh = reply.editPicture(chat, msg, {
+      ...(description !== undefined ? { description } : {}),
+      ...(prompt !== undefined ? { prompt } : {}),
+    });
+    if (!fresh) {
+      res.status(404).json({ error: "Message not found" });
+      return;
+    }
     res.json({ chat: fresh });
   });
 

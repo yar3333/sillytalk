@@ -87,14 +87,14 @@ export class ImageStore {
     if (!this.genRefs().includes(name)) this.genRefs.set([...this.genRefs(), name]);
   }
   // A character photo becomes a reference: it is imported into the chat files
-  // first, then added to the references.
+  // first (the answer is the new image id), then added to the references.
   addCharacterPhotoRef(photo: string): void {
     const c = this.chatStore.chat();
     const ch = this.chatStore.character();
     if (!c || !ch) return;
     this.api
       .importPhoto(c.id, ch.id, photo)
-      .then((res) => this.addChatRef(res.name))
+      .then((res) => this.addChatRef(res.id))
       .catch((e) => this.ui.error.set(String((e as Error).message)));
   }
 
@@ -121,6 +121,26 @@ export class ImageStore {
       .catch((e) => this.ui.error.set(String((e as Error).message)))
       .finally(() => this.generating.set(false));
     return true;
+  }
+
+  // ---- the picture of the user's turn ----
+  // The 📷 button of the user's turn: the model plans a picture from the whole
+  // dialogue and the generator draws it. The server answers as soon as the
+  // placeholder card is in the chat, the rest happens in the background — the
+  // user can keep typing and send their message meanwhile, and the polling
+  // below turns the placeholder into the picture.
+  readonly requestingTurnImage = signal(false);
+
+  requestTurnImage(): void {
+    const c = this.chatStore.chat();
+    if (!c || this.requestingTurnImage()) return;
+    this.ui.error.set('');
+    this.requestingTurnImage.set(true);
+    this.api
+      .autoImage(c.id)
+      .then((res) => this.chatStore.applyChat(res.chat))
+      .catch((e) => this.ui.error.set(String((e as Error).message)))
+      .finally(() => this.requestingTurnImage.set(false));
   }
 
   // ---- background image jobs: cancel / regenerate / replace ----
@@ -154,6 +174,18 @@ export class ImageStore {
     if (!c) return;
     this.api
       .cancelImage(c.id, messageId, image)
+      .then((res) => this.chatStore.applyChat(res.chat))
+      .catch((e) => this.ui.error.set(String((e as Error).message)));
+  }
+
+  // Edits what a card says about its picture — the description (what is on it)
+  // and the prompt it should be redrawn with. The server writes both into the
+  // message and into the sidecar next to the file.
+  editPicture(messageId: string, patch: { description?: string; prompt?: string }): Promise<void> {
+    const c = this.chatStore.chat();
+    if (!c) return Promise.resolve();
+    return this.api
+      .patchPicture(c.id, messageId, patch)
       .then((res) => this.chatStore.applyChat(res.chat))
       .catch((e) => this.ui.error.set(String((e as Error).message)));
   }

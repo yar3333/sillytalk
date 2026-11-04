@@ -12,8 +12,10 @@ import {
   User,
 } from '../services/api';
 import { InputPanel } from '../components/input-panel/input-panel';
+import { MessageRow } from '../components/message-row/message-row';
 import { ChatStore } from '../services/chat-store';
 import { ConfigStore } from '../services/config-store';
+import { ImageStore } from '../services/image-store';
 import {
   DEFAULT_REASONING_LEVELS,
   chatLabelOf,
@@ -125,8 +127,7 @@ describe('ImageStore — the background image generation', () => {
     getCharacters: () => Promise.resolve([]),
     getUsers: () => Promise.resolve([]),
     getChats: () => Promise.resolve([]),
-    mediaUrl: (chatId: string, name: string) =>
-      `http://localhost:3000/api/chats/${chatId}/files/${name}`,
+    mediaUrl: (id: string) => `http://localhost:3000/api/media?path=${encodeURIComponent(id)}`,
     // The polling: the first read still returns the pending chat, the next
     // one — the ready one (so the timer stops).
     getChat: () => {
@@ -274,8 +275,9 @@ describe('ImageStore — the background image generation', () => {
 });
 
 describe('InputPanel — message editing', () => {
-  const mediaUrl = (chatId: string, name: string) =>
-    `http://localhost:3000/api/chats/${chatId}/files/${name}`;
+  // An image is addressed by its id (a path relative to the data folder) and
+  // served through the media route.
+  const mediaUrl = (id: string) => `http://localhost:3000/api/media?path=${encodeURIComponent(id)}`;
   let store: ChatStore;
 
   beforeEach(async () => {
@@ -315,12 +317,13 @@ describe('InputPanel — message editing', () => {
     return { fixture, el: fixture.nativeElement as HTMLElement };
   }
 
-  it('startEdit substitutes the text into the field and resolves the image preview', async () => {
+  it('startEdit substitutes the text only: the message picture is not re-attached', async () => {
     const { fixture, el } = fixtureWith({
       id: 'msg-1',
       role: 'user',
-      text: 'Hello with an image',
-      images: ['img-1.png'],
+      kind: 'image',
+      text: 'a red boat on the lake',
+      images: ['chat-1/files/a-red-boat-1a2b3c.png'],
       timestamp: 1,
     });
 
@@ -328,10 +331,30 @@ describe('InputPanel — message editing', () => {
     fixture.detectChanges();
     await fixture.whenStable();
 
+    // The field carries text: editing a card corrects its description, the
+    // picture itself stays where it is (no thumbnail to re-post).
     const ta = el.querySelector('textarea') as HTMLTextAreaElement;
-    expect(ta.value).toBe('Hello with an image');
-    const img = el.querySelector('.pending img') as HTMLImageElement;
-    expect(img.src).toBe(mediaUrl('chat-1', 'img-1.png'));
+    expect(ta.value).toBe('a red boat on the lake');
+    expect(store.pendingImages()).toEqual([]);
+    expect(el.querySelector('.pending')).toBeNull();
+  });
+
+  it('an attachment is previewed: a fresh data URL as-is, an existing picture through the media route', async () => {
+    const { fixture, el } = fixtureWith({
+      id: 'msg-1',
+      role: 'user',
+      text: 'hi',
+      images: [],
+      timestamp: 1,
+    });
+    store.onImagesAdded(['data:image/png;base64,aGVsbG8=', 'chat-1/files/a-red-boat-1a2b3c.png']);
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    const imgs = el.querySelectorAll<HTMLElement>('.pending .pending-thumb img');
+    expect(imgs).toHaveLength(2);
+    expect(imgs[0].getAttribute('src')).toBe('data:image/png;base64,aGVsbG8=');
+    expect(imgs[1].getAttribute('src')).toBe(mediaUrl('chat-1/files/a-red-boat-1a2b3c.png'));
   });
 
   it('cancelEdit clears the field and the attached list', async () => {
@@ -344,12 +367,13 @@ describe('InputPanel — message editing', () => {
     });
 
     store.startEdit(store.chat()!.messages[0]);
+    store.onImagesAdded(['data:image/png;base64,aGVsbG8=']);
     fixture.detectChanges();
     await fixture.whenStable();
 
     const ta = el.querySelector('textarea') as HTMLTextAreaElement;
     expect(ta.value).toBe('hello');
-    expect(store.pendingImages()).toEqual(['img-1.png']);
+    expect(store.pendingImages()).toHaveLength(1);
 
     store.cancelEdit();
     fixture.detectChanges();
@@ -439,7 +463,8 @@ describe('InputPanel — message editing', () => {
     await fixture.whenStable();
 
     expect(patched).not.toBeNull();
-    expect(patched!.body).toEqual({ text: 'edited while generating', images: [] });
+    // The PATCH carries the text alone — the pictures are separate messages.
+    expect(patched!.body).toEqual({ text: 'edited while generating' });
     // cancelGeneration was NOT called — the generation is still running.
     expect(store.sending()).toBe(true);
     expect(store.editTargetId()).toBeNull();
@@ -730,19 +755,18 @@ describe('ConfigStore — the entity CRUD (models / characters / users)', () => 
     ]);
 
     // create: the id is generated here
-    store.saveCharacter(null, 'C', 'desc', false);
+    store.saveCharacter(null, 'C', 'desc');
     await tick();
     expect(lastCharacters!.map((c) => c.name).sort()).toEqual(['A', 'B', 'C']);
     const created = lastCharacters!.find((c) => c.name === 'C')!;
     expect(created.id).toMatch(/^c\d+$/);
 
-    store.saveCharacter('a', 'A2', 'new desc', false);
+    store.saveCharacter('a', 'A2', 'new desc');
     await tick();
     expect(lastCharacters!.find((c) => c.id === 'a')).toEqual({
       id: 'a',
       name: 'A2',
       description: 'new desc',
-      accessAllImages: false,
     });
 
     store.deleteCharacter('b');
@@ -777,5 +801,275 @@ describe('ConfigStore — the entity CRUD (models / characters / users)', () => 
     // resolves with the copy's id and updates the list
     expect(await cloned).toBe(created.id + '-copy');
     expect(store.users().map((u) => u.id)).toEqual([created.id, created.id + '-copy']);
+  });
+});
+
+// ---- the picture of the user's turn (the 📷 button) ----
+
+const fakeApiForTurnButton = (overrides: Record<string, unknown> = {}) => ({
+  getConfig: () => Promise.resolve({ llmModels: {} }),
+  imageStatus: () => Promise.resolve({ available: true }),
+  getCharacters: () => Promise.resolve([]),
+  getUsers: () => Promise.resolve([]),
+  getChats: () => Promise.resolve<ChatSummary[]>([]),
+  mediaUrl: (id: string) => `http://localhost:3000/api/media?path=${encodeURIComponent(id)}`,
+  ...overrides,
+});
+
+const turnChat = (messages: ChatMessage[]): Chat => ({
+  id: 'chat-1',
+  characterIds: ['c1'],
+  userId: 'u1',
+  modelId: 'm1',
+  messages,
+});
+const assistantLine: ChatMessage = {
+  id: 'a1',
+  role: 'assistant',
+  kind: 'text',
+  characterId: 'c1',
+  text: 'a line of the character',
+  images: [],
+  timestamp: 2,
+};
+const userLine: ChatMessage = {
+  id: 'u1',
+  role: 'user',
+  kind: 'text',
+  userId: 'u1',
+  text: 'mine',
+  images: [],
+  timestamp: 1,
+};
+
+describe('ChatStore.isUserTurn — when the 📷 button belongs', () => {
+  beforeEach(async () => {
+    await TestBed.resetTestingModule();
+    await TestBed.configureTestingModule({
+      imports: [InputPanel],
+      providers: [{ provide: ApiService, useValue: fakeApiForTurnButton() }],
+    }).compileComponents();
+  });
+
+  function storeWith(chat: Chat, sending = false): ChatStore {
+    const store = TestBed.inject(ChatStore);
+    store.chat.set(chat);
+    store.sending.set(sending);
+    TestBed.inject(ConfigStore).imageGenAvailable.set(true);
+    return store;
+  }
+
+  it('true after the characters answered, false while they still do or the user has the last word', () => {
+    const store = TestBed.inject(ChatStore);
+    store.chat.set(turnChat([]));
+    expect(store.isUserTurn()).toBe(false); // nothing said yet — no turn to draw for
+
+    storeWith(turnChat([userLine, assistantLine]));
+    expect(store.isUserTurn()).toBe(true);
+
+    // the characters are still answering
+    storeWith(turnChat([userLine, assistantLine]), true);
+    expect(store.isUserTurn()).toBe(false);
+
+    // the last line is the user's (their own message, or a card they attached)
+    store.chat.set(turnChat([assistantLine, userLine]));
+    expect(store.isUserTurn()).toBe(false);
+    store.chat.set(
+      turnChat([
+        assistantLine,
+        { id: 'card', role: 'user', kind: 'image', userId: 'u1', text: 'a picture', images: ['x.png'], timestamp: 3 },
+      ]),
+    );
+    expect(store.isUserTurn()).toBe(false);
+
+    // a failed reply is not "the characters had their say"
+    store.chat.set(turnChat([userLine, { ...assistantLine, error: true }]));
+    expect(store.isUserTurn()).toBe(false);
+  });
+
+  it('the button asks the server to draw the picture of the turn and applies the placeholder chat back', async () => {
+    const api = TestBed.inject(ApiService) as unknown as {
+      autoImage: (chatId: string) => Promise<{ chat: Chat }>;
+    };
+    let asked = '';
+    const placeholderChat = turnChat([
+      userLine,
+      assistantLine,
+      {
+        id: 'card-1',
+        role: 'user',
+        kind: 'image',
+        userId: 'u1',
+        text: '',
+        images: ['chat-1/files/a-picture-for-the-conversation-1a2b3c.png'],
+        generation: { source: 'auto', model: 'm1' },
+        imageStatus: { 'chat-1/files/a-picture-for-the-conversation-1a2b3c.png': 'pending' as const },
+        timestamp: 3,
+      },
+    ]);
+    api.autoImage = (chatId: string) => {
+      asked = chatId;
+      return Promise.resolve({ chat: placeholderChat });
+    };
+
+    const store = storeWith(turnChat([userLine, assistantLine]));
+    const fixture = TestBed.createComponent(InputPanel);
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    const el = fixture.nativeElement as HTMLElement;
+    const button = el.querySelector('[data-testid=auto-image]') as HTMLButtonElement;
+    expect(button).toBeTruthy();
+    button.click();
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    expect(asked).toBe('chat-1');
+    // the placeholder card is in the history right away, generating in the
+    // background — the input stays usable
+    const messages = store.chat()!.messages;
+    expect(messages[messages.length - 1].kind).toBe('image');
+    expect(el.querySelector('[data-testid=input]')).toBeTruthy();
+  });
+
+  it('no 📷 when there is no generator to draw with', async () => {
+    const store = storeWith(turnChat([userLine, assistantLine]));
+    TestBed.inject(ConfigStore).imageGenAvailable.set(false);
+    const fixture = TestBed.createComponent(InputPanel);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect((fixture.nativeElement as HTMLElement).querySelector('[data-testid=auto-image]')).toBeNull();
+    // and the action itself refuses without a chat of its own
+    store.chat.set(null);
+    expect(() => TestBed.inject(ImageStore).requestTurnImage()).not.toThrow();
+  });
+});
+
+describe('MessageRow — the image card', () => {
+  const mediaUrl = (id: string) => `http://localhost:3000/api/media?path=${encodeURIComponent(id)}`;
+  const cardImage = 'chat-1/files/a-red-boat-at-dusk-1a2b3c.png';
+
+  beforeEach(async () => {
+    await TestBed.resetTestingModule();
+    await TestBed.configureTestingModule({
+      imports: [MessageRow],
+      providers: [{ provide: ApiService, useValue: fakeApiForTurnButton() }],
+    }).compileComponents();
+  });
+
+  function renderMessage(message: ChatMessage): { fixture: ComponentFixture<MessageRow>; el: HTMLElement } {
+    const fixture = TestBed.createComponent(MessageRow);
+    fixture.componentRef.setInput('message', message);
+    fixture.componentRef.setInput('isLast', false);
+    fixture.detectChanges();
+    return { fixture, el: fixture.nativeElement as HTMLElement };
+  }
+
+  it('shows the picture by its id, its description, the prompt it was drawn from and its references', () => {
+    const { el } = renderMessage({
+      id: 'card-1',
+      role: 'user',
+      kind: 'image',
+      userId: 'u1',
+      text: 'a red boat on a calm lake at dusk',
+      images: [cardImage],
+      generation: { prompt: 'a red boat, the sky orange', refs: ['chat-1/files/a-harbour-9f8e7d.png'], source: 'auto' },
+      timestamp: 3,
+    });
+
+    const img = el.querySelector('.card-body img') as HTMLImageElement;
+    expect(img.getAttribute('src')).toBe(mediaUrl(cardImage));
+    expect(el.querySelector('[data-testid=card-caption]')?.textContent?.trim()).toBe(
+      'a red boat on a calm lake at dusk',
+    );
+    expect(el.querySelector('[data-testid=card-prompt]')?.textContent?.trim()).toBe('a red boat, the sky orange');
+    expect(el.querySelector('[data-testid=card-refs]')?.textContent).toContain('references: 1');
+    // a drawn picture can be redrawn and its prompt changed
+    expect(el.querySelector('[data-testid=img-regenerate]')).toBeTruthy();
+    expect(el.querySelector('[data-testid=img-edit-prompt]')).toBeTruthy();
+    expect(el.querySelector('[data-testid=img-replace]')).toBeTruthy();
+  });
+
+  it('an uploaded photo has no prompt, so it offers no redraw — only the replace', () => {
+    const { el } = renderMessage({
+      id: 'card-2',
+      role: 'user',
+      kind: 'image',
+      userId: 'u1',
+      text: 'my own photo',
+      images: ['chat-1/files/my-photo-1a2b3c.jpg'],
+      generation: { source: 'upload' },
+      timestamp: 3,
+    });
+    expect(el.querySelector('[data-testid=card-prompt]')).toBeNull();
+    expect(el.querySelector('[data-testid=card-refs]')).toBeNull();
+    expect(el.querySelector('[data-testid=img-regenerate]')).toBeNull();
+    expect(el.querySelector('[data-testid=img-edit-prompt]')).toBeNull();
+    expect(el.querySelector('[data-testid=img-replace]')).toBeTruthy();
+  });
+
+  it('a pending auto picture says it is being planned and drawn, and can be cancelled', () => {
+    const { el } = renderMessage({
+      id: 'card-3',
+      role: 'user',
+      kind: 'image',
+      userId: 'u1',
+      text: '',
+      images: [cardImage],
+      generation: { source: 'auto', model: 'm1' },
+      imageStatus: { [cardImage]: 'pending' as const },
+      timestamp: 3,
+    });
+    expect(el.querySelector('[data-testid=img-pending]')).toBeTruthy();
+    expect(el.querySelector('.img-placeholder-label')?.textContent).toContain('Planning and drawing');
+    expect(el.querySelector('[data-testid=img-cancel]')).toBeTruthy();
+    // no caption yet — nothing was agreed about the picture
+    expect(el.querySelector('[data-testid=card-caption]')).toBeNull();
+  });
+
+  it('a manual pending picture is just "generating", and a failed one offers a redraw', () => {
+    const pending = renderMessage({
+      id: 'card-4',
+      role: 'user',
+      kind: 'image',
+      userId: 'u1',
+      text: '',
+      images: [cardImage],
+      generation: { prompt: 'a red fox', source: 'manual' },
+      imageStatus: { [cardImage]: 'pending' as const },
+      timestamp: 3,
+    });
+    expect(pending.el.querySelector('.img-placeholder-label')?.textContent).toContain('Generating');
+    expect(pending.el.querySelector('.img-placeholder-label')?.textContent).not.toContain('Planning');
+
+    const failed = renderMessage({
+      id: 'card-5',
+      role: 'user',
+      kind: 'image',
+      userId: 'u1',
+      text: '',
+      images: [cardImage],
+      generation: { prompt: 'a red fox', source: 'manual' },
+      imageStatus: { [cardImage]: 'failed' as const },
+      imageErrors: { [cardImage]: 'GPU exploded' },
+      timestamp: 3,
+    });
+    expect(failed.el.querySelector('[data-testid=img-broken]')).toBeTruthy();
+    expect(failed.el.querySelector('[data-testid=img-regen]')).toBeTruthy();
+    expect(failed.el.querySelector('.img-error-text')?.textContent).toBe('GPU exploded');
+  });
+
+  it('a text message is still a plain bubble: no card, no picture buttons', () => {
+    const { el } = renderMessage({
+      id: 'msg-1',
+      role: 'assistant',
+      kind: 'text',
+      characterId: 'c1',
+      text: 'just words',
+      images: [],
+      timestamp: 1,
+    });
+    expect(el.querySelector('[data-testid=image-card]')).toBeNull();
+    expect(el.querySelector('.msg-text')?.textContent).toContain('just words');
   });
 });

@@ -3,9 +3,10 @@ import { ChatsService } from "../chats/ChatsService";
 import { ReplyService } from "../reply/ReplyService";
 import { ImageGenerationService } from "./ImageGenerationService";
 
-// The /image routes: the availability flag (the "🎨" button and auto-[IMG] on
-// the frontend) and the one-shot manual generation (the message with the
-// "pending" image is saved right away; the file appears when the job
+// The /image routes: the availability flag (it decides whether the "🎨" prompt
+// box and the "📷" turn button are shown on the frontend) and the one-shot
+// manual generation (the card with the "pending" image is saved right away; the
+// file appears when the job
 // finishes — the domain part, including the English-prompt translation, is
 // in ReplyService.manualImage).
 export function createImageRouter(

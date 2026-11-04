@@ -38,7 +38,7 @@ import { UiStore } from '../../services/ui-store';
         <div class="gen-bar">
           <span class="gen-label">References:</span>
           @for (r of imageStore.genRefs(); track r) {
-            <span class="chip" (click)="imageStore.removeGenRef(r)">✕ {{ r }}</span>
+            <span class="chip" [title]="r" (click)="imageStore.removeGenRef(r)">✕ {{ refLabel(r) }}</span>
           }
           @if (imageStore.genRefs().length === 0) {
             <span class="gen-hint"
@@ -82,6 +82,20 @@ import { UiStore } from '../../services/ui-store';
             (click)="imageStore.toggleGen()"
           >
             🎨
+          </button>
+        }
+        @if (imageStore.canGen() && chatStore.isUserTurn()) {
+          <!-- The user's turn: the model looks over the dialogue, decides what
+               picture fits it, and the generator draws it — all in the
+               background, so typing and sending are not blocked. -->
+          <button
+            class="icon-btn"
+            data-testid="auto-image"
+            [disabled]="imageStore.requestingTurnImage()"
+            title="Draw a picture for this turn (from the conversation)"
+            (click)="imageStore.requestTurnImage()"
+          >
+            {{ imageStore.requestingTurnImage() ? '…' : '📷' }}
           </button>
         }
         <textarea
@@ -145,12 +159,18 @@ export class InputPanel {
     return this.api.photoUrl(this.chatStore.characterId() ?? '', name);
   }
 
-  // The preview source: a data URL (just attached) — as-is,
-  // a file name from the message — via the chat API (otherwise the URL is broken
-  // and the image is black).
+  // A reference chip shows the file name, not the whole data-relative path —
+  // the full id stays in the hover hint.
+  refLabel(id: string): string {
+    return id.slice(id.lastIndexOf('/') + 1);
+  }
+
+  // The preview source: a data URL (just attached) — as-is, an image id of an
+  // existing picture — through the media API (otherwise the URL is broken and
+  // the thumbnail is black).
   pendingSrc(p: string): string {
     if (p.startsWith('data:')) return p;
-    return this.api.mediaUrl(this.chatStore.chat()?.id ?? '', p);
+    return this.api.mediaUrl(p);
   }
 
   onInput(e: Event): void {

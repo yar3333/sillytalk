@@ -1,9 +1,13 @@
+import fs from "fs";
+import os from "os";
+import path from "path";
 import { TextGenerationService } from "./TextGenerationService";
 import { ConfigurationService } from "../configuration/ConfigurationService";
 import { Chat } from "../chats/Chat";
 import { ChatMessage } from "../chats/ChatMessage";
 import { Config } from "../configuration/Config";
 import { Model } from "../configuration/Model";
+import { PathHelper } from "../shared/PathHelper";
 
 // One service instance for the whole suite — the service is stateless, the
 // tests only need its methods.
@@ -85,34 +89,20 @@ describe("systemPromptFor", () => {
     expect(out).not.toContain("talking to");
   });
 
-  it("the [IMG:...] instruction is added only when canGenerateImages", () => {
+  it("offers no image protocol: a character cannot attach or draw pictures", () => {
     const base = { name: "Alice", description: "" };
-    expect(textGenerationService.systemPromptFor(base)).not.toContain("[IMG:");
-    expect(textGenerationService.systemPromptFor(base, null, true)).toContain("[IMG:");
-    expect(textGenerationService.systemPromptFor(base, null, true)).toContain("English");
-    const withInv = textGenerationService.systemPromptFor(base, null, true, "#1 — character photo");
-    expect(withInv).toContain("[IMG:description | 1,3]");
-    expect(withInv).toContain("#1 — character photo");
-    expect(withInv).toContain("MUST");
+    const out = textGenerationService.systemPromptFor(base);
+    expect(out).not.toContain("[IMG:");
+    expect(out).not.toContain("[PHOTO:");
+    expect(out).toContain("text only");
   });
 
   it("group chat: lists the other characters and allows [SILENT]", () => {
     const base = { name: "Alice", description: "a fairy" };
-    const out = textGenerationService.systemPromptFor(base, null, false, undefined, [
-      { name: "Bob", description: "a knight" },
-    ]);
+    const out = textGenerationService.systemPromptFor(base, null, [{ name: "Bob", description: "a knight" }]);
     expect(out).toContain("Bob");
     expect(out).toContain("[SILENT]");
     expect(out).toContain("Alice"); // replies only as itself
-  });
-
-  it("the [PHOTO:...] instruction and inventory work without a generator", () => {
-    const base = { name: "Alice", description: "" };
-    expect(textGenerationService.systemPromptFor(base)).not.toContain("[PHOTO:");
-    const out = textGenerationService.systemPromptFor(base, null, false, "#1 — character photo");
-    expect(out).toContain("[PHOTO:");
-    expect(out).toContain("#1 — character photo");
-    expect(out).not.toContain("[IMG:");
   });
 
   it("without other characters the [SILENT] tag is not mentioned", () => {
@@ -182,68 +172,6 @@ describe("labelHistory", () => {
   });
 });
 
-describe("extractImageRequests", () => {
-  it("removes the tags and returns prompts without references", () => {
-    const { text, requests } = textGenerationService.extractImageRequests(
-      "Hi!\n[IMG: a fluffy cat, sunset] Here is what I drew.\n[IMG:night city]",
-    );
-    expect(text).toBe("Hi!\nHere is what I drew.");
-    expect(requests).toEqual([
-      { prompt: "a fluffy cat, sunset", refs: [] },
-      { prompt: "night city", refs: [] },
-    ]);
-  });
-
-  it("parses reference numbers in a tag", () => {
-    const { text, requests } = textGenerationService.extractImageRequests(
-      "Here you go: [IMG: the same girl on the beach | 1, 3]. Another option: [IMG:a city at night |2]",
-    );
-    expect(text).toBe("Here you go: . Another option:");
-    expect(requests).toEqual([
-      { prompt: "the same girl on the beach", refs: [1, 3] },
-      { prompt: "a city at night", refs: [2] },
-    ]);
-  });
-
-  it("text without tags passes through as-is", () => {
-    const { text, requests } = textGenerationService.extractImageRequests("Just a message");
-    expect(text).toBe("Just a message");
-    expect(requests).toEqual([]);
-  });
-
-  it("a bare [IMG] tag without a colon and description is not a tag", () => {
-    const { text, requests } = textGenerationService.extractImageRequests("Let me see what I have in stock.\n[IMG]");
-    expect(text).toBe("Let me see what I have in stock.\n[IMG]");
-    expect(requests).toEqual([]);
-  });
-});
-
-describe("extractPhotoRequests", () => {
-  it("removes the tags and returns the image numbers", () => {
-    const { text, photos } = textGenerationService.extractPhotoRequests("Here: [PHOTO:2] a photo.\n[photo: 1, 3]");
-    expect(text).toBe("Here: a photo.");
-    expect(photos).toEqual([2, 1, 3]);
-  });
-
-  it("text without tags passes through as-is", () => {
-    const { text, photos } = textGenerationService.extractPhotoRequests("Just a message");
-    expect(text).toBe("Just a message");
-    expect(photos).toEqual([]);
-  });
-
-  it("a bare [PHOTO] without a number is not a tag", () => {
-    const { text, photos } = textGenerationService.extractPhotoRequests("Here are [PHOTO] and [PHOTO:] in the text.");
-    expect(text).toBe("Here are [PHOTO] and [PHOTO:] in the text.");
-    expect(photos).toEqual([]);
-  });
-
-  it("does not mix with the [IMG:...] tag", () => {
-    const { text, photos } = textGenerationService.extractPhotoRequests("[IMG:cat | 1] and [PHOTO:1]");
-    expect(text).toBe("[IMG:cat | 1] and");
-    expect(photos).toEqual([1]);
-  });
-});
-
 describe("translatePrompt", () => {
   const originalFetch = global.fetch;
 
@@ -291,6 +219,28 @@ describe("trimHistory", () => {
 
 describe("chatCompletion", () => {
   const originalFetch = global.fetch;
+  const originalDataDir = process.env.SILLYTALK_DATA_DIR;
+  let dataDir: string;
+  // An existing picture, addressed the way the messages address pictures: by an
+  // id relative to the data folder.
+  let picture: string;
+
+  beforeAll(() => {
+    // A picture is only sent to the provider when its file really exists, so
+    // these tests point the data root at a temp folder and put a file in it.
+    dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "sillytalk-tg-data-"));
+    process.env.SILLYTALK_DATA_DIR = dataDir;
+    const file = path.join(PathHelper.chatFilesDir("chat-test"), "a-photo.png");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, "not-a-real-png");
+    picture = PathHelper.imageIdOf(file);
+  });
+
+  afterAll(() => {
+    if (originalDataDir === undefined) delete process.env.SILLYTALK_DATA_DIR;
+    else process.env.SILLYTALK_DATA_DIR = originalDataDir;
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
 
   afterEach(() => {
     global.fetch = originalFetch;
@@ -305,8 +255,8 @@ describe("chatCompletion", () => {
       .mockResolvedValueOnce(jsonRes({ choices: [{ message: { content: "a reply without a photo" } }] }));
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    const history = [{ ...msg("what is on the photo?"), images: ["a.png"] }];
-    const reply = await textGenerationService.chatCompletion(model, "system", history, "chat-test");
+    const history = [{ ...msg("what is on the photo?"), images: [picture] }];
+    const reply = await textGenerationService.chatCompletion(model, "system", history);
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(reply).toContain("a reply without a photo");
@@ -319,13 +269,7 @@ describe("chatCompletion", () => {
     const fetchMock = jest.fn().mockResolvedValue(jsonRes({ choices: [{ message: { content: "ok" } }] }));
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    await textGenerationService.chatCompletion(
-      model,
-      "system",
-      [msg("hi")],
-      "chat-test",
-      "The next reply is Carol's line.",
-    );
+    await textGenerationService.chatCompletion(model, "system", [msg("hi")], "The next reply is Carol's line.");
     const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
     const body = JSON.parse(init.body) as { messages: Array<{ role: string; content: string }> };
     // system first only: the reminder rides inside the last user message
@@ -338,7 +282,7 @@ describe("chatCompletion", () => {
     const fetchMock = jest.fn().mockResolvedValue(jsonRes({ choices: [{ message: { content: "ok" } }] }));
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    await textGenerationService.chatCompletion(model, "system", [msg("line", "assistant")], "chat-test", "reminder");
+    await textGenerationService.chatCompletion(model, "system", [msg("line", "assistant")], "reminder");
     const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
     const body = JSON.parse(init.body) as { messages: Array<{ role: string; content: string }> };
     expect(body.messages).toHaveLength(3);
@@ -350,7 +294,7 @@ describe("chatCompletion", () => {
     const fetchMock = jest.fn().mockResolvedValue(jsonRes({ choices: [{ message: { content: "ok" } }] }));
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    await textGenerationService.chatCompletion({ ...model, id: "" }, "system", [msg("hi")], "chat-test");
+    await textGenerationService.chatCompletion({ ...model, id: "" }, "system", [msg("hi")]);
     const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
     const body = JSON.parse(init.body) as Record<string, unknown>;
     expect(body).not.toHaveProperty("model");
@@ -360,7 +304,7 @@ describe("chatCompletion", () => {
     const fetchMock = jest.fn().mockResolvedValue(jsonRes({ choices: [{ message: { content: "ok" } }] }));
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    await textGenerationService.chatCompletion({ ...model, reasoning: "high" }, "system", [msg("hi")], "chat-test");
+    await textGenerationService.chatCompletion({ ...model, reasoning: "high" }, "system", [msg("hi")]);
     const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
     const body = JSON.parse(init.body) as Record<string, unknown>;
     // reasoning_effort — OpenAI/llama.cpp, reasoning.effort — OpenRouter.
@@ -374,7 +318,7 @@ describe("chatCompletion", () => {
     const fetchMock = jest.fn().mockResolvedValue(jsonRes({ choices: [{ message: { content: "ok" } }] }));
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    await textGenerationService.chatCompletion({ ...model, reasoning: false }, "system", [msg("hi")], "chat-test");
+    await textGenerationService.chatCompletion({ ...model, reasoning: false }, "system", [msg("hi")]);
     const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
     const body = JSON.parse(init.body) as Record<string, unknown>;
     expect(body).not.toHaveProperty("reasoning_effort");
@@ -388,9 +332,7 @@ describe("chatCompletion", () => {
     const fetchMock = jest.fn().mockResolvedValue(jsonRes({ error: { message: "boom" } }, 500));
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    await expect(textGenerationService.chatCompletion(model, "system", [msg("hi")], "chat-test")).rejects.toThrow(
-      "boom",
-    );
+    await expect(textGenerationService.chatCompletion(model, "system", [msg("hi")])).rejects.toThrow("boom");
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -400,8 +342,8 @@ describe("chatCompletion", () => {
       .mockResolvedValue(jsonRes({ error: { message: "image input is not supported (mmproj missing)" } }, 500));
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    const history = [{ ...msg("photo"), images: ["a.png"] }];
-    await expect(textGenerationService.chatCompletion(model, "system", history, "chat-test")).rejects.toThrow("mmproj");
+    const history = [{ ...msg("photo"), images: [picture] }];
+    await expect(textGenerationService.chatCompletion(model, "system", history)).rejects.toThrow("mmproj");
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
@@ -424,18 +366,173 @@ describe("chatCompletion", () => {
     global.fetch = fetchMock as unknown as typeof fetch;
 
     const ctrl = new AbortController();
-    const pending = textGenerationService.chatCompletion(
-      model,
-      "system",
-      [msg("hi")],
-      "chat-test",
-      undefined,
-      ctrl.signal,
-    );
+    const pending = textGenerationService.chatCompletion(model, "system", [msg("hi")], undefined, ctrl.signal);
     ctrl.abort();
     await expect(pending).rejects.toMatchObject({ name: "AbortError" });
     // the signal reached the provider, and a cancel is not retried
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0][1]).toHaveProperty("signal", ctrl.signal);
+  });
+
+  it("an image card goes to a vision model as the caption plus the picture", async () => {
+    const fetchMock = jest.fn().mockResolvedValue(jsonRes({ choices: [{ message: { content: "ok" } }] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const card: ChatMessage = {
+      ...msg("a red boat on a calm lake", "user"),
+      kind: "image",
+      images: [picture],
+    };
+    await textGenerationService.chatCompletion(model, "system", [card]);
+    const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
+    const body = JSON.parse(init.body) as { messages: Array<{ role: string; content: unknown }> };
+    const content = body.messages[1].content as Array<{ type: string; text?: string }>;
+    expect(content[0].type).toBe("text");
+    expect(content[0].text).toContain("a red boat on a calm lake");
+    expect(content[1].type).toBe("image_url");
+  });
+
+  it("an image card becomes its description for a model without vision", async () => {
+    const fetchMock = jest.fn().mockResolvedValue(jsonRes({ choices: [{ message: { content: "ok" } }] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const card: ChatMessage = { ...msg("a red boat on a calm lake", "user"), kind: "image", images: [picture] };
+    const blank: ChatMessage = { ...msg("", "user"), kind: "image", images: [picture] };
+    await textGenerationService.chatCompletion({ ...model, supportsImages: false }, "system", [card, blank]);
+    const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
+    const body = JSON.parse(init.body) as { messages: Array<{ role: string; content: string }> };
+    // The dialogue still knows what was shown — the caption stands in for the file.
+    expect(body.messages[1].content).toBe("[A picture: a red boat on a calm lake]");
+    expect(body.messages[2].content).toBe("[A picture without a description]");
+    expect(init.body).not.toContain("image_url");
+  });
+
+  it("a picture whose file is gone is skipped, not sent as a broken link", async () => {
+    const fetchMock = jest.fn().mockResolvedValue(jsonRes({ choices: [{ message: { content: "ok" } }] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    // still addressed by a valid id, but the file was deleted (or never written:
+    // a generation the user cancelled before it produced a file)
+    const gone = PathHelper.imageIdOf(path.join(PathHelper.chatFilesDir("chat-test"), "missing.png"));
+    await textGenerationService.chatCompletion(model, "system", [{ ...msg("look"), images: [gone] }]);
+    const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
+    expect(init.body).not.toContain("image_url");
+  });
+});
+
+describe("composeImagePrompt", () => {
+  const originalFetch = global.fetch;
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  function asked(body: string) {
+    return JSON.parse(body) as { messages: Array<{ role: string; content: string }> };
+  }
+
+  it("sends the dialogue and the numbered picture catalogue", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(jsonRes({ choices: [{ message: { content: '{"prompt": "a boat", "refs": [1]}' } }] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await textGenerationService.composeImagePrompt(model, {
+      scene: "Alice: the lake is calm tonight.\nCarol: [shares a picture: a red boat]",
+      images: [
+        { id: "chats/c/files/boat.png", description: "a red boat", owner: "Carol", age: "2 messages ago" },
+        { id: "chats/c/files/harbour.png", prompt: "a harbour at dusk", owner: "Alice", age: "the last message" },
+      ],
+    });
+    const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
+    const body = asked(init.body);
+    expect(body.messages[0].content).toContain("JSON");
+    expect(body.messages[1].content).toContain("Alice: the lake is calm tonight.");
+    expect(body.messages[1].content).toContain("#1 — shows: a red boat; uploaded by the user; shared by Carol; 2 messages ago");
+    expect(body.messages[1].content).toContain("#2 — no description; generated from prompt: a harbour at dusk");
+  });
+
+  it("says so when the conversation has no pictures to reference", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(jsonRes({ choices: [{ message: { content: '{"prompt": "a boat", "refs": []}' } }] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const plan = await textGenerationService.composeImagePrompt(model, { scene: "Alice: hi", images: [] });
+    const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
+    expect(asked(init.body).messages[1].content).toContain("no pictures in this conversation");
+    expect(plan?.refs).toEqual([]);
+  });
+
+  it("reads a plan wrapped in a code fence and prose, and keeps the name and description", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(
+        jsonRes({
+          choices: [
+            {
+              message: {
+                content:
+                  'Here is my plan:\n```json\n{"name": "a red boat at dusk", "description": "a boat on a lake", "prompt": "a red boat on a calm lake at dusk", "refs": ["2"]}\n```\nHope it fits!',
+              },
+            },
+          ],
+        }),
+      );
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const plan = await textGenerationService.composeImagePrompt(model, {
+      scene: "…",
+      images: [{ id: "a.png" }, { id: "b.png" }],
+    });
+    expect(plan).toEqual({
+      name: "a red boat at dusk",
+      description: "a boat on a lake",
+      prompt: "a red boat on a calm lake at dusk",
+      refs: [2],
+    });
+  });
+
+  it("drops reference numbers outside the catalogue and duplicates", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(
+        jsonRes({ choices: [{ message: { content: '{"prompt": "x", "refs": [1, 1, 7, 0, "two"]}' } }] }),
+      );
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const plan = await textGenerationService.composeImagePrompt(model, {
+      scene: "…",
+      images: [{ id: "a.png" }, { id: "b.png" }],
+    });
+    expect(plan?.refs).toEqual([1]);
+  });
+
+  it("falls back to the prompt text when the model sent no name", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(jsonRes({ choices: [{ message: { content: '{"prompt": "a snowy pine ridge", "refs": []}' } }] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const plan = await textGenerationService.composeImagePrompt(model, { scene: "…", images: [] });
+    expect(plan?.name).toBe("a snowy pine ridge");
+  });
+
+  it("answers null when the reply holds no readable plan", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(jsonRes({ choices: [{ message: { content: "I would draw a boat, I think." } }] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await expect(textGenerationService.composeImagePrompt(model, { scene: "…", images: [] })).resolves.toBeNull();
+  });
+
+  it("answers null when the plan has no prompt to draw", async () => {
+    const fetchMock = jest.fn().mockResolvedValue(jsonRes({ choices: [{ message: { content: '{"refs": [1]}' } }] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await expect(
+      textGenerationService.composeImagePrompt(model, { scene: "…", images: [{ id: "a.png" }] }),
+    ).resolves.toBeNull();
   });
 });

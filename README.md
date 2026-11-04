@@ -1,8 +1,8 @@
 # sillytalk
 
 A chat app for talking to **AI characters**, with **first-class image support**. A user chats with a
-configured AI persona; the model can receive images (vision) and generate images — from text, or
-from reference images (the character's "starter" photo set, or images already in the chat).
+configured AI persona; the model can see the pictures in the chat (vision) and draw new ones when
+the user asks for it — from a prompt, or from the reference pictures the user points at.
 
 Think of it as a simpler, modern take on SillyTavern / Agnai.
 
@@ -17,14 +17,34 @@ Stack: **Node.js / Express 5 / TypeScript** (backend) + **Angular 22 / SCSS** (f
   character's avatars are shown next to their messages.
 - Several OpenAI-compatible models (each with its own `baseUrl` and key), including models that can
   see images.
-- Sending text and images; the character's "starter set" images can be used as references.
-- Image generation by several methods (tried in order at startup — the first available one is used):
+- Pictures are the user's: a photo attached with 📎 goes into the chat as its own **picture card**
+  (a message of `kind: 'image'`) right after the caption, with what is on it written on the card.
+  A model that can see images is actually shown them.
+- **🎨** — a prompt box that draws a picture into a card (with the reference pictures of the chat
+  picked as its inputs).
+- **📷** — on your turn, one click lets the model look through the whole dialogue, decide what
+  picture fits the moment, name it in a few English words and pick the references — a placeholder
+  card appears in the chat immediately and turns into the picture when it is ready, so nothing is
+  blocked while it is planned and drawn.
+- Every picture is addressed by its path relative to the data folder and keeps its description and
+  generation data in a `.json` **sidecar next to the file** — merge-on-write, so your own fields and
+  hand edits survive and are read back by the app.
+- Image generation by several backends (all the enabled and available ones are used; the jobs of one
+  generator are queued, different generators run in parallel):
   - **SD API (Stable Diffusion WebUI)** — via the API (`/sdapi/v1/txt2img`, `/sdapi/v1/img2img`);
   - **a local program** — a command launched with `{prompt}`, `{absolutePathsToInputImages}`,
     `{absolutePathToOutputImage}` substituted into the arguments.
+  Generation always runs in the background: the chat stays usable, a spinner with Cancel shows
+  while it runs and a failed picture keeps a Regenerate button. A click on a picture enlarges it
+  and makes it a generation reference.
+- Per-chat settings (the ⋮ next to the chat date — "Chat settings…"): the sampling overrides of
+  this chat (temperature / min-P / repetition penalty, each unset = the provider default) and a
+  free-text addition to the system prompt of every reply here.
 - Black theme, a centered chat column, responsive for both desktop and phone.
-- The "⋮" button in the header — new chat, model pick (submenu), the chat list, settings, delete.
-  Switching the character and the persona — a click on the name in the header.
+- The header: the participant names open the characters menu (who is in the chat and in what order
+  they answer, plus edit/new), the persona name opens the persona menu, the model chip picks the
+  model, the chat date opens the chat list and "new chat", the ⋮ next to it holds "Chat settings…"
+  and "Delete chat", and the "⋮" in the corner opens the settings.
 
 ## Screenshots
 
@@ -135,8 +155,9 @@ The config is flat: the provider connection is stored straight in each `llmModel
 resolved by `resolveApiKey()`: `envKey` (an environment variable) takes priority over
 `apiKey` (the literal key).
 
-- `llmModels[].supportsImages: true` — the model can receive images in the chat (then the sent/
-  reference images are passed into the prompt as `image_url`).
+- `llmModels[].supportsImages: true` — the model can receive images in the chat (then the pictures
+  of the cards are passed into the prompt as `image_url`; without it the cards are described to the
+  model in the history text instead).
 - `llmModels[].reasoning` — the reasoning level: a string — the level, sent in both common
   OpenAI-compatible spellings at once: top-level `reasoning_effort` (OpenAI, llama.cpp) and
   `reasoning.effort` (OpenRouter); `false` = off, sent as `chat_template_kwargs.enable_thinking=false`
@@ -168,13 +189,15 @@ resolved by `resolveApiKey()`: `envKey` (an environment variable) takes priority
 
 - Config: `~/.config/sillytalk/config.json`
 - Characters: `~/.config/sillytalk/characters/<id>/` — folder name = character ID; `character.json`
-  — the name and the description; `photos/` — the "starter" photos (used as references);
+  — the name and the description; `photos/` — the "starter" photos;
   `avatar.jpg` — the avatar
 - Users: `~/.config/sillytalk/users/<id>/` — `user.json` (the name and the persona description);
   `avatar.jpg` — the avatar
 - Chats: `~/.config/sillytalk/chats/chats.db` — a SQLite database (`node:sqlite`) with the chat
-  fields and the messages; the chat images stay files in
-  `~/.config/sillytalk/chats/<chatId>/files/` (the old per-chat `chat.json` files are imported
+  fields and the messages; the pictures stay files in
+  `~/.config/sillytalk/chats/<chatId>/files/`, each with a `<name>.png.json` sidecar next to it
+  (what the picture shows, the prompt it was drawn from, its references and where it came from —
+  hand-editable, and the app reads it back) (the old per-chat `chat.json` files are imported
   into the database once and renamed to `chat.json.migrated`)
 
 ## Project structure
@@ -183,15 +206,21 @@ resolved by `resolveApiKey()`: `envKey` (an environment variable) takes priority
 backend/
   src/
     index.ts       # the express server: the API + the frontend statics
-    routes.ts      # the REST API (config, characters, chats, image, files)
+    routes.ts      # the REST API assembler (config, characters, persons, chats,
+                   # image, media) over the per-domain <domain>.routes.ts
     text_generation/ # the LLM domain: the OpenAI-compatible chat/completions
-                     # call (text + images), prompts, [IMG]/[PHOTO] parsing —
+                     # call (text + the pictures of the cards), the prompts, the
+                     # picture plan of the user's turn —
                      # the TextGenerationService class + its DI token
     image_generation/ # generation: the driver interface, the SD API / local
                       # program backends, the top-level service class
                       # (background jobs); di.ts — the minimal DI container
-    chats/         # the chat storage in the chats.db SQLite database —
+    chats/         # the chat storage in the chats.db SQLite database: the text
+                   # messages and the picture cards, the pictures addressed by
+                   # their data-root-relative ids + the sidecars —
                    # the ChatsService class + its DI token
+    shared/         # cross-domain helpers: the image id <-> path mapping, the
+                    # <image>.json sidecar, avatars, file streaming
     characters/    # the character storage in the characters/<id>/ folders —
                    # the CharactersService class + its DI token
     users.ts       # the user storage in the users/<id>/ folders

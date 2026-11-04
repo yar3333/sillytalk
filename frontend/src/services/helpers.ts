@@ -70,16 +70,17 @@ export function splitNarration(text: string): Array<{ text: string; narration: b
 // The image hover hint: how it was generated (the generator command with the
 // placeholders substituted / a request to SD API / just the prompt). With
 // several enabled generators the image may have been made by any of them, so
-// the command/URL details are shown only for a single one.
+// the command/URL details are shown only for a single one. An uploaded picture
+// has no generation data — its hint is the plain click note.
 export function imageHintFor(config: AppConfig | null, m: ChatMessage, img: string): string {
   const base = 'Click — add as a reference for generation';
-  const prompt = m.imagePrompts?.[img];
+  const prompt = m.generation?.prompt;
   if (prompt === undefined) return base;
   if (!config) return `Prompt: ${prompt}\n${base}`;
   const gens = config.imageGenerators.filter((g) => g.enabled !== false);
   const local = gens.length === 1 ? gens.find(isLocalGenerator) : undefined;
   if (local) {
-    const refs = (m.imageRefs?.[img] ?? []).join(',');
+    const refs = (m.generation?.refs ?? []).join(',');
     const line = [local.command, ...local.args]
       .map((a) =>
         a

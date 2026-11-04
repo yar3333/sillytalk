@@ -10,8 +10,11 @@ import zlib from 'zlib';
 //
 // The mock LLM reads the character name from the system prompt ("You are
 // <name> …") and answers "Mock reply from <name>." — enough for the suite
-// assertions (non-empty text, no [SILENT]/[IMG:]/⚠️, the author is one of the
-// chat participants).
+// assertions (non-empty text, no [SILENT]/⚠️, the author is one of the chat
+// participants). The two side calls of the pipeline are answered by their own
+// branches: the prompt translation ("Translate …") and the picture planning of
+// the user's turn ("You write prompts for an image generator …"), which gets
+// the strict JSON plan the service parses.
 //
 // The mock generator is a node script that sleeps (5 s for prompts containing
 // "slow"), copies a template PNG to the output path, or fails when the prompt
@@ -86,13 +89,30 @@ export interface MockLlm {
   baseUrl: string;
   port: number;
   setDelay(ms: number): Promise<void>;
+  setImagePlan(plan: MockImagePlan | null): Promise<void>;
   close(): void;
 }
 
-// When set, the mock calls it for a normal (non-Translate) reply and uses the
-// returned text (when not null) instead of the default "Mock reply from
-// <name>.". The ux-explore suite uses this to test the model-initiated
-// [IMG:...] / [PHOTO:1] tags.
+// The plan the mock returns for the picture-planning call of the user's turn
+// (the POST /chats/:id/auto-image flow). `refs` are the 1-based numbers of the
+// pictures listed in that request.
+export interface MockImagePlan {
+  name: string;
+  description: string;
+  prompt: string;
+  refs: number[];
+}
+
+const DEFAULT_IMAGE_PLAN: MockImagePlan = {
+  name: 'red circle sketch',
+  description: 'A red circle on a white background',
+  prompt: 'a red circle on a white background',
+  refs: [],
+};
+
+// When set, the mock calls it for a normal (non-translate, non-planning) reply
+// and uses the returned text (when not null) instead of the default "Mock
+// reply from <name>." — the suites use it to answer with specific wording.
 export type MockLlmResponder = (args: {
   system: string;
   text: string;
@@ -100,7 +120,7 @@ export type MockLlmResponder = (args: {
 }) => string | null;
 
 export interface MockLlmOptions {
-  drawReplies?: MockLlmResponder;
+  customReplies?: MockLlmResponder;
 }
 
 // Starts a mock OpenAI-compatible /chat/completions server. The delay before
@@ -111,7 +131,8 @@ export async function startMockLlm(
   opts: MockLlmOptions = {},
 ): Promise<MockLlm> {
   let delay = initialDelayMs;
-  const responder = opts.drawReplies;
+  let imagePlan: MockImagePlan | null = { ...DEFAULT_IMAGE_PLAN };
+  const responder = opts.customReplies;
   const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', (c) => (body += c));
@@ -140,6 +161,13 @@ export async function startMockLlm(
           if (/fail/i.test(text)) content = 'mock failure requested';
           else if (/slow/i.test(text)) content = 'a slow scenic painting';
           else content = 'a red circle on a white background';
+        } else if (system.startsWith('You plan one picture')) {
+          // composeImagePrompt: the JSON plan of the user's-turn picture. null
+          // means the model "refused" — it answers with prose instead, which
+          // the backend has to survive.
+          content = imagePlan
+            ? JSON.stringify(imagePlan)
+            : 'I am not sure what to draw here, sorry.';
         } else {
           const who = /^You are ([A-Za-z]+)/.exec(system)?.[1] ?? 'Model';
           content =
@@ -163,6 +191,10 @@ export async function startMockLlm(
     port,
     setDelay(ms: number) {
       delay = ms;
+      return Promise.resolve();
+    },
+    setImagePlan(plan: MockImagePlan | null) {
+      imagePlan = plan ? { ...DEFAULT_IMAGE_PLAN, ...plan } : null;
       return Promise.resolve();
     },
     close() {

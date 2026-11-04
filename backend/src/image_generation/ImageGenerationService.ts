@@ -2,16 +2,13 @@ import fs from "fs";
 import path from "path";
 import { randomUUID } from "crypto";
 import { ChildProcess } from "child_process";
-import { Character } from "../characters/Character";
-import { Person } from "../persons/Person";
-import { Chat } from "../chats/Chat";
 import { Model } from "../configuration/Model";
 import { PathHelper } from "../shared/PathHelper";
-import { AvatarFile } from "../shared/AvatarFile";
+import { ImageGenerationRecord } from "../shared/ImageMeta";
+import { ImageMetaFile } from "../shared/ImageMetaFile";
 import { ConfigurationService } from "../configuration/ConfigurationService";
 import { createToken } from "../di";
 import { ImageGenerator } from "../configuration/ImageGenerator";
-import { ChatsService } from "../chats/ChatsService";
 import { TextGenerationService } from "../text_generation/TextGenerationService";
 import { IMachineService } from "../machine/IMachineService";
 import { DriverFactory } from "./DriverFactory";
@@ -29,16 +26,18 @@ interface JobEntry {
   cancelled: boolean;
 }
 
-// One entry of the reference-image inventory (see imageInventory).
-export type InventoryItem = { path: string; label: string };
-
 // The DI token of the image-generation service (registered in index.ts).
 export const DI_IMAGE_GENERATION_SERVICE = createToken<ImageGenerationService>("ImageGenerationService");
 
 // The top-level image-generation service: the availability cache and the
-// background job registry. The dependencies (the machine, text-generation,
-// chat and configuration services) are injected; all the state lives on the
-// instance, not in module globals.
+// background job registry. The dependencies (the machine, text-generation and
+// configuration services) are injected; all the state lives on the instance,
+// not in module globals.
+//
+// It knows nothing about chats or messages: a job is given the image id (the
+// path of the picture relative to the data folder) it must write and the ids of
+// the references to draw from, and it settles a result the caller applies to
+// the chat.
 export class ImageGenerationService {
   // ---- available generators ----
   // Every enabled and available generator is used: jobs of different
@@ -60,7 +59,7 @@ export class ImageGenerationService {
   // one is kept (the message stays ready); otherwise the image is left
   // "failed"/broken for the user to regenerate.
 
-  // The in-flight (and queued) jobs, keyed by `${chatId}:${reservedName}`.
+  // The in-flight (and queued) jobs, keyed by the image id they write.
   private readonly jobs = new Map<string, JobEntry>();
   // The per-generator chains: the jobs of one generator are serialized (a
   // local program and the GPU must not be hit by several runs at once), while
@@ -77,9 +76,6 @@ export class ImageGenerationService {
     // The text generation service (translatePrompt for ensureEnglishPrompt) —
     // another domain service, injected like the machine one.
     private readonly textGeneration: TextGenerationService,
-    // The chat service (importCharacterPhoto for the [PHOTO] references) —
-    // the lower-level domain the image refs are copied through.
-    private readonly chats: ChatsService,
     // The configuration service — read on demand, so a job that starts after
     // a settings change probes the current generators.
     private readonly configuration: ConfigurationService,
@@ -100,89 +96,6 @@ export class ImageGenerationService {
     return this.availableDrivers;
   }
 
-  // The reserved file name of a generated image (in the chat files/).
-  newGeneratedImageName(): string {
-    return `gen-${randomUUID().slice(0, 8)}.png`;
-  }
-
-  // ---- reference-image inventory (the [IMG:... | N] / [PHOTO:N] protocol) ----
-
-  // Images the model can reference in the [IMG:description | 1,2] tag:
-  // the character's own photos first, then (when the character has
-  // "access to all images") the photos of the other characters in the chat
-  // and the active persona's photo, then every image already in the chat
-  // (chronological order). The order = the numbers in the tag. `fellows` is
-  // the other character participants and `person` the active persona.
-  imageInventory(
-    chat: Chat,
-    character: Character | null,
-    fellows: Character[] = [],
-    person: Person | null = null,
-  ): InventoryItem[] {
-    const items: InventoryItem[] = [];
-    if (character) {
-      const photosDir = PathHelper.characterPhotosDir(character.id);
-      if (fs.existsSync(photosDir)) {
-        for (const f of fs
-          .readdirSync(photosDir)
-          .filter((f) => /\.(png|jpe?g|webp|gif)$/i.test(f))
-          .sort()) {
-          items.push({ path: path.join(photosDir, f), label: "character photo" });
-        }
-      }
-      // With "access to all images" the character may also reference the
-      // photos of the other characters in the chat and the active persona's
-      // photo (for [IMG:...|N] references and [PHOTO:N] as-is sending).
-      if (character.accessAllImages) {
-        for (const fellow of fellows) {
-          const dir = PathHelper.characterPhotosDir(fellow.id);
-          if (!fs.existsSync(dir)) continue;
-          for (const f of fs
-            .readdirSync(dir)
-            .filter((f) => /\.(png|jpe?g|webp|gif)$/i.test(f))
-            .sort()) {
-            items.push({ path: path.join(dir, f), label: `photo of ${fellow.name}` });
-          }
-        }
-        if (person) {
-          const avatar = AvatarFile.find(PathHelper.personDir(person.id));
-          if (avatar) items.push({ path: avatar, label: `photo of ${person.name}` });
-        }
-      }
-    }
-    const filesDir = PathHelper.chatFilesDir(chat.id);
-    for (const m of chat.messages) {
-      for (const img of m.images ?? []) {
-        const p = path.join(filesDir, path.basename(img));
-        if (fs.existsSync(p)) {
-          items.push({
-            path: p,
-            label: m.role === "user" ? "image from the user" : "image from a reply",
-          });
-        }
-      }
-    }
-    return items;
-  }
-
-  // Tag numbers -> file names in the chat files/. A character photo is copied
-  // into the chat (importCharacterPhoto); chat images are taken as-is.
-  resolveInventoryRefs(chatId: string, indices: number[], inventory: InventoryItem[]): string[] {
-    const refs: string[] = [];
-    const filesDir = PathHelper.chatFilesDir(chatId);
-    for (const n of indices) {
-      const item = inventory[n - 1];
-      if (!item) continue;
-      if (path.dirname(item.path) === filesDir) {
-        refs.push(path.basename(item.path));
-      } else {
-        const name = this.chats.importCharacterPhoto(chatId, item.path);
-        if (name) refs.push(name);
-      }
-    }
-    return refs;
-  }
-
   // ---- prompts ----
 
   // The generation prompts are always in English: if the text has Cyrillic,
@@ -200,16 +113,17 @@ export class ImageGenerationService {
     return /[а-яё]/i.test(text);
   }
 
-  // The job currently registered for the image (a newer one after a
-  // regeneration replaced it), or undefined.
-  getCurrentJob(chatId: string, name: string): ImageJob | undefined {
-    return this.jobs.get(ImageGenerationService.jobKey(chatId, name))?.job;
+  // The job currently registered for an image (a newer one after a
+  // regeneration replaced it), or undefined. An image id is a path relative to
+  // the data folder, so it is unique on its own — no chat in the key.
+  getCurrentJob(id: string): ImageJob | undefined {
+    return this.jobs.get(id)?.job;
   }
 
   // Cancels the in-flight job for the given image. Returns true when a job was
   // cancelled.
-  cancelJob(chatId: string, name: string): boolean {
-    const entry = this.jobs.get(ImageGenerationService.jobKey(chatId, name));
+  cancelJob(id: string): boolean {
+    const entry = this.jobs.get(id);
     if (!entry) return false;
     entry.job.cancel();
     return true;
@@ -222,15 +136,26 @@ export class ImageGenerationService {
     for (const entry of [...this.jobs.values()]) entry.job.cancel();
   }
 
-  // Starts a background generation that writes to the reserved `name` in the
-  // chat files/. The reserved name must already be part of a saved chat message
-  // (with the "pending" status) — the caller updates the chat when `result`
-  // resolves. The job removes itself from the registry when done.
-  startImageJob(opts: { chatId: string; name: string; prompt: string; refFilenames: string[] }): ImageJob {
-    const { chatId, name, prompt, refFilenames } = opts;
-    const key = ImageGenerationService.jobKey(chatId, name);
-    const dir = PathHelper.chatFilesDir(chatId);
-    const target = path.join(dir, name);
+  // Starts a background generation that writes the image `id` (a path relative
+  // to the data folder) which must already be reserved in a saved chat message
+  // with the "pending" status. `refs` are image ids too. The caller updates the
+  // chat when `result` resolves. The job removes itself from the registry when
+  // done.
+  //
+  // On success the generation data is mirrored into the sidecar *.json next to
+  // the file (the prompt, the references, the generator that ran) so the
+  // picture carries its own story outside the database; a description the user
+  // wrote in the meantime is left alone (the write merges, it does not replace).
+  startImageJob(opts: {
+    id: string;
+    prompt: string;
+    refs: string[];
+    chatId?: string;
+    meta?: ImageGenerationRecord;
+  }): ImageJob {
+    const { id, prompt, refs, chatId, meta } = opts;
+    const target = PathHelper.resolveImageId(id);
+    const dir = target ? path.dirname(target) : null;
     const entry: JobEntry = {
       job: null as unknown as ImageJob,
       aborts: [],
@@ -239,20 +164,21 @@ export class ImageGenerationService {
     };
 
     const run = async (driver: IImageGeneratorDriver): Promise<ImageJobResult> => {
-      // Was there a usable image at the name before this run? (decides whether
+      if (!target || !dir) return { status: "failed", error: `Unknown image id "${id}"`, hadOld: false };
+      // Was there a usable image at the id before this run? (decides whether
       // a failure/cancel leaves the message ready on the old file or broken.)
       const hadOld = fs.existsSync(target);
       // A unique temp file in the same dir, so the rename is atomic.
-      const temp = path.join(dir, `.${name}.tmp-${randomUUID().slice(0, 8)}`);
+      const temp = path.join(dir, `.${path.basename(target)}.tmp-${randomUUID().slice(0, 8)}`);
       try {
         if (entry.cancelled) return { status: "cancelled", hadOld };
         // The chat was deleted while the job waited in the queue — do not
         // recreate its folder with an orphan image.
-        if (!fs.existsSync(PathHelper.chatDir(chatId))) {
+        if (chatId && !fs.existsSync(PathHelper.chatDir(chatId))) {
           return { status: "failed", error: "The chat was deleted", hadOld: false };
         }
         fs.mkdirSync(dir, { recursive: true });
-        const refPaths = this.resolveRefPaths(dir, refFilenames);
+        const refPaths = ImageGenerationService.resolveRefPaths(refs);
         await driver.run(
           prompt,
           refPaths,
@@ -270,6 +196,21 @@ export class ImageGenerationService {
           return { status: "cancelled", hadOld };
         }
         fs.renameSync(temp, target);
+        ImageMetaFile.write(target, {
+          ...(meta
+            ? {
+                prompt: meta.prompt,
+                negativePrompt: meta.negativePrompt,
+                refs: meta.refs,
+                source: meta.source,
+                model: meta.model,
+                width: meta.width,
+                height: meta.height,
+                steps: meta.steps,
+              }
+            : {}),
+          generator: driver.key,
+        });
         return { status: "ok" };
       } catch (err) {
         try {
@@ -281,8 +222,8 @@ export class ImageGenerationService {
         return { status: "failed", error: (err as Error).message, hadOld };
       } finally {
         // A newer job (a regeneration) may have replaced this one in the
-        // registry — then it owns the key and this job must not remove it.
-        if (this.jobs.get(key) === entry) this.jobs.delete(key);
+        // registry — then it owns the entry and this job must not remove it.
+        if (this.jobs.get(id) === entry) this.jobs.delete(id);
       }
     };
 
@@ -321,7 +262,7 @@ export class ImageGenerationService {
         return {
           status: "failed",
           error: "Image generation is not configured (no available generator)",
-          hadOld: fs.existsSync(target),
+          hadOld: target !== null && fs.existsSync(target),
         };
       }
       return enqueue(driver);
@@ -338,7 +279,7 @@ export class ImageGenerationService {
       },
     };
     entry.job = job;
-    this.jobs.set(key, entry);
+    this.jobs.set(id, entry);
     return job;
   }
 
@@ -357,18 +298,15 @@ export class ImageGenerationService {
     return best;
   }
 
-  // Resolves reference file names (inside the chat files/) to existing
-  // absolute paths.
-  private resolveRefPaths(dir: string, refFilenames: string[]): string[] {
-    return refFilenames.map((name) => path.join(dir, path.basename(name))).filter((p) => fs.existsSync(p));
+  // Resolves reference image ids to the absolute paths of the files that exist.
+  private static resolveRefPaths(refIds: string[]): string[] {
+    return refIds
+      .map((id) => PathHelper.resolveImageId(id))
+      .filter((p): p is string => p !== null && fs.existsSync(p));
   }
 
   // enabled defaults to true — a generator without the field is on.
   private static isEnabled(g: ImageGenerator): boolean {
     return g.enabled !== false;
-  }
-
-  private static jobKey(chatId: string, name: string): string {
-    return `${chatId}:${name}`;
   }
 }

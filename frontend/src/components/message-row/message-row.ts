@@ -6,10 +6,15 @@ import { ImageStore } from '../../services/image-store';
 import { UiStore } from '../../services/ui-store';
 import { avatarLetter, imageHintFor, splitNarration as splitNarrationParts } from '../../services/helpers';
 
-// One message in the history: the avatar, the sender, the text, the images
-// and the hover buttons (edit / delete / regenerate).
+// One line of the history. Two shapes:
+//   a text message — the author, the line, the hover buttons (edit / delete);
+//   an image card  — the picture with its description (what is on it) and,
+//                    when it was drawn, the prompt and the references it came
+//                    from, plus the picture's own buttons (regenerate / change
+//                    the prompt / replace with your own file).
 // Chat actions (edit / delete / regenerate the reply) — ChatStore; image
-// actions (cancel / regenerate one image, add a reference) — ImageStore.
+// actions (cancel / regenerate / replace / edit one picture, add a reference) —
+// ImageStore.
 @Component({
   selector: 'app-message-row',
   template: `
@@ -26,7 +31,8 @@ import { avatarLetter, imageHintFor, splitNarration as splitNarrationParts } fro
         data-testid="message"
         [class.user]="message().role === 'user'"
         [class.error]="message().error"
-        [class.has-images]="message().images.length > 0"
+        [class.has-images]="isCard()"
+        [class.card]="isCard()"
         [class.regenerating]="isRegenerating()"
       >
         @if (isLast() && message().role === 'assistant') {
@@ -40,8 +46,9 @@ import { avatarLetter, imageHintFor, splitNarration as splitNarrationParts } fro
         }
         <button
           class="msg-edit edit"
+          data-testid="msg-edit"
           (click)="chatStore.startEdit(message())"
-          title="Edit the message"
+          [title]="isCard() ? 'Edit the description' : 'Edit the message'"
         >
           ✎
         </button>
@@ -66,19 +73,15 @@ import { avatarLetter, imageHintFor, splitNarration as splitNarrationParts } fro
           🧹
         </button>
         <div class="msg-sender" data-testid="msg-sender">{{ senderName() }}</div>
-        <div class="msg-text">
-          @for (p of splitNarration(message().text); track $index) {
-            <span [class.narration]="p.narration">{{ p.text }}</span>
-          }
-        </div>
-        @if (message().images.length) {
-          <div class="msg-images">
+
+        @if (isCard()) {
+          <div class="card-body" data-testid="image-card">
             @for (img of message().images; track img) {
               @switch (imgStatus(img)) {
                 @case ('pending') {
                   <span class="img-placeholder img-pending" data-testid="img-pending">
                     <span class="img-spinner img-spinner-lg" aria-hidden="true"></span>
-                    <span class="img-placeholder-label">Generating the image…</span>
+                    <span class="img-placeholder-label">{{ pendingLabel() }}</span>
                     <button
                       class="img-cancel"
                       data-testid="img-cancel"
@@ -94,7 +97,7 @@ import { avatarLetter, imageHintFor, splitNarration as splitNarrationParts } fro
                     <span class="img-broken-icon" aria-hidden="true">🖼️</span>
                     <span class="img-placeholder-label">Image generation failed</span>
                     @if (imageError(img)) {
-                      <span class="img-error-text" [title]="imageError(img)">{{ imageError(img) }}</span>
+                      <span class="img-error-text" data-testid="img-error-text" [title]="imageError(img)">{{ imageError(img) }}</span>
                     }
                     <button
                       class="img-regen-btn"
@@ -126,40 +129,42 @@ import { avatarLetter, imageHintFor, splitNarration as splitNarrationParts } fro
                       [src]="mediaUrl(img)"
                       (click)="onImageClick(img)"
                       [title]="imageHint(img)"
+                      [alt]="caption() || 'Picture shared by ' + senderName()"
                     />
-                    @if (message().role === 'assistant') {
-                      @if (editingImg() === img) {
-                        <!-- The inline prompt editor: change the prompt and
-                             regenerate the image with it (the image is drawn
-                             in the background against the same name). -->
-                        <div class="img-edit-panel">
-                          <textarea
-                            rows="3"
-                            data-testid="img-prompt-input"
-                            placeholder="Prompt for the image"
-                            (input)="onPromptInput($event)"
-                            [value]="promptDraft()"
-                          ></textarea>
-                          <div class="img-edit-actions">
-                            <button
-                              class="img-edit-btn primary"
-                              data-testid="img-prompt-save"
-                              (click)="savePromptEdit(img)"
-                            >
-                              Regenerate
-                            </button>
-                            <button
-                              class="img-edit-btn"
-                              data-testid="img-prompt-cancel"
-                              (click)="cancelPromptEdit()"
-                            >
-                              Cancel
-                            </button>
-                          </div>
+                    @if (editingImg() === img) {
+                      <!-- The inline prompt editor: change the prompt and
+                           redraw the picture with it (in the background, into
+                           the same file). -->
+                      <div class="img-edit-panel">
+                        <textarea
+                          rows="3"
+                          data-testid="img-prompt-input"
+                          placeholder="Prompt for the image"
+                          (input)="onPromptInput($event)"
+                          [value]="promptDraft()"
+                        ></textarea>
+                        <div class="img-edit-actions">
+                          <button
+                            class="img-edit-btn primary"
+                            data-testid="img-prompt-save"
+                            (click)="savePromptEdit(img)"
+                          >
+                            Regenerate
+                          </button>
+                          <button
+                            class="img-edit-btn"
+                            data-testid="img-prompt-cancel"
+                            (click)="cancelPromptEdit()"
+                          >
+                            Cancel
+                          </button>
                         </div>
-                      } @else {
+                      </div>
+                    } @else {
+                      @if (canRedraw()) {
                         <button
                           class="img-regen"
+                          data-testid="img-regenerate"
                           (click)="imageStore.regenerateImage(message().id, img)"
                           title="Regenerate the image"
                         >
@@ -173,24 +178,36 @@ import { avatarLetter, imageHintFor, splitNarration as splitNarrationParts } fro
                         >
                           ✎
                         </button>
-                        <label
-                          class="img-replace"
-                          data-testid="img-replace"
-                          title="Replace the image with your own"
-                        >
-                          ⬆
-                          <input
-                            type="file"
-                            hidden
-                            accept="image/*"
-                            (change)="onReplace($event, img)"
-                          />
-                        </label>
                       }
+                      <label
+                        class="img-replace"
+                        data-testid="img-replace"
+                        title="Replace the image with your own"
+                      >
+                        ⬆
+                        <input type="file" hidden accept="image/*" (change)="onReplace($event, img)" />
+                      </label>
                     }
                   </span>
                 }
               }
+            }
+            @if (caption()) {
+              <div class="card-caption" data-testid="card-caption">{{ caption() }}</div>
+            }
+            @if (promptText()) {
+              <div class="card-prompt" data-testid="card-prompt" [title]="promptText()">
+                {{ promptText() }}
+              </div>
+            }
+            @if (refsText()) {
+              <div class="card-refs" data-testid="card-refs">{{ refsText() }}</div>
+            }
+          </div>
+        } @else {
+          <div class="msg-text">
+            @for (p of splitNarration(message().text); track $index) {
+              <span [class.narration]="p.narration">{{ p.text }}</span>
             }
           </div>
         }
@@ -209,16 +226,46 @@ export class MessageRow implements OnDestroy {
   readonly message = input.required<ChatMessage>();
   readonly isLast = input.required<boolean>();
 
+  // An image card carries one picture with its own description and generation
+  // data; a text message is a line of the dialogue.
+  isCard(): boolean {
+    return this.message().kind === 'image';
+  }
+  caption(): string {
+    return this.message().text.trim();
+  }
+  // What the picture was drawn from — shown under it so the user can see and
+  // reuse it. Empty for an uploaded file, which has no prompt.
+  promptText(): string {
+    return this.message().generation?.prompt?.trim() ?? '';
+  }
+  // How many reference pictures it was drawn from (their file names would only
+  // be noise here — the hover hint of the image lists them).
+  refsText(): string {
+    const n = this.message().generation?.refs?.length ?? 0;
+    return n > 0 ? `references: ${n}` : '';
+  }
+  // A picture can be redrawn only when there is a prompt to draw from — an
+  // uploaded photo has none until the user writes one.
+  canRedraw(): boolean {
+    return this.promptText().length > 0;
+  }
+  pendingLabel(): string {
+    return this.message().generation?.source === 'auto'
+      ? 'Planning and drawing the picture…'
+      : 'Generating the image…';
+  }
+
   // The inline prompt editor: which image is being re-prompted and the draft
   // text. Local to the row — one image is edited at a time.
   readonly editingImg = signal<string | null>(null);
   readonly promptDraft = signal('');
 
   // Opens the inline prompt editor for one image, pre-filled with its stored
-  // prompt (the hint text is not editable — the stored prompt is).
+  // prompt (the description is edited in the bottom field, not here).
   startPromptEdit(img: string): void {
     this.editingImg.set(img);
-    this.promptDraft.set(this.message().imagePrompts?.[img] ?? '');
+    this.promptDraft.set(this.promptText());
   }
   onPromptInput(e: Event): void {
     this.promptDraft.set((e.target as HTMLTextAreaElement).value);
@@ -226,9 +273,9 @@ export class MessageRow implements OnDestroy {
   cancelPromptEdit(): void {
     this.editingImg.set(null);
   }
-  // Saves the typed prompt: regenerates the image against the same name with
-  // it ("edit prompt then regenerate") and closes the editor. An empty prompt
-  // is refused — the image needs a description to draw.
+  // Saves the typed prompt: redraws the picture with it against the same file
+  // ("edit prompt then regenerate") and closes the editor. An empty prompt is
+  // refused — the image needs a description to draw.
   savePromptEdit(img: string): void {
     const prompt = this.promptDraft().trim();
     if (!prompt) {
@@ -239,16 +286,15 @@ export class MessageRow implements OnDestroy {
     void this.imageStore.regenerateImage(this.message().id, img, prompt);
   }
 
-  // Replaces the image with a file the user picks: read as a data URL and
-  // handed to the server (swap in the message), no generation round-trip.
+  // Replaces the picture with a file the user picks: read as a data URL and
+  // handed to the server (swap in the card, its generation data goes with the
+  // old file), no generation round-trip.
   onReplace(e: Event, img: string): void {
     const input = e.target as HTMLInputElement;
     const file = input.files?.[0];
     input.value = '';
     if (!file) return;
-    void this.readFile(file).then((data) =>
-      this.imageStore.replaceImage(this.message().id, img, data),
-    );
+    void this.readFile(file).then((data) => this.imageStore.replaceImage(this.message().id, img, data));
   }
   private readFile(file: File): Promise<string> {
     return new Promise((resolve, reject) => {
@@ -320,7 +366,7 @@ export class MessageRow implements OnDestroy {
   }
 
   mediaUrl(img: string): string {
-    return this.api.mediaUrl(this.chatStore.chat()?.id ?? '', img);
+    return this.api.mediaUrl(img);
   }
   imageHint(img: string): string {
     return imageHintFor(this.configStore.config(), this.message(), img);
@@ -332,8 +378,8 @@ export class MessageRow implements OnDestroy {
     return this.message().imageStatus?.[img] ?? null;
   }
   // Clicking a ready image: add it as a generation reference AND open it in
-  // the lightbox (enlarged), so the action is visible and the user can see
-  // the image larger.
+  // the lightbox (enlarged), so the action is visible and the user can see the
+  // image larger.
   onImageClick(img: string): void {
     this.imageStore.addChatRef(img);
     this.imageStore.openLightbox(this.mediaUrl(img));
@@ -367,11 +413,7 @@ export class MessageRow implements OnDestroy {
   // with a brightness wave sweeping across the bubble's border from left to
   // right instead of a separate "typing…" row below).
   isRegenerating(): boolean {
-    return (
-      this.isLast() &&
-      this.message().role === 'assistant' &&
-      this.chatStore.regenerating()
-    );
+    return this.isLast() && this.message().role === 'assistant' && this.chatStore.regenerating();
   }
 
   // The lines and the author descriptions /* ... */ separately — for highlighting.

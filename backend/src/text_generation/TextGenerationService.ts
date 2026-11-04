@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { Chat, ChatSampling } from "../chats/Chat";
-import { ChatMessage } from "../chats/ChatMessage";
+import { ChatMessage, isImageMessage } from "../chats/ChatMessage";
 import { Config } from "../configuration/Config";
 import { Model } from "../configuration/Model";
 import { PathHelper } from "../shared/PathHelper";
@@ -11,8 +11,29 @@ import { createToken } from "../di";
 // The DI token of the LLM service (registered in index.ts).
 export const DI_TEXT_GENERATION_SERVICE = createToken<TextGenerationService>("TextGenerationService");
 
-// A model request to generate an image: prompt + reference numbers from the inventory (from 1).
-export type ImageRequest = { prompt: string; refs: number[] };
+// One picture the image-prompt request may use as material: its id (a path
+// relative to the data folder), what is on it and how it got there. The model
+// picks the references by the 1-based number it sees in the list.
+export type ImageBrief = {
+  id: string;
+  description?: string;
+  prompt?: string;
+  // Who showed the user this picture ("the user", "Alice") and when it
+  // appeared ("3 messages ago"), so the model can tell the recent from the old.
+  owner?: string;
+  age?: string;
+  // upload — the user attached it, manual/auto — it was generated.
+  origin?: string;
+};
+
+// What the image-prompt request answers: a short English name for the file,
+// the caption of the result, the generation prompt and the reference numbers.
+export type ImagePromptPlan = {
+  name: string;
+  description: string;
+  prompt: string;
+  refs: number[];
+};
 
 // One part of an OpenAI-compatible message content: text or an inline image.
 type ContentPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
@@ -20,13 +41,18 @@ type ContentPart = { type: "text"; text: string } | { type: "image_url"; image_u
 type MessageParam = { role: string; content: string | ContentPart[] };
 
 // The top-level LLM service: the OpenAI-compatible provider client
-// (chatCompletion — text + images with the no-mmproj retry, translatePrompt)
-// and the prompt/history helpers the reply pipeline is built from (the system
-// prompt, the [IMG]/[PHOTO] tag parsing, the [SILENT] handling, author labels,
-// history trimming). The service is stateless — every call works on its
-// arguments; the provider key and the model list are resolved through the
-// lower-level configuration service, the chat file paths through the shared
-// data layout.
+// (chatCompletion — text + images with the no-mmproj retry, translatePrompt,
+// composeImagePrompt) and the prompt/history helpers the reply pipeline is
+// built from (the system prompt, the [SILENT] handling, author labels, history
+// trimming). The service is stateless — every call works on its arguments; the
+// provider key and the model list are resolved through the lower-level
+// configuration service, the image files through the shared data layout (an
+// image is named by its path relative to the data folder).
+//
+// A character never asks for an image: the [IMG]/[PHOTO] tag protocol is gone,
+// and the system prompt no longer offers one. Pictures are the user's own —
+// attached, drawn on request, or planned by composeImagePrompt for the user's
+// turn.
 export class TextGenerationService {
   constructor(private readonly configuration: ConfigurationService) {}
 
@@ -58,17 +84,13 @@ export class TextGenerationService {
   // person — the active persona (users/<id>/user.json); if it has a persona
   // description, the model knows who it is talking to. fellowCharacters — the
   // other characters in the chat: in a group chat the prompt explains the reply
-  // order and allows staying silent with the [SILENT] tag. canGenerateImages
-  // enables the instruction about self-initiated image generation with the
-  // [IMG:description | refs] tag; imageInventory — a text list of available
-  // reference images (built by routes from ImageGenerationService.imageInventory).
-  // The inventory is included regardless of the generator: the [PHOTO:number]
-  // tag works by it too — send an existing image as-is without generation.
+  // order and allows staying silent with the [SILENT] tag.
+  //
+  // The prompt offers no image protocol: a character cannot attach or generate
+  // a picture — those are the user's messages only.
   systemPromptFor(
     character: { name: string; description: string },
     person?: { name: string; description: string } | null,
-    canGenerateImages = false,
-    imageInventory?: string,
     fellowCharacters: Array<{ name: string; description: string }> = [],
   ): string {
     let prompt = `You are ${character.name}. ${character.description}\nStay in character; never break role.`;
@@ -94,60 +116,9 @@ export class TextGenerationService {
         "\nIf it is not your turn, no one addressed you and you have nothing to add to the conversation — " +
         "output exactly [SILENT] instead of a reply and nothing else. In all other cases reply as usual.";
     }
-    if (canGenerateImages) {
-      prompt +=
-        "\nYou can create images: insert a [IMG:detailed scene description] tag into your reply, and the tag will be replaced with a real image. " +
-        "If the image should be based on specific existing images (a person's appearance from a photo, a scene, a style) — reference them by number: [IMG:description | 1,3]. " +
-        "Write the scene description in the tag in English ONLY (the generator understands it best); 1–3 sentences is enough. " +
-        "If the user explicitly asks you to send or show a photo — you MUST insert the tag. " +
-        "On your own initiative, insert the tag when you want to show an image.";
-    }
-    if (imageInventory) {
-      prompt +=
-        "\nYou can also send one of the images below as-is, without generating a new one: insert a [PHOTO:number] tag " +
-        "(several at once — comma separated: [PHOTO:1,3]), and the tag will be replaced by that image. " +
-        "The numbering matches the [IMG] reference numbers.\n" +
-        "Available images:\n" +
-        imageInventory;
-    }
+    prompt +=
+      "\nYou cannot send or create images — text only. When the user shares a picture, describe or react to it in words instead.";
     return prompt;
-  }
-
-  // Extracts [IMG:description] / [IMG:description | 1,3] tags from a model reply.
-  // Strict format: without a colon and a description ([IMG]) it is not a tag —
-  // otherwise a model that copied the tag literally would get an empty-prompt image.
-  extractImageRequests(text: string): { text: string; requests: ImageRequest[] } {
-    const requests: ImageRequest[] = [];
-    const clean = text.replace(
-      /\[IMG:\s*([^\]|]*?)(?:\s*\|\s*([^\]]*))?\][ \t]*/gi,
-      (_match, desc: string, refsStr?: string) => {
-        requests.push({
-          prompt: desc.trim(),
-          refs: (refsStr ?? "")
-            .split(",")
-            .map((s) => parseInt(s.trim(), 10))
-            .filter((n) => Number.isFinite(n) && n > 0),
-        });
-        return "";
-      },
-    );
-    return { text: clean.replace(/\n{3,}/g, "\n\n").trim(), requests };
-  }
-
-  // Extracts [PHOTO:number] / [PHOTO:1,3] tags from a model reply — a request
-  // to send an existing image from the inventory (a character photo or a chat
-  // image) as-is, without generation. Strict format: numbers only — a bare
-  // [PHOTO] or [PHOTO:] is not a tag and stays literal text.
-  extractPhotoRequests(text: string): { text: string; photos: number[] } {
-    const photos: number[] = [];
-    const clean = text.replace(/\[PHOTO:\s*(\d+(?:\s*,\s*\d+)*)\s*\][ \t]*/gi, (_match, nums: string) => {
-      for (const part of nums.split(",")) {
-        const n = parseInt(part.trim(), 10);
-        if (Number.isFinite(n) && n > 0) photos.push(n);
-      }
-      return "";
-    });
-    return { text: clean.replace(/\n{3,}/g, "\n\n").trim(), photos };
   }
 
   // The character decided to stay silent: the reply is only the [SILENT] tag
@@ -225,6 +196,106 @@ export class TextGenerationService {
     ]);
   }
 
+  // ---- planning a picture for the user's turn ----
+
+  // Asks the model to plan the picture the user wants on their own turn: it
+  // gets the whole dialogue, who is in it, and a numbered list of the pictures
+  // the chat already has (with what is on them and how they got there), and
+  // answers with the scene to draw, a short English name for the file, the
+  // caption of the result, and the numbers of the pictures worth using as
+  // references.
+  //
+  // The answer is JSON the model has to produce — models wrap it in prose or a
+  // code fence, so it is extracted rather than parsed as-is, and a plan that
+  // cannot be read is reported as null so the caller can fall back to something
+  // sensible instead of failing the user's request.
+  async composeImagePrompt(
+    model: Model,
+    input: {
+      scene: string;
+      images: ImageBrief[];
+      signal?: AbortSignal;
+      sampling?: ChatSampling;
+    },
+  ): Promise<ImagePromptPlan | null> {
+    const list =
+      input.images.length === 0
+        ? "There are no pictures in this conversation yet, so the picture must be drawn from the text alone."
+        : input.images
+            .map((img, i) => {
+              const bits = [
+                img.description ? `shows: ${img.description}` : "no description",
+                img.prompt ? `generated from prompt: ${img.prompt}` : "uploaded by the user",
+                img.owner ? `shared by ${img.owner}` : "",
+                img.age ?? "",
+              ].filter(Boolean);
+              return `#${i + 1} — ${bits.join("; ")}`;
+            })
+            .join("\n");
+
+    const answer = await this.requestCompletion(
+      model,
+      [
+        {
+          role: "system",
+          content:
+            "You plan one picture for the next message of the user in a roleplay chat. " +
+            "Look at the conversation and decide what the user would want to show right now.\n" +
+            "Answer with ONE JSON object and nothing else:\n" +
+            '{"name": "2-5 english words naming the picture", ' +
+            '"description": "one sentence saying what the finished picture shows", ' +
+            '"prompt": "the image generation prompt, in english, 1-3 sentences: subjects, action, setting, lighting, style", ' +
+            '"refs": [numbers of the existing pictures to use as references, [] for none]}\n' +
+            "Rules: everything in english; the prompt describes a single concrete scene, not a story; " +
+            "use a reference whenever the picture must keep a face, an outfit, a place or a style from an existing one; " +
+            "the numbers in refs must come from the list below.",
+        },
+        { role: "user", content: `${input.scene}\n\nPictures in this conversation:\n${list}` },
+      ],
+      input.signal,
+      input.sampling,
+    );
+
+    const plan = TextGenerationService.parseJsonPlan(answer);
+    if (!plan) return null;
+    const prompt = typeof plan.prompt === "string" ? plan.prompt.trim() : "";
+    if (!prompt) return null;
+    const refs = Array.isArray(plan.refs)
+      ? plan.refs
+          .map((n) => (typeof n === "number" ? n : parseInt(String(n), 10)))
+          .filter((n) => Number.isFinite(n) && n >= 1 && n <= input.images.length)
+      : [];
+    const name = typeof plan.name === "string" ? plan.name.trim() : "";
+    const description = typeof plan.description === "string" ? plan.description.trim() : "";
+    return {
+      name: name || prompt,
+      description,
+      prompt,
+      refs: [...new Set(refs)],
+    };
+  }
+
+  // Pulls the JSON object out of a model answer (bare, in a ``` fence, or
+  // wrapped in a sentence). Null when there is nothing readable in it.
+  private static parseJsonPlan(text: string): Record<string, unknown> | null {
+    const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(text);
+    for (const candidate of [fenced?.[1], text]) {
+      if (!candidate) continue;
+      const start = candidate.indexOf("{");
+      const end = candidate.lastIndexOf("}");
+      if (start === -1 || end <= start) continue;
+      try {
+        const parsed = JSON.parse(candidate.slice(start, end + 1)) as unknown;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          return parsed as Record<string, unknown>;
+        }
+      } catch {
+        // try the next candidate
+      }
+    }
+    return null;
+  }
+
   // The main model call of a chat reply: the system prompt + the labeled
   // history (with images for a model that supports them) + an optional closing
   // note. When the provider rejects the request because of an image (a model
@@ -234,7 +305,6 @@ export class TextGenerationService {
     model: Model,
     systemPrompt: string,
     history: ChatMessage[],
-    chatId: string,
     closingNote?: string,
     signal?: AbortSignal,
     sampling?: ChatSampling,
@@ -242,7 +312,10 @@ export class TextGenerationService {
     const toMessages = (withImages: boolean): MessageParam[] => {
       const msgs: MessageParam[] = [
         { role: "system", content: systemPrompt },
-        ...history.map((m) => ({ role: m.role, content: withImages ? this.buildContent(model, m, chatId) : m.text })),
+        ...history.map((m) => ({
+          role: m.role,
+          content: withImages ? this.buildContent(model, m) : TextGenerationService.historyText(m),
+        })),
       ];
       if (closingNote) {
         // The role reminder must stand at the END of the context, but providers
@@ -347,23 +420,49 @@ export class TextGenerationService {
   }
 
   // Message content for the provider: the text plus, for a model with image
-  // support, the message images as image_url data-URIs (missing files are
-  // silently dropped).
-  private buildContent(model: Model, message: ChatMessage, chatId: string): string | ContentPart[] {
-    const filesDir = PathHelper.chatFilesDir(chatId);
-    const images = (message.images ?? [])
-      .map((name) => path.join(filesDir, path.basename(name)))
-      .filter((file) => fs.existsSync(file));
+  // support, the message images as image_url data-URIs. An image is addressed
+  // by its id (a path relative to the data folder); a missing file — a picture
+  // that is still being generated, or one the user deleted — is skipped.
+  //
+  // A model without vision gets a sentence in place of the picture: the card's
+  // description, so the dialogue still knows what was shown.
+  private buildContent(model: Model, message: ChatMessage): string | ContentPart[] {
+    const files = (message.images ?? [])
+      .map((id) => PathHelper.resolveImageId(id))
+      .filter((file): file is string => file !== null && fs.existsSync(file));
 
-    if (model.supportsImages && images.length > 0) {
+    if (isImageMessage(message)) {
+      const caption = message.text.trim();
+      if (!model.supportsImages || files.length === 0) return TextGenerationService.historyText(message);
+      const parts: ContentPart[] = [];
+      parts.push({
+        type: "text",
+        text: caption ? `A picture you are shown, it shows: ${caption}` : "A picture you are shown.",
+      });
+      for (const file of files) {
+        parts.push({ type: "image_url", image_url: { url: TextGenerationService.imageDataUrl(file) } });
+      }
+      return parts;
+    }
+
+    if (model.supportsImages && files.length > 0) {
       const parts: ContentPart[] = [];
       if (message.text) parts.push({ type: "text", text: message.text });
-      for (const file of images) {
+      for (const file of files) {
         parts.push({ type: "image_url", image_url: { url: TextGenerationService.imageDataUrl(file) } });
       }
       return parts;
     }
     return message.text;
+  }
+
+  // The text stand-in of a message, for a model that cannot see: an image card
+  // becomes its description (or a plain note when nobody wrote one), everything
+  // else is its own text.
+  private static historyText(message: ChatMessage): string {
+    if (!isImageMessage(message)) return message.text;
+    const caption = message.text.trim();
+    return caption ? `[A picture: ${caption}]` : "[A picture without a description]";
   }
 
   private static imageDataUrl(file: string): string {

@@ -84,6 +84,50 @@ export class PathHelper {
     return path.join(PathHelper.chatDir(chatId, root), "files");
   }
 
+  // ---- image identifiers ----
+  //
+  // An image is identified by its path RELATIVE TO THE DATA ROOT, with "/" as
+  // the separator — "chats/<chatId>/files/a-sunset-over-the-sea-3f2a1c.png".
+  // The id is what the chat messages store, what the API carries and what a
+  // sidecar *.json lists as a generation reference, so a chat folder stays
+  // portable and a hand-edited sidecar can point at any image of the data
+  // folder. A domain folder that was moved out of the root
+  // (SILLYTALK_CHATS_DIR pointing elsewhere) still works: its id simply
+  // starts with "..", and resolveImageId accepts anything that resolves back
+  // inside one of the known roots.
+
+  // Absolute path -> id.
+  static imageIdOf(absPath: string): string {
+    return path.relative(PathHelper.configDir(), absPath).split(path.sep).join("/");
+  }
+
+  // Id -> absolute path, or null when it escapes every data folder (a
+  // hand-edited chat or sidecar must not turn the image route into an
+  // arbitrary file reader).
+  static resolveImageId(id: string): string | null {
+    if (!id || id.includes("\0")) return null;
+    const abs = path.resolve(PathHelper.configDir(), id.split("/").join(path.sep));
+    return PathHelper.dataRoots().some((root) => PathHelper.isInside(abs, root)) ? abs : null;
+  }
+
+  // The folders an image is allowed to live in: the data root plus the
+  // per-domain overrides (which may point outside it).
+  private static dataRoots(): string[] {
+    return [
+      ...new Set([
+        PathHelper.configDir(),
+        PathHelper.chatsDir(),
+        PathHelper.charactersDir(),
+        PathHelper.personsDir(),
+      ]),
+    ].map((p) => path.resolve(p));
+  }
+
+  private static isInside(target: string, root: string): boolean {
+    const prefix = root.endsWith(path.sep) ? root : root + path.sep;
+    return target === root || target.startsWith(prefix);
+  }
+
   // Creates the data root and the domain folders (when missing).
   static ensureDirs(): void {
     fs.mkdirSync(PathHelper.configDir(), { recursive: true });

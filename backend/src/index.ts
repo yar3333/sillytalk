@@ -37,7 +37,6 @@ container.register(
     new ImageGenerationService(
       c.resolve(DI_MACHINE_SERVICE),
       c.resolve(DI_TEXT_GENERATION_SERVICE),
-      c.resolve(DI_CHATS_SERVICE),
       c.resolve(DI_CONFIGURATION_SERVICE),
     ),
 );
