@@ -26,6 +26,10 @@ export interface Character {
   id: string;
   name: string;
   description: string;
+  // How the character looks, in English, written for the image generator (the
+  // generator has never heard their name). "Fill from photos" writes it from
+  // the character's photo set; the picture planner puts it into every prompt.
+  look?: string;
   photos?: string[]; // the character's "starter" photo set (🎨 reference picker)
   hasAvatar?: boolean; // is there a characters/<id>/avatar.*
 }
@@ -35,6 +39,8 @@ export interface User {
   id: string;
   name: string;
   description: string;
+  // The persona's appearance, as in Character.look.
+  look?: string;
   hasAvatar?: boolean; // is there a users/<id>/avatar.*
 }
 
@@ -108,6 +114,9 @@ export interface ChatMessage {
   userId?: string;
   // The card's generation data (absent when the user uploaded the file).
   generation?: ImageGenerationData;
+  // Who is ON the picture: the participant ids ("char:alice", "user:carol")
+  // the picture planner uses to draw the same person twice in a row.
+  depicts?: string[];
   // Generation status of the message's images (id -> status): only the images
   // still being generated ("pending") or whose generation failed ("failed") or
   // was cancelled ("cancelled") are listed — an id absent from the map is a
@@ -159,6 +168,10 @@ export interface Chat {
   // A free-text addition appended to the system prompt of every reply in
   // this chat (empty/absent — nothing is added).
   systemSuffix?: string;
+  // One look for every picture of this chat, appended to each generation prompt
+  // ("photorealistic, 35mm, warm light"). Without it every plan picks its own
+  // style and the pictures of one conversation drift apart.
+  stylePrompt?: string;
   messages: ChatMessage[];
 }
 
@@ -256,6 +269,14 @@ export class ApiService {
     return this.req<{ id: string; users: User[] }>(`/persons/${id}/clone`, { method: 'POST' });
   }
 
+  // Writes the appearance note of a character / persona from their pictures
+  // (their photo set and avatar, or, with none to look at, from the card text).
+  // The answer goes into the dialog's Look field — the user saves it themselves.
+  fillLook(kind: 'character' | 'user', id: string): Promise<{ look: string }> {
+    const base = kind === 'user' ? '/persons' : '/characters';
+    return this.req<{ look: string }>(base + '/' + id + '/look', { method: 'POST' });
+  }
+
   getChats(): Promise<ChatSummary[]> {
     return this.req<ChatSummary[]>('/chats');
   }
@@ -345,7 +366,14 @@ export class ApiService {
   patchPicture(
     chatId: string,
     messageId: string,
-    patch: { description?: string; prompt?: string; image?: string; kind?: 'generated' | 'file' },
+    patch: {
+      description?: string;
+      prompt?: string;
+      image?: string;
+      kind?: 'generated' | 'file';
+      refs?: string[];
+      depicts?: string[];
+    },
   ): Promise<{ chat: Chat }> {
     return this.req('/chats/' + chatId + '/messages/' + messageId + '/picture', {
       method: 'PATCH',
@@ -360,8 +388,13 @@ export class ApiService {
   }
 
   // The prompt for a picture card, planned from the dialogue ("From the chat").
-  composePicturePrompt(chatId: string, messageId?: string): Promise<{ prompt: string; description: string }> {
-    return this.req<{ prompt: string; description: string }>('/image/prompt', {
+  // The references come back with it: the prompt says what each of them is for,
+  // so saving one without the others would redraw something else.
+  composePicturePrompt(
+    chatId: string,
+    messageId?: string,
+  ): Promise<{ prompt: string; description: string; refs: string[] }> {
+    return this.req<{ prompt: string; description: string; refs: string[] }>('/image/prompt', {
       method: 'POST',
       body: JSON.stringify({ chatId, messageId }),
     });

@@ -74,6 +74,15 @@ export class ComfyUiDriver implements IImageGeneratorDriver {
 
   private readonly base: string;
 
+  // How many references this model takes: the highest template its workflow
+  // FILE holds. Read live rather than cached, because the file is exactly the
+  // thing the user may replace between two pictures — and the planner above
+  // needs the number before the job exists, so it does not promise the user a
+  // second face the workflow has nowhere to load.
+  get maxRefs(): number {
+    return comfyUiMaxRefs(comfyUiWorkflowSet(this.cfg.model));
+  }
+
   constructor(private readonly cfg: ComfyUiSettings) {
     this.base = ComfyUiDriver.normalizeUrl(cfg.url ?? "");
     // Two generators on one server (one model each) are two generators…
@@ -111,10 +120,11 @@ export class ComfyUiDriver implements IImageGeneratorDriver {
           `defines (the app can draw with: ${comfyUiModelNames().join(", ")})`,
       );
     }
-    // The file decides how many references this model takes — asking for more
-    // is refused here, before a picture is uploaded or a job queued: the
-    // template of the highest count has no widget for an extra one, and
-    // drawing from it anyway would quietly drop the reference on the floor.
+    // The file decides how many references this model takes — the run is
+    // clamped to it by the service above, so by the time a job reaches here it
+    // fits. The check stays: a driver can also be driven directly (a test, a
+    // future caller) and drawing from a template with no place for the extra
+    // picture would drop the reference on the floor without a word.
     const maxRefs = comfyUiMaxRefs(set);
     if (refPaths.length > maxRefs) {
       throw new Error(

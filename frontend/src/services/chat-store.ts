@@ -601,6 +601,7 @@ export class ChatStore {
     name: string;
     sampling: { temperature?: number; minP?: number; repetitionPenalty?: number };
     systemSuffix: string;
+    stylePrompt?: string;
   }): void {
     const c = this.chat();
     if (!c) return;
@@ -609,6 +610,7 @@ export class ChatStore {
         name: settings.name.trim(),
         sampling: settings.sampling,
         systemSuffix: settings.systemSuffix,
+        ...(settings.stylePrompt !== undefined ? { stylePrompt: settings.stylePrompt } : {}),
       })
       .then((ch) => {
         this.setChat(ch);

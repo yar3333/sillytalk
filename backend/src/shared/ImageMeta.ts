@@ -23,6 +23,12 @@ export type ImageMeta = {
   // How the image got here: uploaded by the user, drawn on request (the 🎨
   // mode), or drawn automatically for the user's turn.
   source?: "upload" | "manual" | "auto";
+  // Who is visible on the picture: cast refs ("char:alice", "user:carol") of
+  // the people in it. The picture planner offers such a picture as the look
+  // reference of those people, so the next one keeps the same face. The ids are
+  // the user's own — hand-edit this to say who is in a photo the app did not
+  // plan.
+  depicts?: string[];
   // The generator that produced it (the driver key: a local program command or
   // an SD API URL) and the model that wrote the prompt (an llmModels key).
   generator?: string;

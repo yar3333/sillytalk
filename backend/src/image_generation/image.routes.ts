@@ -70,9 +70,11 @@ export function createImageRouter(
   });
 
   // The prompt for a card, planned by the model from the dialogue (the "From
-  // the chat" button). The answer also carries the description the plan
-  // suggests; 502 — the model gave nothing usable (it never fails the request
-  // with an exception: a missing model is the same as an unreadable answer).
+  // the chat" button). The answer is the finished prompt, the description the
+  // plan suggests and the reference pictures it was built around — the three
+  // belong together, since the prompt says what each of those images is for.
+  // 502 — the model gave nothing usable (it never fails the request with an
+  // exception: a missing model is the same as an unreadable answer).
   router.post("/prompt", async (req, res) => {
     try {
       const { chatId, messageId } = req.body ?? {};
@@ -90,7 +92,7 @@ export function createImageRouter(
         res.status(502).json({ error: "The model did not describe a picture to draw" });
         return;
       }
-      res.json({ prompt: plan.prompt, description: plan.description });
+      res.json(plan);
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }

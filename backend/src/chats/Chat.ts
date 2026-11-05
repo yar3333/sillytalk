@@ -29,5 +29,9 @@ export type Chat = {
   // A free-text addition appended to the system prompt of every reply in
   // this chat (the user's extra instructions — style, quirks, etc.).
   systemSuffix?: string;
+  // One look for every picture of this chat, appended to each generation
+  // prompt ("photorealistic, 35mm, warm light"). Without it every plan invents
+  // its own style and the pictures of one conversation drift apart.
+  stylePrompt?: string;
   messages: ChatMessage[];
 };

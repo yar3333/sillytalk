@@ -81,6 +81,7 @@ export class CharactersService {
     const data = {
       name: character.name ?? "",
       description: character.description ?? "",
+      ...(character.look ? { look: character.look } : {}),
     };
     fs.writeFileSync(PathHelper.characterFile(character.id, root), JSON.stringify(data, null, 2), "utf-8");
   }
@@ -108,6 +109,7 @@ export class CharactersService {
       id: newId,
       name: `${source.name} (copy)`,
       description: source.description,
+      ...(source.look ? { look: source.look } : {}),
     });
     return newId;
   }
@@ -181,6 +183,7 @@ export class CharactersService {
         id,
         name: typeof data.name === "string" ? data.name : id,
         description: typeof data.description === "string" ? data.description : "",
+        ...(typeof data.look === "string" && data.look ? { look: data.look } : {}),
       };
     } catch {
       return null;

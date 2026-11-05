@@ -1155,7 +1155,12 @@ describe('PictureDialog — the picture editor', () => {
       pictureCatalog: () => Promise.resolve({ images: [cardImage, otherImage] }),
       composePicturePrompt: (chatId: string, messageId?: string) => {
         planned.push({ chatId, messageId });
-        return Promise.resolve({ prompt: 'a planned prompt', description: 'a planned description' });
+        return Promise.resolve({
+          prompt: 'a planned prompt',
+          description: 'a planned description',
+          // the plan names these pictures in order, so they belong to the prompt
+          refs: ['chat-1/files/the-fox-face-9f8e7d.png'],
+        });
       },
       tunePicturePrompt: (chatId: string, prompt: string) => {
         tuned.push({ chatId, prompt });
@@ -1270,6 +1275,71 @@ describe('PictureDialog — the picture editor', () => {
     expect((el.querySelector('[data-testid=picture-description]') as HTMLTextAreaElement).value).toBe(
       'a picture the model saw',
     );
+  });
+
+  it('"From the chat" also hands over the pictures its prompt names, and Save keeps them with it', async () => {
+    const face = 'chat-1/files/the-fox-face-9f8e7d.png';
+    const { fixture, el } = await render(card());
+    (el.querySelector('[data-testid=picture-prompt-from-chat]') as HTMLButtonElement).click();
+    await tick();
+    await tick();
+    fixture.detectChanges();
+
+    // the reference set the prompt speaks about is shown under it
+    const thumbs = [...el.querySelectorAll('.ref-thumb')] as HTMLImageElement[];
+    expect(thumbs.map((t) => t.getAttribute('src'))).toEqual([mediaUrl(face)]);
+
+    (el.querySelector('[data-testid=picture-save]') as HTMLButtonElement).click();
+    await tick();
+
+    // a redraw reads the prompt AND the pictures it names — one without the
+    // other would draw something else
+    expect(patched).toEqual([
+      {
+        chatId: 'chat-1',
+        messageId: 'card-1',
+        patch: {
+          description: 'a fox in the snow',
+          kind: 'generated',
+          prompt: 'a planned prompt',
+          refs: [face],
+        },
+      },
+    ]);
+  });
+
+  it('the "who is on this picture" chips say who the next picture may draw', async () => {
+    const { fixture, el } = await render(card({ depicts: ['char:c1'] }));
+    const config = TestBed.inject(ConfigStore);
+    config.characters.set([{ id: 'c1', name: 'Alice', description: '' }]);
+    config.users.set([{ id: 'u1', name: 'Carol', description: '' }]);
+    fixture.detectChanges();
+
+    const chips = [...el.querySelectorAll('[data-testid=picture-depicts]')] as HTMLButtonElement[];
+    expect(chips.map((c) => c.textContent?.trim())).toEqual(['Alice', 'Carol']);
+    // the card already says Alice; nobody else is on it
+    expect(chips.map((c) => c.classList.contains('on'))).toEqual([true, false]);
+
+    chips[1].click();
+    fixture.detectChanges();
+    (el.querySelector('[data-testid=picture-save]') as HTMLButtonElement).click();
+    await tick();
+
+    expect(patched[0]?.patch).toMatchObject({ depicts: ['char:c1', 'user:u1'] });
+  });
+
+  it('a card nobody touched is saved without touching its people or its references', async () => {
+    const { fixture, el } = await render(card({ depicts: ['char:c1'], generation: { prompt: 'a red fox', source: 'auto', refs: [otherImage] } }));
+    fixture.detectChanges();
+    (el.querySelector('[data-testid=picture-save]') as HTMLButtonElement).click();
+    await tick();
+
+    // only what the dialog actually shows: the description and the prompt
+    expect(patched[0]?.patch).toEqual({
+      description: 'a fox in the snow',
+      kind: 'generated',
+      prompt: 'a red fox',
+    });
   });
 
   it('an uploaded picture opens in "from a file": the catalog id pick saves the card as a file', async () => {
@@ -1550,6 +1620,23 @@ describe('The chat title and cloning a chat', () => {
     await new Promise((r) => setTimeout(r, 0));
 
     expect(patchBodies[0]).toMatchObject({ name: '' });
+  });
+
+  it('the picture style of the chat is carried and saved with it', async () => {
+    const store = TestBed.inject(ChatStore);
+    store.chat.set({ ...turnChat([]), stylePrompt: 'watercolour, soft edges' });
+    const fixture = TestBed.createComponent(ChatSettingsDialog);
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+
+    const style = el.querySelector('[data-testid=chat-style-input]') as HTMLTextAreaElement;
+    expect(style.value).toBe('watercolour, soft edges');
+    style.value = 'photorealistic, 35mm, warm light';
+    style.dispatchEvent(new Event('input'));
+    (el.querySelector('[data-testid=chat-settings-save]') as HTMLButtonElement).click();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(patchBodies[0]).toMatchObject({ stylePrompt: 'photorealistic, 35mm, warm light' });
   });
 
   it('the chat list rows show the title and keep the characters, the persona and the last message date in the hint', () => {

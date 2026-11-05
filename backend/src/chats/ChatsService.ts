@@ -151,6 +151,7 @@ export class ChatsService {
       modelId: chat.modelId,
       sampling: chat.sampling,
       systemSuffix: chat.systemSuffix,
+      stylePrompt: chat.stylePrompt,
     });
   }
 
@@ -287,6 +288,7 @@ export class ChatsService {
       modelId: source.modelId,
       ...(source.sampling ? { sampling: { ...source.sampling } } : {}),
       ...(source.systemSuffix ? { systemSuffix: source.systemSuffix } : {}),
+      ...(source.stylePrompt ? { stylePrompt: source.stylePrompt } : {}),
       messages: [],
     };
     const sourceDir = PathHelper.chatFilesDir(source.id, this.chatsRoot());
@@ -378,6 +380,7 @@ export class ChatsService {
       userId?: string;
       description?: string;
       generation?: ImageGenerationData;
+      depicts?: string[];
       status?: "pending" | "failed" | "cancelled";
       error?: string;
     } = {},
@@ -390,13 +393,14 @@ export class ChatsService {
       text: opts.description ?? "",
       images: [image],
       generation: opts.generation,
+      depicts: opts.depicts && opts.depicts.length > 0 ? opts.depicts : undefined,
       imageStatus: opts.status ? { [image]: opts.status } : undefined,
       imageErrors: opts.status && opts.error ? { [image]: opts.error } : undefined,
       timestamp: Date.now(),
     };
     chat.messages.push(message);
     this.insertMessage(chat.id, message);
-    this.writeSidecar(image, opts.description, opts.generation);
+    this.writeSidecar(image, opts.description, opts.generation, message.depicts);
     return message;
   }
 
@@ -424,7 +428,7 @@ export class ChatsService {
     this.db()
       .prepare("UPDATE messages SET data = ? WHERE chat_id = ? AND id = ?")
       .run(JSON.stringify(message), chat.id, message.id);
-    if (isImageMessage(message)) this.writeSidecar(message.images[0], text, message.generation);
+    if (isImageMessage(message)) this.writeSidecar(message.images[0], text, message.generation, message.depicts);
   }
 
   // The caption of one message row, by ids (a background job that finally knows
@@ -444,7 +448,30 @@ export class ChatsService {
     }
     msg.text = text;
     db.prepare("UPDATE messages SET data = ? WHERE chat_id = ? AND id = ?").run(JSON.stringify(msg), chatId, messageId);
-    if (isImageMessage(msg)) this.writeSidecar(msg.images[0], text, msg.generation);
+    if (isImageMessage(msg)) this.writeSidecar(msg.images[0], text, msg.generation, msg.depicts);
+    return true;
+  }
+
+  // Who a card claims is on its picture (cast refs), written by ids the same
+  // way setMessageText writes the caption: the sidecar next to the file is
+  // refreshed with it, so the picture carries its cast outside the database and
+  // the user can correct it by hand. Returns false when the row is gone.
+  setMessageDepicts(chatId: string, messageId: string, depicts: string[]): boolean {
+    const db = this.db();
+    const row = db.prepare("SELECT data FROM messages WHERE chat_id = ? AND id = ?").get(chatId, messageId) as
+      | MessageRow
+      | undefined;
+    if (!row) return false;
+    let msg: ChatMessage;
+    try {
+      msg = JSON.parse(row.data) as ChatMessage;
+    } catch {
+      return false;
+    }
+    if (depicts.length > 0) msg.depicts = depicts;
+    else delete msg.depicts;
+    db.prepare("UPDATE messages SET data = ? WHERE chat_id = ? AND id = ?").run(JSON.stringify(msg), chatId, messageId);
+    if (isImageMessage(msg)) this.writeSidecar(msg.images[0], msg.text, msg.generation, msg.depicts);
     return true;
   }
 
@@ -458,6 +485,10 @@ export class ChatsService {
     patch: {
       description?: string;
       prompt?: string;
+      // The people visible on the picture (cast refs). Given as [] — nobody is
+      // claimed, which stops the card being offered as somebody's look
+      // reference.
+      depicts?: string[];
       // undefined — keep the generation block as it is; null — the card stops
       // claiming a generation (the picture is just a file now); an object —
       // replaces the block (the caller merges what it keeps).
@@ -465,6 +496,10 @@ export class ChatsService {
     },
   ): void {
     if (patch.description !== undefined) message.text = patch.description;
+    if (patch.depicts !== undefined) {
+      if (patch.depicts.length > 0) message.depicts = patch.depicts;
+      else delete message.depicts;
+    }
     if (patch.prompt !== undefined) {
       message.generation = { ...(message.generation ?? {}), prompt: patch.prompt };
     }
@@ -484,7 +519,7 @@ export class ChatsService {
       for (const key of IMAGE_GENERATION_KEYS) cleared[key] = undefined;
       ImageMetaFile.write(file, cleared);
     }
-    this.writeSidecar(message.images[0], message.text, message.generation);
+    this.writeSidecar(message.images[0], message.text, message.generation, message.depicts);
   }
 
   // Points an image message at another file: the id is swapped in the message
@@ -693,12 +728,20 @@ export class ChatsService {
   // Writes the description + the generation data next to the image file. Only
   // called when there is something to say: an upload with no description gets
   // no sidecar, so the files/ folder is not littered with empty ones.
-  writeSidecar(imageId: string | undefined, description: string | undefined, generation?: ImageGenerationData): void {
+  // `depicts` — the cast refs of the people visible on the picture; it belongs
+  // to the picture, not to its generation, so an upload carries it too.
+  writeSidecar(
+    imageId: string | undefined,
+    description: string | undefined,
+    generation?: ImageGenerationData,
+    depicts?: string[],
+  ): void {
     if (!imageId) return;
     const file = PathHelper.resolveImageId(imageId);
     if (!file) return;
     const meta: ImageMeta = {};
     if (description && description.trim()) meta.description = description.trim();
+    if (depicts && depicts.length > 0) meta.depicts = depicts;
     if (generation) {
       // An empty prompt is written as-is: clearing the prompt of a card is a
       // real edit (the picture then has nothing to be redrawn from), and only
@@ -749,6 +792,12 @@ export class ChatsService {
         dirty = true;
       }
       if (dirty) m.generation = generation;
+      // Who is on the picture: the sidecar is the copy the user can fix by hand
+      // ("this photo is Alice"), so it wins here too.
+      if (meta.depicts !== undefined) {
+        const fromFile = Array.isArray(meta.depicts) ? meta.depicts.filter((x) => typeof x === "string") : [];
+        if (fromFile.join(",") !== (m.depicts ?? []).join(",")) m.depicts = fromFile.length > 0 ? fromFile : undefined;
+      }
     }
   }
 
@@ -887,6 +936,16 @@ export class ChatsService {
       if (t) chat.systemSuffix = t;
       else {
         delete chat.systemSuffix;
+        dirty = true;
+      }
+    }
+    // stylePrompt: the one look every picture of this chat shares — the same
+    // rule as systemSuffix (a trimmed non-empty string or nothing at all).
+    if (chat.stylePrompt !== undefined) {
+      const t = typeof chat.stylePrompt === "string" ? chat.stylePrompt.trim() : "";
+      if (t) chat.stylePrompt = t;
+      else {
+        delete chat.stylePrompt;
         dirty = true;
       }
     }

@@ -50,6 +50,11 @@ export type ChatMessage = {
   // The image card's generation data (absent on a card whose image the user
   // uploaded — an upload has no prompt of its own).
   generation?: ImageGenerationData;
+  // Who is ON the picture: the cast refs of the people visible in it
+  // ("char:alice", "user:carol"). The next picture of the same person is drawn
+  // from this one, which is what keeps a face the same from picture to picture;
+  // an upload can carry it too (the user says who is in their photo).
+  depicts?: string[];
   // Generation status of the message's images (id -> status). Only the images
   // that are still being generated ("pending") or whose generation failed
   // ("failed") or was cancelled ("cancelled") are listed — an id that is

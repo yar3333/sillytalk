@@ -57,8 +57,8 @@ export function createApiRouter(
   });
 
   apiRouter.use("/config", createConfigRouter(configuration, characters, imageGeneration));
-  apiRouter.use("/characters", createCharactersRouter(characters));
-  apiRouter.use("/persons", createPersonsRouter(persons));
+  apiRouter.use("/characters", createCharactersRouter(characters, reply));
+  apiRouter.use("/persons", createPersonsRouter(persons, reply));
   apiRouter.use("/chats", createChatsRouter(chats, reply, characters, imageGeneration));
   apiRouter.use("/image", createImageRouter(imageGeneration, reply, chats));
 

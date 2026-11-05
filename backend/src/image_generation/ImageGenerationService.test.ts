@@ -363,7 +363,10 @@ describe("ComfyUI generator", () => {
     expect(comfy.converted).toEqual(["text"]);
   }, 60000);
 
-  it("refuses more references than the model has templates for", async () => {
+  it("drops the references the model has no template for, instead of failing", async () => {
+    // The plan is made for the strongest generator the user configured; the job
+    // can still land on one that takes fewer. Dropping the extra reference keeps
+    // the picture (with the faces that did fit) instead of leaving a broken card.
     fs.mkdirSync(PathHelper.chatFilesDir(chatIdDefault), { recursive: true });
     const refs: string[] = [];
     for (const name of ["a.png", "b.png", "c.png"]) {
@@ -371,10 +374,10 @@ describe("ComfyUI generator", () => {
       refs.push(imageId(chatIdDefault, name));
     }
     const r = await oneShot(comfyGen(comfy), "three of them", refs, "too-many-refs.png");
-    expect(r.status).toBe("failed");
-    if (r.status === "failed") expect(r.error).toMatch(/at most 2 reference images \(3 provided\)/);
-    // the server was never asked for a picture
-    expect(comfy.jobs).toHaveLength(0);
+    expect(r.status).toBe("ok");
+    // the first two of them are what the workflow could load
+    expect(comfy.jobs).toHaveLength(1);
+    expect(comfy.jobs[0].refs).toEqual([comfy.uploads[0], comfy.uploads[1]]);
   });
 
   it("is not available for a model the app has no workflow for", async () => {
@@ -528,9 +531,10 @@ describe("the ComfyUI workflow files", () => {
     expect(logged.join("\n")).toMatch(/qwen-image-2\.1\.json.*none of/s);
   });
 
-  it("refuses a reference for a model whose file has no template for it", async () => {
+  it("leaves the reference out for a model whose file has no template for it", async () => {
     // A file the user writes can ship fewer variants than the app's own — the
-    // model then simply does not take references, and says so before the job.
+    // model then simply does not take references. The picture is still drawn,
+    // from the text alone, and the unusable reference is never uploaded.
     writeWorkflow("text-only-model", { text: templateOf("no references here") });
     fs.mkdirSync(PathHelper.chatFilesDir(chatIdDefault), { recursive: true });
     fs.writeFileSync(imageFile(chatIdDefault, "ref-for-text-only.png"), "x");
@@ -540,11 +544,11 @@ describe("the ComfyUI workflow files", () => {
       [imageId(chatIdDefault, "ref-for-text-only.png")],
       "text-only-ref.png",
     );
-    expect(r.status).toBe("failed");
-    if (r.status === "failed") expect(r.error).toMatch(/supports at most 0 reference images \(1 provided\)/);
-    // the server saw neither the picture nor a job
+    expect(r.status).toBe("ok");
+    // the server saw the job, never the picture it cannot take
     expect(comfy.uploads).toEqual([]);
-    expect(comfy.jobs).toHaveLength(0);
+    expect(comfy.jobs).toHaveLength(1);
+    expect(comfy.jobs[0].refs).toEqual([]);
   });
 
   it("takes a model name as a file name, never as a path", async () => {

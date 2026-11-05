@@ -87,17 +87,24 @@ export interface MockLlm {
   port: number;
   setDelay(ms: number): Promise<void>;
   setImagePlan(plan: MockImagePlan | null): Promise<void>;
+  // What the picture-planning call last asked for (null — none yet): the system
+  // prompt and the user text, so a test can see what the model was told about
+  // the people and the pictures of the chat.
+  lastPlanRequest(): { system: string; text: string } | null;
   close(): void;
 }
 
 // The plan the mock returns for the picture-planning call of the user's turn
 // (the POST /chats/:id/auto-image flow). `refs` are the 1-based numbers of the
-// pictures listed in that request.
+// pictures listed in that request; `cast` are the ids of the people the picture
+// shows and `subjects` the noun phrase the prompt uses for each of them.
 export interface MockImagePlan {
   name: string;
   description: string;
   prompt: string;
   refs: number[];
+  cast?: string[];
+  subjects?: Array<{ id: string; noun: string }>;
 }
 
 const DEFAULT_IMAGE_PLAN: MockImagePlan = {
@@ -105,6 +112,8 @@ const DEFAULT_IMAGE_PLAN: MockImagePlan = {
   description: 'A red circle on a white background',
   prompt: 'a red circle on a white background',
   refs: [],
+  cast: [],
+  subjects: [],
 };
 
 // When set, the mock calls it for a normal (non-translate, non-planning) reply
@@ -129,6 +138,10 @@ export async function startMockLlm(
 ): Promise<MockLlm> {
   let delay = initialDelayMs;
   let imagePlan: MockImagePlan | null = { ...DEFAULT_IMAGE_PLAN };
+  // The last picture-planning request the app made (the app's own system prompt
+  // + the dialogue/pictures/cast it was given) — a test reads it to check what
+  // the model was actually told.
+  let planRequest: { system: string; text: string } | null = null;
   const responder = opts.customReplies;
   const server = http.createServer((req, res) => {
     let body = '';
@@ -162,6 +175,7 @@ export async function startMockLlm(
           // composeImagePrompt: the JSON plan of the user's-turn picture. null
           // means the model "refused" — it answers with prose instead, which
           // the backend has to survive.
+          planRequest = { system, text };
           content = imagePlan
             ? JSON.stringify(imagePlan)
             : 'I am not sure what to draw here, sorry.';
@@ -200,6 +214,9 @@ export async function startMockLlm(
     setImagePlan(plan: MockImagePlan | null) {
       imagePlan = plan ? { ...DEFAULT_IMAGE_PLAN, ...plan } : null;
       return Promise.resolve();
+    },
+    lastPlanRequest() {
+      return planRequest;
     },
     close() {
       server.close();
@@ -240,6 +257,11 @@ export interface MockComfy {
   url: string;
   // the imageGenerators entry that points at this server
   generator: MockComfyGenerator;
+  // What the app actually sent: the prompt of every submitted job and the name
+  // of every uploaded reference. A test reads them to check the prompt the
+  // generator really saw and which pictures went with it.
+  prompts(): string[];
+  uploads(): string[];
   close(): void;
 }
 
@@ -282,6 +304,10 @@ export async function startMockComfy(
   size: { width: number; height: number } = { width: 96, height: 96 },
 ): Promise<MockComfy> {
   const jobs: MockComfyJob[] = [];
+  // What the app sent: the substituted prompt of every job and the name of
+  // every uploaded reference picture.
+  const promptLog: string[] = [];
+  const uploadLog: string[] = [];
   const picture = makePng(96, 96, 210, 60, 60);
   let nextId = 1;
 
@@ -311,6 +337,7 @@ export async function startMockComfy(
 
         if (route === 'POST /upload/image') {
           const name = /filename="([^"]+)"/.exec(raw.toString('binary'))?.[1] ?? 'reference.png';
+          uploadLog.push(name);
           return send(200, { name, subfolder: '', type: 'input' });
         }
 
@@ -327,6 +354,7 @@ export async function startMockComfy(
             Object.values(submitted).find((n) => n?.class_type === 'SaveImage')?.inputs?.filename_prefix ?? '',
           );
           const id = `mock-${nextId++}`;
+          promptLog.push(text);
           jobs.push({
             id,
             prompt: text,
@@ -391,6 +419,14 @@ export async function startMockComfy(
       width: size.width,
       height: size.height,
       enabled: true,
+    },
+    // what the app sent this server: the prompt of every job (in the order the
+    // jobs arrived) and the name of every reference it uploaded for them
+    prompts() {
+      return [...promptLog];
+    },
+    uploads() {
+      return [...uploadLog];
     },
     close() {
       server.close();

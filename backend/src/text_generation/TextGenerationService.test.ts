@@ -541,7 +541,13 @@ describe("composeImagePrompt", () => {
     await textGenerationService.composeImagePrompt(model, {
       scene: "Alice: the lake is calm tonight.\nCarol: [shares a picture: a red boat]",
       images: [
-        { id: "chats/c/files/boat.png", description: "a red boat", owner: "Carol", age: "2 messages ago" },
+        {
+          id: "chats/c/files/boat.png",
+          description: "a red boat",
+          owner: "Carol",
+          age: "2 messages ago",
+          origin: "uploaded",
+        },
         { id: "chats/c/files/harbour.png", prompt: "a harbour at dusk", owner: "Alice", age: "the last message" },
       ],
     });
@@ -553,6 +559,32 @@ describe("composeImagePrompt", () => {
     expect(body.messages[1].content).toContain("#2 — no description; generated from prompt: a harbour at dusk");
   });
 
+  it("tells the model whose face a look reference carries, and never a name to draw", async () => {
+    // The generator has never heard these people, so the plan is asked to write
+    // appearances instead of names — and a look reference is labelled with the
+    // person it belongs to, which is what the app binds it back to later.
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(jsonRes({ choices: [{ message: { content: '{"prompt": "a boat", "refs": [2]}' } }] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await textGenerationService.composeImagePrompt(model, {
+      scene: "Alice: I row out alone.",
+      images: [
+        { id: "chats/c/files/lake.png", description: "the lake at dawn", age: "the last message" },
+        { id: "characters/alice/photos/photo1.jpg", role: "look", ofWho: "char:alice", shows: "Alice" },
+      ],
+      cast: [{ ref: "char:alice", name: "Alice", look: "a tall woman with short red hair", anchors: [2] }],
+      maxRefs: 2,
+    });
+    const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
+    const body = asked(init.body);
+    expect(body.messages[0].content).toMatch(/NEVER write a person's name in the prompt/i);
+    expect(body.messages[0].content).toContain("at most 2 numbers");
+    expect(body.messages[1].content).toContain("char:alice — Alice: a tall woman with short red hair (shown on picture 2)");
+    expect(body.messages[1].content).toContain("#2 — a look reference of Alice");
+  });
+
   it("says so when the conversation has no pictures to reference", async () => {
     const fetchMock = jest
       .fn()
@@ -561,7 +593,7 @@ describe("composeImagePrompt", () => {
 
     const plan = await textGenerationService.composeImagePrompt(model, { scene: "Alice: hi", images: [] });
     const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
-    expect(asked(init.body).messages[1].content).toContain("no pictures in this conversation");
+    expect(asked(init.body).messages[1].content).toContain("no pictures to draw from");
     expect(plan?.refs).toEqual([]);
   });
 
@@ -591,7 +623,38 @@ describe("composeImagePrompt", () => {
       description: "a boat on a lake",
       prompt: "a red boat on a calm lake at dusk",
       refs: [2],
+      cast: [],
+      subjects: [],
     });
+  });
+
+  it("keeps only the people and the noun phrases of the cast it was given", async () => {
+    // A model that invents a participant would otherwise bind a reference to
+    // nothing, and a noun for a person nobody listed cannot be shown.
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(
+        jsonRes({
+          choices: [
+            {
+              message: {
+                content:
+                  '{"prompt": "the red-haired woman rows", "refs": [1], "cast": ["char:alice", "char:nobody"], ' +
+                  '"subjects": [{"id": "char:alice", "noun": "the red-haired woman"}, {"id": "char:nobody", "noun": "a stranger"}]}',
+              },
+            },
+          ],
+        }),
+      );
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const plan = await textGenerationService.composeImagePrompt(model, {
+      scene: "…",
+      images: [{ id: "a.png" }],
+      cast: [{ ref: "char:alice", name: "Alice", anchors: [1] }],
+    });
+    expect(plan?.cast).toEqual(["char:alice"]);
+    expect(plan?.subjects).toEqual([{ ref: "char:alice", noun: "the red-haired woman" }]);
   });
 
   it("drops reference numbers outside the catalogue and duplicates", async () => {

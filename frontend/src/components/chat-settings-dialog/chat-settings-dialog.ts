@@ -85,6 +85,21 @@ import { UiStore } from '../../services/ui-store';
         Leave a field empty to use the provider's default. The values are sent with every model call
         of this chat (temperature, min_p, repetition_penalty).
       </div>
+      <label class="field col">
+        <span>Picture style</span>
+        <textarea
+          class="grow"
+          rows="2"
+          placeholder="One look for every picture of this chat: photorealistic, 35mm, warm light…"
+          data-testid="chat-style-input"
+          [value]="stylePrompt()"
+          (input)="setStylePrompt($event)"
+        ></textarea>
+      </label>
+      <div class="dialog-hint">
+        English, appended to every generation prompt of this chat, so its pictures look like one set
+        instead of one per model idea.
+      </div>
       <div class="dialog-actions">
         <span class="spacer"></span>
         <button class="btn" (click)="cancel()">Cancel</button>
@@ -103,6 +118,7 @@ export class ChatSettingsDialog implements OnInit {
   readonly minP = signal('');
   readonly repetitionPenalty = signal('');
   readonly systemSuffix = signal('');
+  readonly stylePrompt = signal('');
   // The title an empty Name field stands for — the chat's creation date, shown
   // as the field's placeholder so the user sees what the header will say.
   readonly defaultTitle = signal('');
@@ -116,6 +132,7 @@ export class ChatSettingsDialog implements OnInit {
     this.minP.set(s?.minP !== undefined ? String(s.minP) : '');
     this.repetitionPenalty.set(s?.repetitionPenalty !== undefined ? String(s.repetitionPenalty) : '');
     this.systemSuffix.set(c?.systemSuffix ?? '');
+    this.stylePrompt.set(c?.stylePrompt ?? '');
   }
 
   setName(e: Event): void {
@@ -132,6 +149,9 @@ export class ChatSettingsDialog implements OnInit {
   }
   setSystemSuffix(e: Event): void {
     this.systemSuffix.set((e.target as HTMLTextAreaElement).value);
+  }
+  setStylePrompt(e: Event): void {
+    this.stylePrompt.set((e.target as HTMLTextAreaElement).value);
   }
 
   // Parses one field: empty -> undefined, garbage -> null (an error).
@@ -154,6 +174,7 @@ export class ChatSettingsDialog implements OnInit {
       name: this.name(),
       sampling: { temperature: temp, minP: minP, repetitionPenalty: rep },
       systemSuffix: this.systemSuffix(),
+      stylePrompt: this.stylePrompt(),
     });
   }
 

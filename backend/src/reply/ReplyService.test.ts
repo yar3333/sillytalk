@@ -14,7 +14,7 @@ import { ImageJobResult } from "../image_generation/ImageJobResult";
 import { PersonsService } from "../persons/PersonsService";
 import { PathHelper } from "../shared/PathHelper";
 import { ImageMetaFile } from "../shared/ImageMetaFile";
-import { ImageBrief, ImagePromptPlan, TextGenerationService } from "../text_generation/TextGenerationService";
+import { ImageBrief, ImageCastMember, ImagePromptPlan, TextGenerationService } from "../text_generation/TextGenerationService";
 import { ReplyService } from "./ReplyService";
 
 // The image ids are paths relative to the data folder and only the ids inside
@@ -62,8 +62,11 @@ class StubTextGeneration extends TextGenerationService {
     description: "a red boat on a calm lake at dusk",
     prompt: "a red boat on a calm lake, the sky orange, low evening light",
     refs: [],
+    cast: [],
+    subjects: [],
   };
-  planInput: { scene: string; images: ImageBrief[] } | null = null;
+  planInput: { scene: string; images: ImageBrief[]; cast: ImageCastMember[]; maxRefs: number; style?: string } | null =
+    null;
   planCalls = 0;
   planGate: Promise<void> = Promise.resolve();
 
@@ -79,10 +82,16 @@ class StubTextGeneration extends TextGenerationService {
 
   async composeImagePrompt(
     _model: Model,
-    input: { scene: string; images: ImageBrief[] },
+    input: { scene: string; images: ImageBrief[]; cast?: ImageCastMember[]; maxRefs?: number; style?: string },
   ): Promise<ImagePromptPlan | null> {
     this.planCalls++;
-    this.planInput = { scene: input.scene, images: input.images };
+    this.planInput = {
+      scene: input.scene,
+      images: input.images,
+      cast: input.cast ?? [],
+      maxRefs: input.maxRefs ?? 0,
+      ...(input.style !== undefined ? { style: input.style } : {}),
+    };
     await this.planGate;
     return this.plan;
   }
@@ -128,10 +137,15 @@ function makeFakeImageGeneration() {
   const current = new Map<string, ImageJob>();
   let outcome: ImageJobResult = { status: "ok" };
   let available = true;
+  // What the "generator" takes as references — the reply flow sizes its plan to
+  // it, so a test can ask what happens to a scene with three people on a
+  // one-reference generator.
+  let maxRefs = 2;
   let promptGate: Promise<void> = Promise.resolve();
 
   const fake = {
     hasAvailableGenerator: (): boolean => available,
+    maxReferenceCount: (): number => maxRefs,
     startImageJob: (opts: { id: string; prompt: string; refs: string[]; chatId?: string }): ImageJob => {
       started.push({ id: opts.id, prompt: opts.prompt, refs: opts.refs, chatId: opts.chatId });
       let cancelledFlag = false;
@@ -166,6 +180,9 @@ function makeFakeImageGeneration() {
     },
     setAvailable: (value: boolean) => {
       available = value;
+    },
+    setMaxRefs: (value: number) => {
+      maxRefs = value;
     },
     setPromptGate: (g: Promise<void>) => {
       promptGate = g;
@@ -606,6 +623,8 @@ describe("requestUserTurnImage (the picture of the user's turn)", () => {
       description: "the harbour under the moon",
       prompt: "the same harbour at night, moonlight",
       refs: [1],
+      cast: [],
+      subjects: [],
     };
     reply.requestUserTurnImage(chat.id);
     await flushJobs();
@@ -625,12 +644,18 @@ describe("requestUserTurnImage (the picture of the user's turn)", () => {
     });
     // the reference number became the picture's id
     expect(fake.started[0].refs).toEqual([photo]);
+    // and the app said what that reference is for, so the generator keeps the
+    // conversation's look instead of starting a new one
+    expect(fake.started[0].prompt).toContain("the same harbour at night, moonlight");
+    expect(fake.started[0].prompt).toContain(
+      "the first reference image is a picture from this conversation — keep its art style",
+    );
     // and the card knows what it was drawn from, with its reference
     const card = chats.get(chat.id)!.messages[2];
     expect(card.generation?.refs).toEqual([photo]);
     expect(ImageMetaFile.read(PathHelper.resolveImageId(card.images[0]) as string)).toMatchObject({
       description: "the harbour under the moon",
-      prompt: "the same harbour at night, moonlight",
+      prompt: fake.started[0].prompt,
       refs: [photo],
       source: "auto",
     });
@@ -650,6 +675,122 @@ describe("requestUserTurnImage (the picture of the user's turn)", () => {
     reply.requestUserTurnImage(chat.id);
     await flushJobs();
     expect(textGeneration.planInput?.images).toEqual([]);
+  });
+
+  it("draws a person from their own photo and never sends their name", async () => {
+    // The whole point of the cast layer: the generator has never heard of Alice,
+    // so her face goes to it as a picture and her name never leaves the app —
+    // not even when the model disobeyed and wrote it into the prompt.
+    characters.save({
+      id: "alice",
+      name: "Alice",
+      description: "A test character.",
+      look: "a tall woman with short red hair and a green coat",
+    });
+    const photo = path.join(PathHelper.characterPhotosDir("alice"), "photo1.jpg");
+    fs.writeFileSync(photo, "x");
+    const photoId = PathHelper.imageIdOf(photo);
+    textGeneration.plan = {
+      name: "a woman on the pier",
+      description: "a woman leaning on a pier rail at dusk",
+      prompt: "Alice leans on a pier rail at dusk",
+      refs: [],
+      cast: ["char:alice"],
+      subjects: [{ ref: "char:alice", noun: "the red-haired woman" }],
+    };
+    const chat = newChat();
+    reply.requestUserTurnImage(chat.id);
+    await flushJobs();
+
+    // the planner was told what she looks like and which picture shows her
+    expect(textGeneration.planInput?.cast.find((c) => c.ref === "char:alice")).toEqual({
+      ref: "char:alice",
+      name: "Alice",
+      look: "a tall woman with short red hair and a green coat",
+      anchors: [1],
+    });
+    const job = fake.started[0];
+    // the face went with the job, and the name did not
+    expect(job.refs).toEqual([photoId]);
+    expect(job.prompt).not.toContain("Alice");
+    expect(job.prompt).toContain("the red-haired woman leans on a pier rail at dusk");
+    expect(job.prompt).toContain(
+      "the first reference image shows the red-haired woman — draw them with exactly the same face, hair and outfit",
+    );
+    // the card says who is on it, in the row and in the sidecar, so the next
+    // picture of her can be drawn from this one
+    const card = chats.get(chat.id)!.messages[1];
+    expect(card.depicts).toEqual(["char:alice"]);
+    expect(ImageMetaFile.read(PathHelper.resolveImageId(card.images[0]) as string)).toMatchObject({
+      depicts: ["char:alice"],
+    });
+  });
+
+  it("prefers a face this chat already drew over the character's own photo", async () => {
+    // The conversation's own picture of her is the better anchor: it is the same
+    // person AND the same technique, which is what makes two pictures of one
+    // chat read as one story.
+    const photo = path.join(PathHelper.characterPhotosDir("alice"), "photo1.jpg");
+    fs.writeFileSync(photo, "x");
+    const chat = newChat();
+    const drawn = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=", { nameHint: "alice at the bar" });
+    const withCard = chats.get(chat.id)!;
+    chats.addImageMessage(withCard, drawn, { description: "Alice at the bar", depicts: ["char:alice"] });
+    textGeneration.plan = {
+      name: "the same woman outside",
+      description: "the same woman in the street",
+      prompt: "the red-haired woman in the street",
+      refs: [],
+      cast: ["char:alice"],
+      subjects: [{ ref: "char:alice", noun: "the red-haired woman" }],
+    };
+    reply.requestUserTurnImage(chat.id);
+    await flushJobs();
+
+    // the chat's own picture leads (same person AND same technique), the studio
+    // photo rides along as the second view of the same face while there is room
+    const photoId = PathHelper.imageIdOf(photo);
+    expect(textGeneration.planInput?.cast.find((c) => c.ref === "char:alice")?.anchors).toEqual([1, 2]);
+    expect(fake.started[0].refs).toEqual([drawn, photoId]);
+    // and both of them are named in the prompt by their order, so the generator
+    // knows which image is whose
+    expect(fake.started[0].prompt).toContain("the first reference image shows the red-haired woman");
+    expect(fake.started[0].prompt).toContain("the second reference image shows the red-haired woman");
+  });
+
+  it("keeps the face when the generator has room for one reference only", async () => {
+    fake.setMaxRefs(1);
+    const photo = path.join(PathHelper.characterPhotosDir("alice"), "photo1.jpg");
+    fs.writeFileSync(photo, "x");
+    const chat = newChat();
+    const harbour = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=", { nameHint: "a harbour" });
+    chats.addImageMessage(chats.get(chat.id)!, harbour, { description: "a harbour at dusk" });
+    textGeneration.plan = {
+      name: "the woman at the harbour",
+      description: "a woman at the harbour",
+      prompt: "the red-haired woman at the harbour",
+      // the model asked for the harbour (picture 1) and put Alice in the scene
+      refs: [1],
+      cast: ["char:alice"],
+      subjects: [{ ref: "char:alice", noun: "the red-haired woman" }],
+    };
+    reply.requestUserTurnImage(chat.id);
+    await flushJobs();
+
+    // a familiar face beats a familiar place
+    expect(fake.started[0].refs).toEqual([PathHelper.imageIdOf(photo)]);
+  });
+
+  it("draws every picture of a chat in the style the chat asked for", async () => {
+    const chat = newChat();
+    chat.stylePrompt = "watercolour, soft edges";
+    chats.save(chat);
+    reply.requestUserTurnImage(chat.id);
+    await flushJobs();
+    expect(textGeneration.planInput?.style).toBe("watercolour, soft edges");
+    expect(fake.started[0].prompt).toBe(
+      "a red boat on a calm lake, the sky orange, low evening light Style: watercolour, soft edges",
+    );
   });
 
   it("marks the card failed when the model gives no readable plan", async () => {

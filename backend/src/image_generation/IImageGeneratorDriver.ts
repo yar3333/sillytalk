@@ -15,6 +15,11 @@ export interface IImageGeneratorDriver {
   readonly queueKey: string;
   // Is the backend up right now (reachable, and set up well enough to run)?
   available(): Promise<boolean>;
+  // How many reference images this generator can take at once. A backend that
+  // has no branch for a reference answers 0 — and a generation that was told a
+  // different number gets its extra references dropped rather than failing, so
+  // the job still produces the picture the user asked for.
+  readonly maxRefs: number;
   // Runs one generation and writes the produced image to outPath (absolute).
   // registerAbort lets a caller cancel the run in flight (a background job);
   // the driver aborts its own requests and, when the backend keeps running the

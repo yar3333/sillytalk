@@ -180,7 +180,15 @@ export class ImageStore {
   async savePictureEdit(
     messageId: string,
     image: string,
-    edit: { kind: 'generated' | 'file'; description: string; prompt?: string; imageId?: string; data?: string },
+    edit: {
+      kind: 'generated' | 'file';
+      description: string;
+      prompt?: string;
+      imageId?: string;
+      data?: string;
+      refs?: string[];
+      depicts?: string[];
+    },
   ): Promise<boolean> {
     const c = this.chatStore.chat();
     if (!c) return false;
@@ -198,6 +206,11 @@ export class ImageStore {
         description: edit.description,
         kind: edit.kind,
         ...(edit.kind === 'generated' ? { prompt: edit.prompt ?? '' } : {}),
+        // The references travel with the prompt that names them ("the first
+        // reference image shows …"), so a card redrawn later draws the same
+        // face rather than a new one.
+        ...(edit.kind === 'generated' && edit.refs ? { refs: edit.refs } : {}),
+        ...(edit.depicts ? { depicts: edit.depicts } : {}),
         ...(edit.kind === 'file' && edit.imageId && edit.imageId !== target ? { image: edit.imageId } : {}),
       });
       this.chatStore.applyChat(res.chat);

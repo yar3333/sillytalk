@@ -2,12 +2,14 @@ import express from "express";
 import { HttpHelper } from "../shared/HttpHelper";
 import { Person } from "./Person";
 import { PersonsService } from "./PersonsService";
+import { ReplyService } from "../reply/ReplyService";
 
 // The /persons routes (the persona cards). The JSON body field and the
 // response keys stay "users", and the on-disk layout stays users/<id>/
 // user.json. The domain logic lives in PersonsService; this file is the
-// thin HTTP layer (validation, status codes, streaming).
-export function createPersonsRouter(persons: PersonsService): express.Router {
+// thin HTTP layer (validation, status codes, streaming). The reply service
+// is here for one route: writing an appearance note is a model call.
+export function createPersonsRouter(persons: PersonsService, reply: ReplyService): express.Router {
   const router = express.Router();
 
   router.get("/", (_req, res) => {
@@ -38,6 +40,7 @@ export function createPersonsRouter(persons: PersonsService): express.Router {
         id: u.id,
         name: typeof u.name === "string" ? u.name : u.id,
         description: typeof u.description === "string" ? u.description : "",
+        ...(typeof u.look === "string" && u.look.trim() ? { look: u.look.trim() } : {}),
       });
     }
     persons.sync(list);
@@ -54,6 +57,24 @@ export function createPersonsRouter(persons: PersonsService): express.Router {
       return;
     }
     res.json({ id: newId, users: persons.listWithAvatars() });
+  });
+
+  // Writes the appearance note of a persona from their avatar (or, with no
+  // avatar to look at, from the persona description). The answer is the text —
+  // the dialog shows it and the user saves it.
+  router.post("/:id/look", async (req, res) => {
+    const id = String(req.params.id);
+    if (!persons.isValidId(id)) {
+      res.status(400).json({ error: "Invalid ID" });
+      return;
+    }
+    try {
+      res.json({ look: await reply.fillLook("person", id) });
+    } catch (err) {
+      const message = (err as Error).message;
+      const status = /not found/i.test(message) ? 404 : /model/i.test(message) ? 400 : 500;
+      res.status(status).json({ error: message });
+    }
   });
 
   // ---- avatar ----

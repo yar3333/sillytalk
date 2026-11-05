@@ -1,6 +1,7 @@
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { ApiService, ChatMessage } from '../../services/api';
 import { ChatStore } from '../../services/chat-store';
+import { ConfigStore } from '../../services/config-store';
 import { ImageStore } from '../../services/image-store';
 import { UiStore } from '../../services/ui-store';
 
@@ -18,6 +19,13 @@ import { UiStore } from '../../services/ui-store';
 // is the ↻ button of the card, as before. The target card comes from
 // ImageStore.pictureEdit (the row opens the dialog), so the dialog is a thin
 // view over the stores.
+
+// The same pictures in the same order — the order matters: the prompt names
+// them "the first reference image, the second…".
+function sameList(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((x, i) => x === b[i]);
+}
+
 @Component({
   selector: 'app-picture-dialog',
   template: `
@@ -88,6 +96,18 @@ import { UiStore } from '../../services/ui-store';
             The picture is redrawn from this prompt by the ↻ button on the card, and again
             afterwards whenever the card is regenerated.
           </div>
+          @if (refs().length) {
+            <div class="refs">
+              <span class="refs-label">Drawn from</span>
+              @for (id of refs(); track id) {
+                <img class="ref-thumb" [src]="thumb(id)" [alt]="id" [title]="id" />
+              }
+            </div>
+            <div class="dialog-hint">
+              The prompt names these pictures in this order (the first reference image, the second…),
+              so they are saved with it — a redraw keeps the same faces.
+            </div>
+          }
         } @else {
           <label class="field">
             <span>Picture</span>
@@ -135,6 +155,29 @@ import { UiStore } from '../../services/ui-store';
           </button>
         </div>
 
+        @if (people().length) {
+          <div class="field col">
+            <span>Who is on this picture</span>
+            <div class="chips">
+              @for (p of people(); track p.ref) {
+                <button
+                  type="button"
+                  class="chip"
+                  [class.on]="depicts().includes(p.ref)"
+                  data-testid="picture-depicts"
+                  (click)="toggleDepicts(p.ref)"
+                >
+                  {{ p.name }}
+                </button>
+              }
+            </div>
+          </div>
+          <div class="dialog-hint">
+            The generator is never told these names — the note is for the picture planner, so the next
+            picture of this chat can put the same person in it.
+          </div>
+        }
+
         <div class="dialog-actions">
           <span class="spacer"></span>
           <button class="btn" data-testid="picture-cancel" (click)="cancel()">Cancel</button>
@@ -153,6 +196,7 @@ export class PictureDialog implements OnInit {
   private api = inject(ApiService);
   private chatStore = inject(ChatStore);
   private imageStore = inject(ImageStore);
+  private configStore = inject(ConfigStore);
   private ui = inject(UiStore);
 
   // The card being edited (null — it disappeared while the dialog was open).
@@ -161,6 +205,34 @@ export class PictureDialog implements OnInit {
   readonly kind = signal<'generated' | 'file'>('generated');
   readonly prompt = signal('');
   readonly description = signal('');
+  // The pictures the prompt names in order ("the first reference image shows
+  // …"). They belong to the prompt: saving one without the rest would redraw
+  // something else, so "From the chat" fills them and Save writes them back.
+  readonly refs = signal<string[]>([]);
+  // Who is ON this picture, as the chat knows its people ("char:alice"). The
+  // picture planner reads it to draw the same person again.
+  readonly depicts = signal<string[]>([]);
+  // What the card said when the dialog opened — Save compares against it, so a
+  // dialog nobody touched does not rewrite these two fields of the card.
+  private initialRefs: string[] = [];
+  private initialDepicts: string[] = [];
+  // The people of this chat: its characters and every persona that ever spoke
+  // here — the chips under "Who is on this picture".
+  readonly people = computed<{ ref: string; name: string }[]>(() => {
+    const chat = this.chatStore.chat();
+    if (!chat) return [];
+    const out: { ref: string; name: string }[] = chat.characterIds.map((id) => ({
+      ref: 'char:' + id,
+      name: this.configStore.characters().find((c) => c.id === id)?.name ?? id,
+    }));
+    const personas = new Set<string>([chat.userId]);
+    for (const m of chat.messages) if (m.userId) personas.add(m.userId);
+    for (const id of personas) {
+      if (!id) continue;
+      out.push({ ref: 'user:' + id, name: this.configStore.users().find((u) => u.id === id)?.name ?? id });
+    }
+    return out;
+  });
   // The pictures of the data folder (the "from a file" pick) and the id chosen
   // there; a file picked from disk is kept as its data URL until the save.
   readonly catalog = signal<string[]>([]);
@@ -190,6 +262,10 @@ export class PictureDialog implements OnInit {
     const generated = generation?.prompt !== undefined || (generation?.source !== undefined && generation.source !== 'upload');
     this.kind.set(generated ? 'generated' : 'file');
     this.prompt.set(generation?.prompt ?? '');
+    this.refs.set(generation?.refs ?? []);
+    this.depicts.set(msg.depicts ?? []);
+    this.initialRefs = [...this.refs()];
+    this.initialDepicts = [...this.depicts()];
     this.description.set(msg.text);
     this.chosenId.set(target.image);
     this.api
@@ -227,6 +303,13 @@ export class PictureDialog implements OnInit {
   setChosen(e: Event): void {
     this.chosenId.set((e.target as HTMLSelectElement).value);
   }
+  thumb(id: string): string {
+    return this.api.mediaUrl(id);
+  }
+  toggleDepicts(ref: string): void {
+    const cur = this.depicts();
+    this.depicts.set(cur.includes(ref) ? cur.filter((x) => x !== ref) : [...cur, ref]);
+  }
 
   // A file from disk: kept as a data URL (the preview and the describe button
   // work on it) and saved into the chat's files on Save.
@@ -249,8 +332,9 @@ export class PictureDialog implements OnInit {
   }
 
   // "From the chat": the model plans the prompt from the dialogue (the card
-  // itself is left out of what it reads). A card with no description yet gets
-  // the one the plan suggests.
+  // itself is left out of what it reads) and the pictures to draw it from —
+  // the prompt names them in that order, so both fields are filled together.
+  // A card with no description yet gets the one the plan suggests.
   promptFromChat(): void {
     const chat = this.chatStore.chat();
     const target = this.imageStore.pictureEdit();
@@ -260,6 +344,7 @@ export class PictureDialog implements OnInit {
       .composePicturePrompt(chat.id, target.messageId)
       .then((res) => {
         this.prompt.set(res.prompt);
+        this.refs.set(res.refs ?? []);
         if (!this.description().trim() && res.description) this.description.set(res.description);
       })
       .catch((e) => this.ui.error.set(String((e as Error).message)))
@@ -310,6 +395,11 @@ export class PictureDialog implements OnInit {
         prompt: this.prompt(),
         imageId: this.chosenId(),
         data: this.pickedData() || undefined,
+        // The two cast fields travel only when the dialog actually changed them
+        // — a patch that repeats what the card says would rewrite the sidecar
+        // for nothing (and an empty list of them IS an edit: it clears).
+        refs: sameList(this.refs(), this.initialRefs) ? undefined : this.refs(),
+        depicts: sameList(this.depicts(), this.initialDepicts) ? undefined : this.depicts(),
       })
       .then((ok) => {
         this.saving.set(false);

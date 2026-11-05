@@ -24,15 +24,46 @@ export type ImageBrief = {
   age?: string;
   // upload — the user attached it, manual/auto — it was generated.
   origin?: string;
+  // What the picture is worth AS A REFERENCE. "chat" (the default) — something
+  // that happened in the conversation, worth keeping for a place or a style;
+  // "look" — a picture whose only job is to say what one person looks like (a
+  // character photo, an avatar, an earlier picture of the same person).
+  role?: "chat" | "look";
+  // The cast ref (`char:alice`) of the person a look reference belongs to.
+  ofWho?: string;
+  // Pre-rendered for the list: who is visible on the picture ("Alice",
+  // "Alice and Bob"). Names belong to this text only — the generator never
+  // sees them, see the no-names rule of composeImagePrompt.
+  shows?: string;
+};
+
+// One participant a picture can show. The generator has never heard of these
+// people, so the planner works with the name and the look description and
+// answers by the cast `ref`; the app turns that into reference images.
+export type ImageCastMember = {
+  // Stable id the plan echoes back in `cast`: "char:<id>" / "user:<id>".
+  ref: string;
+  name: string;
+  // What this person looks like, in English — the visual half of their card.
+  look?: string;
+  // Numbers (1-based, in the picture list below) of the pictures that show
+  // them — the anchors the app can draw the face from.
+  anchors: number[];
 };
 
 // What the image-prompt request answers: a short English name for the file,
-// the caption of the result, the generation prompt and the reference numbers.
+// the caption of the result, the generation prompt, the reference numbers and
+// the people in the scene.
 export type ImagePromptPlan = {
   name: string;
   description: string;
   prompt: string;
   refs: number[];
+  // Cast refs of the people the picture shows.
+  cast: string[];
+  // The visual phrase the prompt uses for a person ("the red-haired woman"),
+  // so the app can bind them to a reference image without ever naming them.
+  subjects: Array<{ ref: string; noun: string }>;
 };
 
 // One part of an OpenAI-compatible message content: text or an inline image.
@@ -276,11 +307,18 @@ export class TextGenerationService {
   // ---- planning a picture for the user's turn ----
 
   // Asks the model to plan the picture the user wants on their own turn: it
-  // gets the whole dialogue, who is in it, and a numbered list of the pictures
-  // the chat already has (with what is on them and how they got there), and
-  // answers with the scene to draw, a short English name for the file, the
-  // caption of the result, and the numbers of the pictures worth using as
-  // references.
+  // gets the whole dialogue, the CAST of people who can appear (each with the
+  // look description and the numbers of the pictures that show them), and the
+  // numbered list of pictures to draw from. It answers with the scene to draw,
+  // a short English name for the file, the caption of the result, the reference
+  // numbers and the people it put in the scene.
+  //
+  // The no-names rule is the point of this call. The generator is a model that
+  // has never heard of Alice or Carol: a prompt naming them gets a brand-new
+  // face every run, which is exactly the inconsistency the user sees. So the
+  // planner describes people by how they look or binds them to a reference
+  // image, and the app assembles the references and the binding sentence around
+  // its answer (see ReplyService.finishPlan).
   //
   // The answer is JSON the model has to produce — models wrap it in prose or a
   // code fence, so it is extracted rather than parsed as-is, and a plan that
@@ -291,23 +329,45 @@ export class TextGenerationService {
     input: {
       scene: string;
       images: ImageBrief[];
+      cast?: ImageCastMember[];
+      // How many reference images the generator can take — the planner is told
+      // so it does not ask for more than the picture can carry.
+      maxRefs?: number;
+      // The look every picture of this chat shares (the chat's style setting).
+      style?: string;
       signal?: AbortSignal;
       sampling?: ChatSampling;
     },
   ): Promise<ImagePromptPlan | null> {
+    const castRefs = new Set((input.cast ?? []).map((c) => c.ref));
+    const maxRefs = input.maxRefs ?? 2;
     const list =
       input.images.length === 0
-        ? "There are no pictures in this conversation yet, so the picture must be drawn from the text alone."
+        ? "There are no pictures to draw from, so the picture must come from the text alone."
         : input.images
             .map((img, i) => {
               const bits = [
-                img.description ? `shows: ${img.description}` : "no description",
-                img.prompt ? `generated from prompt: ${img.prompt}` : "uploaded by the user",
+                img.role === "look"
+                  ? `a look reference${img.shows ? ` of ${img.shows}` : ""}`
+                  : img.description
+                    ? `shows: ${img.description}`
+                    : "no description",
+                img.prompt ? `generated from prompt: ${img.prompt}` : img.origin === "uploaded" ? "uploaded by the user" : "",
                 img.owner ? `shared by ${img.owner}` : "",
                 img.age ?? "",
               ].filter(Boolean);
               return `#${i + 1} — ${bits.join("; ")}`;
             })
+            .join("\n");
+    const people =
+      (input.cast ?? []).length === 0
+        ? "Nobody is known by name in this conversation."
+        : (input.cast ?? [])
+            .map(
+              (c) =>
+                `${c.ref} — ${c.name}${c.look ? `: ${c.look}` : ""}` +
+                (c.anchors.length > 0 ? ` (shown on picture ${c.anchors.join(", ")})` : " (no picture of them)"),
+            )
             .join("\n");
 
     const answer = await this.requestCompletion(
@@ -318,16 +378,33 @@ export class TextGenerationService {
           content:
             "You plan one picture for the next message of the user in a roleplay chat. " +
             "Look at the conversation and decide what the user would want to show right now.\n" +
+            "The picture is drawn by an image generator that has NEVER heard the names of these people: " +
+            "it understands only a visual description and the reference images it is given.\n" +
             "Answer with ONE JSON object and nothing else:\n" +
             '{"name": "2-5 english words naming the picture", ' +
             '"description": "one sentence saying what the finished picture shows", ' +
             '"prompt": "the image generation prompt, in english, 1-3 sentences: subjects, action, setting, lighting, style", ' +
-            '"refs": [numbers of the existing pictures to use as references, [] for none]}\n' +
-            "Rules: everything in english; the prompt describes a single concrete scene, not a story; " +
-            "use a reference whenever the picture must keep a face, an outfit, a place or a style from an existing one; " +
-            "the numbers in refs must come from the list below.",
+            '"refs": [numbers of the pictures below to draw from], ' +
+            '"cast": [the ids of the people who appear in the picture], ' +
+            '"subjects": [{"id": "the cast id", "noun": "the 2-4 word english phrase the prompt uses for them"}]}\n' +
+            "Rules:\n" +
+            "- everything in english;\n" +
+            "- the prompt describes a single concrete scene, not a story;\n" +
+            "- NEVER write a person's name in the prompt. Call a person by how they look " +
+            '(the "look" line of their cast entry: "the red-haired woman in a green coat") or by their ' +
+            'reference picture ("the woman from the first reference image");\n' +
+            "- for every person you show, put their cast id in cast and give the exact noun phrase you used;\n" +
+            `- refs: at most ${maxRefs} numbers from the list below. Use a look reference for every person you ` +
+            "show, and a conversation picture when the new one must keep its place or its style;\n" +
+            "- keep the picture in the same style as the pictures of this conversation." +
+            (input.style ? `\n- the pictures of this chat share one style: ${input.style}` : ""),
         },
-        { role: "user", content: `${input.scene}\n\nPictures in this conversation:\n${list}` },
+        {
+          role: "user",
+          content:
+            `${input.scene}\n\nPeople in this conversation:\n${people}\n\n` +
+            `Pictures to draw from:\n${list}`,
+        },
       ],
       input.signal,
       input.sampling,
@@ -342,6 +419,21 @@ export class TextGenerationService {
           .map((n) => (typeof n === "number" ? n : parseInt(String(n), 10)))
           .filter((n) => Number.isFinite(n) && n >= 1 && n <= input.images.length)
       : [];
+    // Ids the model invented cannot point at anything — a person the planner
+    // made up is not in the cast, so the app ignores them rather than binding a
+    // reference to nothing.
+    const cast = Array.isArray(plan.cast)
+      ? plan.cast.filter((x): x is string => typeof x === "string" && castRefs.has(x))
+      : [];
+    const subjects = Array.isArray(plan.subjects)
+      ? plan.subjects
+          .map((s) => (s && typeof s === "object" ? (s as Record<string, unknown>) : {}))
+          .map((s) => ({
+            ref: typeof s.id === "string" ? s.id : "",
+            noun: typeof s.noun === "string" ? s.noun.trim() : "",
+          }))
+          .filter((s) => s.ref && s.noun && castRefs.has(s.ref))
+      : [];
     const name = typeof plan.name === "string" ? plan.name.trim() : "";
     const description = typeof plan.description === "string" ? plan.description.trim() : "";
     return {
@@ -349,7 +441,60 @@ export class TextGenerationService {
       description,
       prompt,
       refs: [...new Set(refs)],
+      cast: [...new Set(cast)],
+      subjects,
     };
+  }
+
+  // ---- the look of a person ----
+
+  // Says what one person looks like, from their pictures (the character's
+  // photo set, an avatar): 1-2 English sentences a generator can draw from —
+  // face, hair, build, clothing. The app stores it as the person's "look" and
+  // puts it in every picture plan, so a person without a reference image still
+  // gets the same description twice in a row.
+  async describeLook(model: Model, files: string[], sampling?: ChatSampling): Promise<string> {
+    if (!model.supportsImages) {
+      throw new Error("No model that can see pictures is configured — describe the look in the card yourself");
+    }
+    const usable = files.filter((f) => fs.existsSync(f)).slice(0, 4);
+    if (usable.length === 0) throw new Error("No picture of this person to look at");
+    const parts: ContentPart[] = [
+      {
+        type: "text",
+        text:
+          "These pictures show the same person. Describe how this person looks, in 1-2 sentences of " +
+          "english: face, hair, build, clothing, anything that makes them recognisable. " +
+          "No name, no story, no preamble — an image generator reads this.",
+      },
+      ...usable.map((f) => ({ type: "image_url" as const, image_url: { url: TextGenerationService.imageDataUrl(f) } })),
+    ];
+    return (await this.requestCompletion(model, [{ role: "user", content: parts }], undefined, sampling)).trim();
+  }
+
+  // Pulls the appearance out of a character's or persona's text card when they
+  // have no picture to look at: the same 1-2 sentences, from the description
+  // alone. What the card does not say, the model may invent — it is a starting
+  // point the user edits in the dialog.
+  async extractLook(model: Model, name: string, description: string, sampling?: ChatSampling): Promise<string> {
+    return (
+      await this.requestCompletion(
+        model,
+        [
+          {
+            role: "system",
+            content:
+              "You write the appearance notes of a roleplay character for an image generator. " +
+              "Answer with 1-2 english sentences: face, hair, build, clothing, distinguishing details. " +
+              "Take what the card says, invent only what it leaves open, keep it consistent with it. " +
+              "No name, no personality, no preamble.",
+          },
+          { role: "user", content: `${name}\n${description}` },
+        ],
+        undefined,
+        sampling,
+      )
+    ).trim();
   }
 
   // Pulls the JSON object out of a model answer (bare, in a ``` fence, or

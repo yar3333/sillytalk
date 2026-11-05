@@ -77,7 +77,7 @@ export function createChatsRouter(
       res.status(404).json({ error: "Chat not found" });
       return;
     }
-    const { characterIds, modelId, userId, sampling, systemSuffix, name } = req.body ?? {};
+    const { characterIds, modelId, userId, sampling, systemSuffix, name, stylePrompt } = req.body ?? {};
     // The chat's own name — the title in the header. An empty name is stored as
     // "no name", which is what makes the header fall back to the creation date.
     if (name !== undefined) {
@@ -119,6 +119,14 @@ export function createChatsRouter(
       const t = typeof systemSuffix === "string" ? systemSuffix.trim() : "";
       if (t) chat.systemSuffix = t;
       else delete chat.systemSuffix;
+    }
+    // The one look of every picture of this chat ("photorealistic, 35mm, warm
+    // light"). Same rule as the system addition: a trimmed string, empty —
+    // removed.
+    if (stylePrompt !== undefined) {
+      const t = typeof stylePrompt === "string" ? stylePrompt.trim() : "";
+      if (t) chat.stylePrompt = t;
+      else delete chat.stylePrompt;
     }
     chats.save(chat);
     res.json(chat);
@@ -430,7 +438,7 @@ export function createChatsRouter(
       res.status(404).json({ error: "Message not found" });
       return;
     }
-    const { description, prompt, image, kind } = req.body ?? {};
+    const { description, prompt, image, kind, refs, depicts } = req.body ?? {};
     if (description !== undefined && typeof description !== "string") {
       res.status(400).json({ error: "Expected description (string)" });
       return;
@@ -438,6 +446,25 @@ export function createChatsRouter(
     if (prompt !== undefined && typeof prompt !== "string") {
       res.status(400).json({ error: "Expected prompt (string)" });
       return;
+    }
+    // The references and the cast arrive as lists of ids; anything else in the
+    // list is dropped rather than rejected — a half-parsed catalog entry is
+    // still a valid edit of the rest of it.
+    if (refs !== undefined && !Array.isArray(refs)) {
+      res.status(400).json({ error: "Expected refs (a list of picture ids)" });
+      return;
+    }
+    if (depicts !== undefined && !Array.isArray(depicts)) {
+      res.status(400).json({ error: "Expected depicts (a list of participant ids)" });
+      return;
+    }
+    if (Array.isArray(refs)) {
+      for (const ref of refs as unknown[]) {
+        if (typeof ref !== "string" || !PathHelper.resolveImageId(ref)) {
+          res.status(400).json({ error: `Unknown picture "${String(ref)}"` });
+          return;
+        }
+      }
     }
     if (kind !== undefined && kind !== "generated" && kind !== "file") {
       res.status(400).json({ error: 'Expected kind "generated" or "file"' });
@@ -467,6 +494,12 @@ export function createChatsRouter(
       ...(prompt !== undefined ? { prompt } : {}),
       ...(image !== undefined ? { image } : {}),
       ...(kind !== undefined ? { kind } : {}),
+      ...(refs !== undefined
+        ? { refs: (refs as unknown[]).filter((x): x is string => typeof x === "string") }
+        : {}),
+      ...(depicts !== undefined
+        ? { depicts: (depicts as unknown[]).filter((x): x is string => typeof x === "string") }
+        : {}),
     });
     if (!fresh) {
       res.status(404).json({ error: "Message not found" });

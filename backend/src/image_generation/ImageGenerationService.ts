@@ -86,6 +86,16 @@ export class ImageGenerationService {
     return this.availableDrivers.length > 0;
   }
 
+  // How many reference images the user can be promised right now. A job lands
+  // on whichever generator is free, so the promise is the largest number ANY
+  // available generator can honour — a job that gets the weaker one has its
+  // extra references dropped at the run (see the clamp in startImageJob) rather
+  // than failing outright, which is the difference between a picture with one
+  // familiar face and a broken card.
+  maxReferenceCount(): number {
+    return this.availableDrivers.reduce((max, d) => Math.max(max, d.maxRefs), 0);
+  }
+
   // Recomputes the available generators; called at startup and when settings
   // are saved. The probes run in parallel.
   async refreshAvailableGenerators(generators: ImageGenerator[]): Promise<IImageGeneratorDriver[]> {
@@ -177,7 +187,11 @@ export class ImageGenerationService {
           return { status: "failed", error: "The chat was deleted", hadOld: false };
         }
         fs.mkdirSync(dir, { recursive: true });
-        const refPaths = ImageGenerationService.resolveRefPaths(refs);
+        // The generator that got this job decides the final count: the plan was
+        // made for the strongest available one and this may be the weaker one
+        // (or a reference file may have disappeared). The extras are dropped in
+        // order, so what stays are the references the caller listed first.
+        const refPaths = ImageGenerationService.resolveRefPaths(refs).slice(0, Math.max(0, driver.maxRefs));
         await driver.run(prompt, refPaths, temp, (ctrl) => {
           entry.aborts.push(ctrl);
         });

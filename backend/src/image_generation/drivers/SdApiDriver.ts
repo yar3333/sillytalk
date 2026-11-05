@@ -19,6 +19,12 @@ export class SdApiDriver implements IImageGeneratorDriver {
     return url.replace(/\/+$/, "");
   }
 
+  // img2img takes one starting picture. Several init_images are not a reference
+  // set — the WebUI treats them as a batch of separate runs — so a second
+  // reference would silently change what the job draws instead of adding a
+  // second face to keep.
+  readonly maxRefs = 1;
+
   async available(): Promise<boolean> {
     if (!this.cfg.url) return false;
     try {

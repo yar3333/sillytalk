@@ -753,6 +753,78 @@ test('UX 16: clicking a card picture opens the lightbox and makes it a reference
   await page.screenshot({ path: `${SHOTS}/ux-16-ref-chip.png` });
 });
 
+// A person in a picture is a FACE the generator has never heard of: the app has
+// to hand it the character's own picture and describe them in plain English,
+// never write their name into the prompt.
+test('UX 17: a person is drawn from their own pictures, never from their name', async ({
+  page,
+}) => {
+  await setDelay(150);
+  await setPlan({
+    name: 'alice at the harbour',
+    description: 'A woman standing at a harbour at sunset',
+    prompt: 'a woman standing at a harbour at sunset, looking at the boats',
+    refs: [],
+    // the plan says who is in it and what the prompt calls her
+    cast: ['char:alice'],
+    subjects: [{ id: 'char:alice', noun: 'the woman in the green coat' }],
+  });
+  await openApp(page);
+  await page.getByTestId('input').fill('What are you doing this evening?');
+  await page.getByTestId('send').click();
+  await expect(assistantMsgs(page).first()).toBeVisible({ timeout: 15000 });
+  await page.getByTestId('auto-image').click();
+  await expect(cardImages(page).first()).toBeVisible({ timeout: 30000 });
+  await page.screenshot({ path: `${SHOTS}/ux-17-person-from-her-own-photo.png` });
+
+  // What the planner was told: the cast of the conversation, with Alice in it,
+  // and the rule that a name never goes into a prompt.
+  const asked = llm?.lastPlanRequest();
+  expect(asked?.text ?? '').toContain('char:alice');
+  expect(asked?.system ?? '').toContain('NEVER write a person');
+
+  // What the generator got: her own picture as the reference, the prompt that
+  // binds it to her — and not one word that could be her name.
+  const sent = comfy?.prompts() ?? [];
+  const prompt = sent[sent.length - 1] ?? '';
+  expect(prompt).toContain('the first reference image shows the woman in the green coat');
+  expect(prompt.toLowerCase()).not.toContain('alice');
+  expect((comfy?.uploads() ?? []).length).toBeGreaterThan(0);
+});
+
+// One look for the whole conversation: without it every plan picks its own
+// technique and the pictures of one chat look like they came from different apps.
+test('UX 18: the picture style of the chat is drawn into every picture', async ({ page }) => {
+  await setDelay(150);
+  await openApp(page);
+  await page.getByTestId('input').fill('Hello Alice');
+  await page.getByTestId('send').click();
+  await expect(assistantMsgs(page).first()).toBeVisible({ timeout: 15000 });
+  const chatId = ((await api('/chats')) as Array<{ id: string }>)[0].id;
+  await api(`/chats/${chatId}`, 'PATCH', { stylePrompt: 'watercolour, soft edges' });
+
+  await page.getByTestId('auto-image').click();
+  await expect(cardImages(page).first()).toBeVisible({ timeout: 30000 });
+  const sent = comfy?.prompts() ?? [];
+  expect(sent[sent.length - 1] ?? '').toContain('Style: watercolour, soft edges');
+  await page.screenshot({ path: `${SHOTS}/ux-18-chat-style.png` });
+
+  // A regeneration re-uses the stored prompt, which already carries the style —
+  // appending it again would stack it once per redraw. (The ↻ of a ready
+  // picture is a hover button, like every other action of a message.)
+  const card = cards(page).last();
+  await card.hover();
+  const jobsBefore = (comfy?.prompts() ?? []).length;
+  await card.getByTestId('img-regenerate').click();
+  await expect(page.getByTestId('img-pending')).toBeVisible({ timeout: 10000 });
+  await expect(page.getByTestId('img-pending')).toBeHidden({ timeout: 25000 });
+  // the one job this redraw started, and the style in it exactly once
+  const drawn = (comfy?.prompts() ?? []).slice(jobsBefore);
+  expect(drawn).toHaveLength(1);
+  expect(drawn[0].split('Style:').length - 1).toBe(1);
+  await page.screenshot({ path: `${SHOTS}/ux-18b-regenerated-once.png` });
+});
+
 // The collected issues are attached to every test run as a JSON artifact.
 test.afterEach(async ({ page }, testInfo) => {
   if (issues.length > 0) {

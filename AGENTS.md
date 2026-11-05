@@ -434,8 +434,17 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   generator becomes unavailable) with the reason in the server log — and a broken override of a
   shipped model does NOT fall back to the shipped graph, because the file the user wrote wins.
   A model name is a file stem, so it cannot contain a path separator (`comfyUiWorkflowSet`
-  refuses it — a hand-written config must not point the loader at `../config.json`). The ask for
-  more references than the file has templates for is refused before the job starts.
+  refuses it — a hand-written config must not point the loader at `../config.json`).
+  **How many references a generator takes is part of its driver** (`IImageGeneratorDriver.maxRefs`:
+  for ComfyUI `comfyUiMaxRefs(set)` — the highest template the file defines; for the SD API `1`,
+  because several `init_images` are a batch, not a reference set) and
+  `ImageGenerationService.maxReferenceCount()` is the highest count ANY available generator takes —
+  which is what the picture planner is asked for and what assembles the final list. Before a job
+  starts the service cuts the references to `driver.maxRefs`, so a model with fewer templates uses
+  the pictures it can take instead of failing the job (the cast anchors come first, so a cut drops
+  scenery before it drops a face, and the ordinals of the binding sentence stay true for what
+  survives); the driver keeps its own refusal as the safety net for a workflow file swapped under a
+  queued job.
   The driver (`drivers/ComfyUiDriver.ts`):
   `POST /workflow/convert` turns the UI template into the API format (the
   `comfyui-workflow-to-api-converter-endpoint` custom node — a 404 here is reported as the node
@@ -477,14 +486,44 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   `generation.source: 'auto'`) — the rest runs in the background (`runUserTurnImage`) and the client
   polls, so typing and sending are never blocked. The background half asks the model
   (`composeImagePrompt`) for a plan: the input is the whole dialogue as TEXT (who is in it, the
-  labeled lines, and a numbered catalogue of the pictures the chat already has — with what each shows,
-  how it got there, who shared it and how long ago), and its own placeholder is left out of both; the
-  output is strict JSON `{"name","description","prompt","refs"}` extracted from whatever wrapping the
-  model chose (`parseJsonPlan`), with `refs` clamped to the catalogue. The placeholder card is then
-  repointed at a file named from the model's 2–5 English words, the description becomes the card's
-  caption, and the generation runs as the usual background job. If the model cannot produce a
-  readable plan the card becomes the broken placeholder with the reason and a Regenerate button — it
-  never stays pending.
+  labeled lines, the **cast** — see the next bullet — and a numbered catalogue of the pictures the
+  chat already has, with what each shows, how it got there, who shared it and how long ago), and its
+  own placeholder is left out of both; the output is strict JSON
+  `{"name","description","prompt","refs","cast","subjects"}` extracted from whatever wrapping the
+  model chose (`parseJsonPlan`), with `refs` clamped to the catalogue and `cast`/`subjects` to the
+  cast it was given. The placeholder card is then repointed at a file named from the model's 2–5
+  English words, the description becomes the card's caption, and the generation runs as the usual
+  background job. If the model cannot produce a readable plan the card becomes the broken placeholder
+  with the reason and a Regenerate button — it never stays pending.
+- **A person is a face and a description, never a name (`ReplyService.pictureMaterial` /
+  `finishPlan`).** The generator has never heard of Alice or Carol, so a name in a prompt buys
+  nothing and a person the model has to guess gets a new face every time. The cast layer fixes both:
+  - **Who is offered:** `pictureMaterial` builds the cast from the chat's characters, its active
+    persona and every persona that ever spoke here. Each member carries a **look** — `Character.look`
+    / `Person.look` (English, written for the generator; the card dialog's *Appearance* field, and
+    `POST /api/characters/:id/look` / `POST /api/persons/:id/look` write it from the person's own
+    pictures with `TextGenerationService.describeLook`, or from the card text with `extractLook` when
+    there is nothing to look at) and, as **anchors**, up to two of their actual pictures: newest first
+    a card of THIS chat that depicts them, else `characters/<id>/photos/*` and the avatar. The planner
+    is told `char:alice — Alice: <look> (shown on picture 2)` and answers with the cast ids the
+    picture shows plus the 2–4 word noun phrase it used for each (`subjects`).
+  - **What reaches the generator:** `finishPlan` assembles the references itself — the cast anchors
+    first (a face beats a place), then the pictures the model picked, deduped and cut to
+    `ImageGenerationService.maxReferenceCount()` — appends the binding sentence `Reference images:
+    the first reference image shows the woman in the green coat — draw them with exactly the same
+    face, hair and outfit; …` and rewrites any name the model still wrote into that noun phrase
+    (`describePeople`). The generator therefore sees **no proper names** and always knows what each
+    of its input pictures is for; the reference order is what makes "the first reference image" true
+    (`ComfyUiDriver` keeps it — `PARAM_STRING_INPUT_IMAGE_FILENAME_1`/`_2`).
+  - **What is remembered:** the people on a card are stored on the message AND in its sidecar as
+    `depicts: ["char:alice", "user:carol"]` (`ChatsService.setMessageDepicts` /
+    `editImageCard`, refreshed by `applySidecars`), and a card's own caption doubles as the look of
+    the person it depicts when they have no `look` of their own. That record is what lets the next
+    picture of the same chat draw the same woman instead of a stranger.
+- **One look per conversation (`Chat.stylePrompt`).** The chat-settings dialog's *Picture style*
+  field is appended to every generation prompt of that chat as `Style: …` — the auto plan, a gen-mode
+  draw and a regeneration alike (`ReplyService.withChatStyle`, which skips a prompt that already
+  carries the style so repeated redraws do not stack it).
 - **Every picture is addressed by an ID that is its path relative to the data folder**
   (`PathHelper.imageIdOf` / `resolveImageId`, e.g. `chats/<chatId>/files/a-sunset-1a2b3c.png`,
   `characters/alice/photos/photo1.jpg`). An id is resolved only when it stays inside one of the data
@@ -512,9 +551,11 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   side stays looser on purpose: a hand-edited sidecar may point a reference at any image of the data
   folder.
 - **A picture carries its description and generation data in a sidecar next to the file**:
-  `<image>.png.json` — `{ name, description, prompt, negativePrompt, refs, source, generator, model,
-  width, height, steps, createdAt, updatedAt }` (`shared/ImageMeta.ts`, read/written by
-  `shared/ImageMetaFile.ts`). It is **merge-on-write**: keys the app does not know are preserved, so
+  `<image>.png.json` — `{ name, description, depicts, prompt, negativePrompt, refs, source, generator,
+  model, width, height, steps, createdAt, updatedAt }` (`shared/ImageMeta.ts`, read/written by
+  `shared/ImageMetaFile.ts`; `depicts` — the cast ids of the people on the picture — is content, not
+  generation data, so it is NOT in `IMAGE_GENERATION_KEYS` and survives a generation block being
+  dropped). It is **merge-on-write**: keys the app does not know are preserved, so
   the user can add their own fields and hand-edit the existing ones (a short `<base>.json` alias —
   `a-red-boat.json` — is read too and removed as soon as the canonical file is rewritten). The
   sidecar is the authority: `ChatsService.get()` refreshes each card's caption and generation data
@@ -546,13 +587,18 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   job and marks the image failed. `POST /api/chats/:id/messages/:messageId/regenerate-image`
   (body `{ image, prompt? }`) re-runs the generator in the background against the SAME id (no
   file swap, so no later reference needs repointing), after cancelling any job still running for it.
-  `PATCH /api/chats/:id/messages/:messageId/picture` (body `{ description?, prompt?, image?, kind? }`)
+  `PATCH /api/chats/:id/messages/:messageId/picture` (body `{ description?, prompt?, image?, kind?,
+  refs?, depicts? }`)
   is what the picture editor saves: the description and the prompt (both mirrored into the sidecar),
   `image` — an existing picture id of the data folder the card should point at (the card's generation
   data is dropped; a card whose picture is still `pending` refuses the swap), and `kind` —
   `"generated"` (keep/create the generation block, source `manual` when it had none) or `"file"`
   (drop it, from the row AND from the sidecar, since the sidecar wins on read). An empty prompt is a
-  real edit — the card then has nothing to redraw from. `POST /api/chats/:id/messages/:messageId/replace-image`
+  real edit — the card then has nothing to redraw from. `refs` — the picture ids the saved prompt
+  names in order (each must resolve with `PathHelper.resolveImageId`), because a prompt that says "the
+  first reference image shows …" is only true together with its pictures; `depicts` — the cast ids of
+  the people on the picture, `[]` being a real edit that clears the note. Both are written to the
+  sidecar too. `POST /api/chats/:id/messages/:messageId/replace-image`
   (body `{ image, data }`) repoints the card at a file the user picked — the old picture keeps its
   own file and sidecar (nothing references it anymore) and the card's generation data is dropped,
   because the new file was not generated by the app.
@@ -561,9 +607,11 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   `GET /api/image/pictures` → `{ images }`, every picture of the data folder as an image id, newest
   first (`PathHelper.listPictureIds` walks only the folders pictures live in and keeps only names
   `HttpHelper.isImage` accepts, so each id loads through `/media` — the "from a file" pick);
-  `POST /api/image/prompt` `{ chatId, messageId? }` → `{ prompt, description }`, the plan of the card
-  from the dialogue (`composeImagePrompt` on the whole dialogue and picture catalogue, the card
-  itself left out; 502 when the model gives nothing readable); `POST /api/image/tune-prompt`
+  `POST /api/image/prompt` `{ chatId, messageId? }` → `{ prompt, description, refs }`, the finished
+  plan of the card from the dialogue (`composeImagePrompt` on the whole dialogue, cast and picture
+  catalogue, the card itself left out; `ReplyService.planPicturePrompt` returns the prompt WITH the
+  reference binding already appended and the references assembled — the two are one thing, so they
+  come back together; 502 when the model gives nothing readable); `POST /api/image/tune-prompt`
   `{ chatId, prompt }` → `{ prompt }`, the typed prompt translated to English and shaped for the
   generator (`tunePrompt` — not a literal translation, unlike `translatePrompt`); and
   `POST /api/image/describe` `{ chatId, image? | data? }` → `{ description }`, one English sentence
@@ -577,20 +625,29 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   and the hover hint show it.
 - **Characters are NOT in the config.** Each character is a folder
   `~/.config/sillytalk/characters/<id>/`: the folder name IS the character id, `character.json` holds
-  `{ name, description }`,
+  `{ name, description, look? }` (`look` = the 1–2 English sentences the picture planner puts in
+  every prompt that shows her; the character dialog's *Appearance* field, and
+  `POST /api/characters/:id/look` → `{ look }` writes it from `photos/` + the avatar with a vision
+  model, or from the card text when there are no pictures — the answer lands in the field and the
+  user saves it),
   `photos/` is the fixed "starter" photo set (computed by
   `characterPhotosDir(id)`), and `avatar.jpg` is the character avatar shown next to its messages.
   The photos and the avatar are ordinary pictures of a character folder, so they can be addressed by
   an image id (`characters/alice/photos/photo1.jpg`) like any other — there is no separate reference
   machinery for them and no "access to all images" flag (the characters do not attach pictures at
-  all).
+  all). They ARE, however, what the picture planner offers as a person's **look references** (see the
+  cast bullet above).
   CRUD lives in `characters/CharactersService.ts`; `GET/PUT /api/characters` read/sync the folders (PUT performs a full
   sync: create/update/delete). An on-disk `characters` field in an old config.json is migrated to
   folders at startup (`index.ts`) and stripped by `PUT /api/config` — do not reintroduce a
   `characters` array in the config.
 - **Users are NOT in the config either.** Each person (persona card) is a folder
-  `~/.config/sillytalk/users/<id>/` with `user.json` holding `{ name, description }` and `avatar.jpg`
-  (persona avatar, shown next to user messages). CRUD lives in `persons/PersonsService.ts` (the
+  `~/.config/sillytalk/users/<id>/` with `user.json` holding `{ name, description, look? }` and
+  `avatar.jpg`
+  (persona avatar, shown next to user messages; `look` and the persona dialog's *Appearance* field
+  work exactly as for a character, `POST /api/persons/:id/look` → `{ look }` writing it from the
+  avatar — the persona appears in the picture cast of the chat too, so a persona with no look and no
+  avatar is the one case the model has to invent a face from). CRUD lives in `persons/PersonsService.ts` (the
   domain concept in the code is `person`/`persons`, type `Person`); `GET/PUT /api/persons` mirror the
   character endpoints — the `users` JSON body/response fields, the `userId` fields and the on-disk
   layout (`users/`, `user.json`) stay "user"-named. There is **no selected/current user** in the
@@ -681,9 +738,11 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
 - **Per-chat settings** (the chat-actions ⋮ → "Chat settings…", `chat-settings-dialog`): the chat's
   **name** plus the
   sampling overrides of THIS chat — temperature / min-P / repetition penalty — plus a free-text
-  **system-prompt addition**. An empty sampling field means "do not override" (the provider default); all
+  **system-prompt addition** plus the chat's **picture style** (one look for every picture of the
+  conversation, `chat-style-input`). An empty sampling field means "do not override" (the provider default); all
   three sampling fields empty clear the whole block server-side. Stored on the chat as
-  `Chat.sampling = { temperature?, minP?, repetitionPenalty? }`, `Chat.systemSuffix` and
+  `Chat.sampling = { temperature?, minP?, repetitionPenalty? }`, `Chat.systemSuffix`,
+  `Chat.stylePrompt` and
   `Chat.name`, saved with
   `PATCH /api/chats/:id` (the only place they are set — `POST /api/chats` takes just the
   participants, the persona and the model). `ReplyService.appendAssistantReply`
@@ -734,10 +793,24 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   plans it from the dialogue via the model, and "Make it English", which translates + shapes the
   typed text for the generator) — or **from a file** — the picture's id, picked from the catalog of
   the data folder (`GET /api/image/pictures`) or from disk. Both carry a **description** (with
-  "Describe the picture", a vision call). Save only edits what the card says and which file it
+  "Describe the picture", a vision call) and the **"who is on this picture"** chips
+  (`picture-depicts`, the chat's characters and every persona that ever spoke here; the note the next
+  plan reads to draw the same person again). A generated card also shows the **reference set** its
+  prompt names, in order (`.refs` / `.ref-thumb`) — "From the chat" fills the prompt and those
+  pictures together and Save writes both, because a prompt that says "the first reference image
+  shows the woman in the green coat" is only true with its pictures. Save sends only the fields the
+  dialog actually changed: an untouched card keeps its `refs` and `depicts` (`sameList` compares
+  against what the card said on open — and an empty list IS a change, so clearing works).
+  Save only edits what the card says and which file it
   points at — it never draws: redrawing stays the card's ↻ (shown only when there is a prompt). The
   dialog is destroyed/re-initialized per card, so it always reads the card from the store, and it
   closes itself when the card is gone.
+- **The character/persona dialogs carry the look.** Below the description sits *Appearance*
+  (`char-look-input` / `user-look-input`, English) with a **Fill from photos** button
+  (`char-look-fill` / `user-look-fill`) that calls `POST /api/{characters,persons}/:id/look` and puts
+  the answer in the field — the user saves it (and may fix it). A new card with no folder yet has no
+  button: there is nothing on disk to look at. The hint under the field says why: the generator has
+  never heard the name, it draws this text and the reference pictures.
 - **📷 is a turn affordance, not a generator switch.** It shows only when a generator is available
   AND the last message is a plain assistant answer (`ChatStore.isUserTurn`), so it never competes
   with the 🎨 prompt box, the edit mode, or a turn that already has the user's message in it. One
@@ -932,9 +1005,12 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   `/system_stats`, `/workflow/convert` (it answers its own tiny workflow whose `PARAM_*` placeholders
   follow the reference count of the template it was handed, so a placeholder the app forgot to
   substitute stays visible), `/upload/image`, `/prompt`, `/history/{id}`, `/view`, `/queue`,
-  `/interrupt`; it returns `MockComfy` = `{ url, generator, close() }`, where `generator` is the
-  `kind: 'comfyui'` `imageGenerators` entry pointing at it). What a job does follows the prompt text
-  the app substituted into the workflow: "fail" → the server reports an execution error, "slow" →
+  `/interrupt`; it returns `MockComfy` = `{ url, generator, prompts(), uploads(), close() }`, where
+  `generator` is the `kind: 'comfyui'` `imageGenerators` entry pointing at it and `prompts()` /
+  `uploads()` are **what the app actually sent** — the substituted prompt of every submitted job and
+  the name of every uploaded reference (the assertions about the cast layer read them: UX 17 checks
+  that the prompt named the reference and never named the person). What a job does follows the prompt
+  text the app substituted into the workflow: "fail" → the server reports an execution error, "slow" →
   5 s, anything else → a short pause and a real generated PNG from `/view` — so the failure, the
   pending/spinner and the ready-card paths are all covered without a real ComfyUI. `beforeAll` starts
   the mock LLM and the mock ComfyUI, `beforeEach` points the config's `llmModels`/`imageGenerators`
@@ -944,7 +1020,11 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   `customReplies` option can override the wording); a prompt translation ("Translate …")
   answers with an English description that keeps the "fail"/"slow" markers so a test can steer
   the generator; the picture planning of the user's turn ("You plan one picture …") answers
-  with the JSON plan the suite sets through `MockLlm.setImagePlan` — `setImagePlan(null)` makes
+  with the JSON plan the suite sets through `MockLlm.setImagePlan` — the plan carries the cast layer
+  too (`cast` = the person ids it shows, `subjects` = the noun phrase it used for each; both default
+  to empty, so a plan written before them still works), and `MockLlm.lastPlanRequest()` returns the
+  system prompt + user text of that call, which is how a test sees what the planner was told about
+  the people and the pictures — `setImagePlan(null)` makes
   it answer with prose instead, which is how "the model could not plan it" path is covered; the
   picture editor's "Make it English" ("You prepare an image generation prompt …") answers an
   English prompt, and its "Describe the picture" ("You describe pictures …") a fixed sentence —
@@ -975,11 +1055,16 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   editor (`picture-dialog`, opened by the card's ✎): `picture-kind-generated` /
   `picture-kind-file` (the radios), `picture-prompt`, `picture-prompt-from-chat`,
   `picture-prompt-english`, `picture-description`, `picture-describe`, `picture-id` (the catalog
-  `<select>`), `picture-file` (the disk pick), `picture-save` / `picture-cancel`. The entity dialogs: `character-dialog`/`user-dialog`/
+  `<select>`), `picture-file` (the disk pick), `picture-depicts` (the "who is on this picture" chips,
+  `.on` = chosen), the reference set the prompt names (`.refs` / `.ref-thumb`, no testid — it is
+  read-only) and `picture-save` / `picture-cancel`. The entity dialogs: `character-dialog`/`user-dialog`/
   `model-dialog` + `char-name-input`/`user-name-input`/`model-name-input`/`model-id-input` and
-  `char-save`/`char-clone`/`char-delete` (the `user-*`/`model-*` analogues); the model dialog also
+  `char-save`/`char-clone`/`char-delete` (the `user-*`/`model-*` analogues); the character/persona
+  dialogs have `char-look-input` + `char-look-fill` (`user-look-input` + `user-look-fill`) and the
+  model dialog also
   has `model-reasoning-select` + `model-reasoning-levels-input`. The per-chat dialog:
   `chat-settings-dialog` + `chat-name-input` +
   `chat-temp-input`/`chat-minp-input`/`chat-reppen-input`/
-  `chat-sysprompt-input` + `chat-settings-save`.
+  `chat-sysprompt-input`/`chat-style-input` (the picture style of the whole chat) +
+  `chat-settings-save`.
 - The suite captures screenshots into `e2e/screenshots/`.

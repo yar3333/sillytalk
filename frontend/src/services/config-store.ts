@@ -141,11 +141,11 @@ export class ConfigStore {
 
   // ---- characters (the characters/ folders — full list sync) ----
   // id === null — creates a new one (the id is generated here).
-  saveCharacter(id: string | null, name: string, description: string): void {
+  saveCharacter(id: string | null, name: string, description: string, look?: string): void {
     const chars = this.characters();
     const next = id
-      ? chars.map((c) => (c.id === id ? { ...c, name, description } : c))
-      : [...chars, { id: 'c' + Date.now(), name, description }];
+      ? chars.map((c) => (c.id === id ? { ...c, name, description, ...(look ? { look } : { look: undefined }) } : c))
+      : [...chars, { id: 'c' + Date.now(), name, description, ...(look ? { look } : {}) }];
     this.putCharacters(next);
   }
 
@@ -176,11 +176,11 @@ export class ConfigStore {
   }
 
   // ---- users (the users/ folders — full list sync) ----
-  saveUser(id: string | null, name: string, description: string): void {
+  saveUser(id: string | null, name: string, description: string, look?: string): void {
     const users = this.users();
     const next = id
-      ? users.map((u) => (u.id === id ? { ...u, name, description } : u))
-      : [...users, { id: 'u' + Date.now(), name, description }];
+      ? users.map((u) => (u.id === id ? { ...u, name, description, ...(look ? { look } : { look: undefined }) } : u))
+      : [...users, { id: 'u' + Date.now(), name, description, ...(look ? { look } : {}) }];
     this.putUsers(next);
   }
 

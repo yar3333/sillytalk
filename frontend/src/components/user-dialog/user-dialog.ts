@@ -45,6 +45,33 @@ import { UiStore } from '../../services/ui-store';
         [value]="description()"
         (input)="setDescription($event)"
       ></textarea>
+      <label class="field col">
+        <span>Appearance</span>
+        <textarea
+          rows="3"
+          data-testid="user-look-input"
+          placeholder="How you look, in English — hair, eyes, build, usual clothes. Written into every picture prompt, so the drawings keep one face."
+          [value]="look()"
+          (input)="setLook($event)"
+        ></textarea>
+      </label>
+      @if (!isNew()) {
+        <div class="row-actions">
+          <button
+            class="btn"
+            data-testid="user-look-fill"
+            [disabled]="lookFilling()"
+            (click)="fillLookFromPhotos()"
+            title="Read the appearance from this persona's avatar"
+          >
+            {{ lookFilling() ? 'Looking at the photos…' : 'Fill from photos' }}
+          </button>
+        </div>
+      }
+      <div class="dialog-hint">
+        The image generator has never heard this persona's name — it draws what this text and the
+        reference pictures say.
+      </div>
       <div class="dialog-actions">
         @if (!isNew()) {
           <button class="btn danger" data-testid="user-delete" (click)="remove()">Delete</button>
@@ -67,6 +94,9 @@ export class UserDialog implements OnInit {
 
   readonly name = signal('');
   readonly description = signal('');
+  readonly look = signal('');
+  // The "Fill from photos" request is in flight (the button says what it does).
+  readonly lookFilling = signal(false);
   readonly isNew = signal(true);
   readonly hasAvatar = signal(false);
   // A cache buster for the avatar preview after upload/removal.
@@ -82,6 +112,7 @@ export class UserDialog implements OnInit {
       if (u) {
         this.name.set(u.name);
         this.description.set(u.description);
+        this.look.set(u.look ?? '');
         this.hasAvatar.set(!!u.hasAvatar);
       }
     }
@@ -100,6 +131,21 @@ export class UserDialog implements OnInit {
   setDescription(e: Event): void {
     this.description.set((e.target as HTMLTextAreaElement).value);
   }
+  setLook(e: Event): void {
+    this.look.set((e.target as HTMLTextAreaElement).value);
+  }
+
+  // "Fill from photos": the model looks at this persona's avatar and writes the
+  // appearance note; it lands in the field and the user saves it themselves.
+  fillLookFromPhotos(): void {
+    if (this.isNew() || this.lookFilling()) return;
+    this.lookFilling.set(true);
+    this.api
+      .fillLook('user', this.id)
+      .then((res) => this.look.set(res.look))
+      .catch((e) => this.ui.error.set(String((e as Error).message)))
+      .finally(() => this.lookFilling.set(false));
+  }
 
   save(): void {
     const nm = this.name().trim();
@@ -107,7 +153,7 @@ export class UserDialog implements OnInit {
       this.ui.error.set('The name cannot be empty');
       return;
     }
-    this.configStore.saveUser(this.isNew() ? null : this.id, nm, this.description().trim());
+    this.configStore.saveUser(this.isNew() ? null : this.id, nm, this.description().trim(), this.look().trim());
     this.configStore.closeEntityDialog();
   }
 
