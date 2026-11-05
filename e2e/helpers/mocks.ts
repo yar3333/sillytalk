@@ -165,6 +165,13 @@ export async function startMockLlm(
           content = imagePlan
             ? JSON.stringify(imagePlan)
             : 'I am not sure what to draw here, sorry.';
+        } else if (system.startsWith('You prepare an image generation prompt')) {
+          // tunePrompt: the picture editor's "Make it English" button — the
+          // words survive into the generator prompt like the translation.
+          content = /fail/i.test(text) ? 'mock failure requested' : 'a red circle on a white background';
+        } else if (system.startsWith('You describe pictures')) {
+          // describePicture: the picture editor's "Describe the picture".
+          content = 'A red circle on a white background, described by the mock model.';
         } else {
           const who = /^You are ([A-Za-z]+)/.exec(system)?.[1] ?? 'Model';
           content =

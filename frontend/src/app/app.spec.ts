@@ -15,6 +15,7 @@ import { InputPanel } from '../components/input-panel/input-panel';
 import { MessageRow } from '../components/message-row/message-row';
 import { TopBar } from '../components/top-bar/top-bar';
 import { ChatSettingsDialog } from '../components/chat-settings-dialog/chat-settings-dialog';
+import { PictureDialog } from '../components/picture-dialog/picture-dialog';
 import { ChatStore } from '../services/chat-store';
 import { ConfigStore } from '../services/config-store';
 import { ImageStore } from '../services/image-store';
@@ -997,10 +998,44 @@ describe('MessageRow — the image card', () => {
     );
     expect(el.querySelector('[data-testid=card-prompt]')?.textContent?.trim()).toBe('a red boat, the sky orange');
     expect(el.querySelector('[data-testid=card-refs]')?.textContent).toContain('references: 1');
-    // a drawn picture can be redrawn and its prompt changed
+    // a drawn picture can be redrawn; everything else about it (the prompt,
+    // the description, the file) lives in the picture editor dialog
     expect(el.querySelector('[data-testid=img-regenerate]')).toBeTruthy();
-    expect(el.querySelector('[data-testid=img-edit-prompt]')).toBeTruthy();
-    expect(el.querySelector('[data-testid=img-replace]')).toBeTruthy();
+    expect(el.querySelector('[data-testid=img-edit-prompt]')).toBeNull();
+    expect(el.querySelector('[data-testid=img-replace]')).toBeNull();
+  });
+
+  it('the ✎ of a card opens the picture editor for that card', () => {
+    const imageStore = TestBed.inject(ImageStore);
+    const { el } = renderMessage({
+      id: 'card-6',
+      role: 'user',
+      kind: 'image',
+      userId: 'u1',
+      text: 'a red boat on a calm lake',
+      images: [cardImage],
+      generation: { prompt: 'a red boat', source: 'manual' },
+      timestamp: 3,
+    });
+    (el.querySelector('[data-testid=msg-edit]') as HTMLButtonElement).click();
+    expect(imageStore.pictureEdit()).toEqual({ messageId: 'card-6', image: cardImage });
+  });
+
+  it('the ✎ of a text message still starts the inline edit', () => {
+    const chatStore = TestBed.inject(ChatStore);
+    const imageStore = TestBed.inject(ImageStore);
+    const { el } = renderMessage({
+      id: 'msg-2',
+      role: 'user',
+      kind: 'text',
+      userId: 'u1',
+      text: 'just words',
+      images: [],
+      timestamp: 3,
+    });
+    (el.querySelector('[data-testid=msg-edit]') as HTMLButtonElement).click();
+    expect(chatStore.editTargetId()).toBe('msg-2');
+    expect(imageStore.pictureEdit()).toBeNull();
   });
 
   it('an uploaded photo has no prompt, so it offers no redraw — only the replace', () => {
@@ -1018,7 +1053,7 @@ describe('MessageRow — the image card', () => {
     expect(el.querySelector('[data-testid=card-refs]')).toBeNull();
     expect(el.querySelector('[data-testid=img-regenerate]')).toBeNull();
     expect(el.querySelector('[data-testid=img-edit-prompt]')).toBeNull();
-    expect(el.querySelector('[data-testid=img-replace]')).toBeTruthy();
+    expect(el.querySelector('[data-testid=img-replace]')).toBeNull();
   });
 
   it('a pending auto picture says it is being planned and drawn, and can be cancelled', () => {
@@ -1084,6 +1119,211 @@ describe('MessageRow — the image card', () => {
     });
     expect(el.querySelector('[data-testid=image-card]')).toBeNull();
     expect(el.querySelector('.msg-text')?.textContent).toContain('just words');
+  });
+});
+
+describe('PictureDialog — the picture editor', () => {
+  const mediaUrl = (id: string) => `http://localhost:3000/api/media?path=${encodeURIComponent(id)}`;
+  const cardImage = 'chat-1/files/a-red-fox-1a2b3c.png';
+  const otherImage = 'characters/alice/photos/photo1.jpg';
+
+  type Patched = { chatId: string; messageId: string; patch: Record<string, unknown> };
+  let patched: Patched[];
+  let replaced: Array<{ chatId: string; messageId: string; image: string; data: string }>;
+  let described: Array<{ chatId: string; image?: string; data?: string }>;
+  let tuned: Array<{ chatId: string; prompt: string }>;
+  let planned: Array<{ chatId: string; messageId?: string }>;
+  let chat: Chat;
+
+  function card(over: Partial<ChatMessage> = {}): ChatMessage {
+    return {
+      id: 'card-1',
+      role: 'user',
+      kind: 'image',
+      userId: 'u1',
+      text: 'a fox in the snow',
+      images: [cardImage],
+      generation: { prompt: 'a red fox', source: 'manual' },
+      timestamp: 2,
+      ...over,
+    };
+  }
+
+  function fakeApiForPicture() {
+    return {
+      mediaUrl,
+      pictureCatalog: () => Promise.resolve({ images: [cardImage, otherImage] }),
+      composePicturePrompt: (chatId: string, messageId?: string) => {
+        planned.push({ chatId, messageId });
+        return Promise.resolve({ prompt: 'a planned prompt', description: 'a planned description' });
+      },
+      tunePicturePrompt: (chatId: string, prompt: string) => {
+        tuned.push({ chatId, prompt });
+        return Promise.resolve({ prompt: 'a tuned english prompt' });
+      },
+      describePicture: (chatId: string, body: { image?: string; data?: string }) => {
+        described.push({ chatId, ...body });
+        return Promise.resolve({ description: 'a picture the model saw' });
+      },
+      patchPicture: (chatId: string, messageId: string, patch: Record<string, unknown>) => {
+        patched.push({ chatId, messageId, patch });
+        return Promise.resolve({ chat });
+      },
+      replaceImage: (chatId: string, messageId: string, image: string, data: string) => {
+        replaced.push({ chatId, messageId, image, data });
+        return Promise.resolve({ chat });
+      },
+      getConfig: () => Promise.resolve({ llmModels: {} }),
+      imageStatus: () => Promise.resolve({ available: false }),
+      getCharacters: () => Promise.resolve([]),
+      getUsers: () => Promise.resolve([]),
+      getChats: () => Promise.resolve([]),
+    };
+  }
+
+  async function render(
+    message: ChatMessage,
+  ): Promise<{ fixture: ComponentFixture<PictureDialog>; el: HTMLElement }> {
+    chat = {
+      id: 'chat-1',
+      createdAt: 0,
+      characterIds: ['c1'],
+      userId: 'u1',
+      modelId: 'm1',
+      messages: [message],
+    };
+    await TestBed.resetTestingModule();
+    await TestBed.configureTestingModule({
+      imports: [PictureDialog],
+      providers: [{ provide: ApiService, useValue: fakeApiForPicture() }],
+    }).compileComponents();
+    TestBed.inject(ChatStore).chat.set(chat);
+    TestBed.inject(ImageStore).openPictureEdit(message.id, message.images[0]);
+    const fixture = TestBed.createComponent(PictureDialog);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    return { fixture, el: fixture.nativeElement as HTMLElement };
+  }
+
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+
+  beforeEach(() => {
+    patched = [];
+    replaced = [];
+    described = [];
+    tuned = [];
+    planned = [];
+  });
+
+  it('a generated card opens in "generated" with its prompt and description, and Save keeps it generated', async () => {
+    const { el } = await render(card());
+    expect((el.querySelector('[data-testid=picture-kind-generated]') as HTMLInputElement).checked).toBe(true);
+    const prompt = el.querySelector('[data-testid=picture-prompt]') as HTMLTextAreaElement;
+    expect(prompt.value).toBe('a red fox');
+    expect((el.querySelector('[data-testid=picture-description]') as HTMLTextAreaElement).value).toBe(
+      'a fox in the snow',
+    );
+    // the "from a file" pick is not part of this form
+    expect(el.querySelector('[data-testid=picture-id]')).toBeNull();
+
+    (el.querySelector('[data-testid=picture-save]') as HTMLButtonElement).click();
+    await tick();
+
+    expect(patched).toEqual([
+      {
+        chatId: 'chat-1',
+        messageId: 'card-1',
+        patch: { description: 'a fox in the snow', kind: 'generated', prompt: 'a red fox' },
+      },
+    ]);
+    // the dialog closes itself after a successful save
+    expect(TestBed.inject(ImageStore).pictureEdit()).toBeNull();
+  });
+
+  it('"From the chat" writes the prompt from the dialogue; "Make it English" rewrites it', async () => {
+    const { el } = await render(card());
+    (el.querySelector('[data-testid=picture-prompt-from-chat]') as HTMLButtonElement).click();
+    await tick();
+    await tick();
+    expect(planned).toEqual([{ chatId: 'chat-1', messageId: 'card-1' }]);
+    const prompt = el.querySelector('[data-testid=picture-prompt]') as HTMLTextAreaElement;
+    expect(prompt.value).toBe('a planned prompt');
+    // the description was already there — the plan's own does not overwrite it
+    expect((el.querySelector('[data-testid=picture-description]') as HTMLTextAreaElement).value).toBe(
+      'a fox in the snow',
+    );
+
+    (el.querySelector('[data-testid=picture-prompt-english]') as HTMLButtonElement).click();
+    await tick();
+    await tick();
+    expect(tuned).toEqual([{ chatId: 'chat-1', prompt: 'a planned prompt' }]);
+    expect(prompt.value).toBe('a tuned english prompt');
+  });
+
+  it('"Describe the picture" asks the model about the card picture', async () => {
+    const { el } = await render(card());
+    (el.querySelector('[data-testid=picture-describe]') as HTMLButtonElement).click();
+    await tick();
+    await tick();
+    expect(described).toEqual([{ chatId: 'chat-1', image: cardImage }]);
+    expect((el.querySelector('[data-testid=picture-description]') as HTMLTextAreaElement).value).toBe(
+      'a picture the model saw',
+    );
+  });
+
+  it('an uploaded picture opens in "from a file": the catalog id pick saves the card as a file', async () => {
+    const { el } = await render(card({ generation: { source: 'upload' }, text: 'my photo' }));
+    expect((el.querySelector('[data-testid=picture-kind-file]') as HTMLInputElement).checked).toBe(true);
+    expect(el.querySelector('[data-testid=picture-prompt]')).toBeNull();
+
+    const select = el.querySelector('[data-testid=picture-id]') as HTMLSelectElement;
+    // the catalog of the data folder, the card's own picture selected
+    expect(Array.from(select.options).map((o) => o.value)).toEqual(['', cardImage, otherImage]);
+    expect(select.value).toBe(cardImage);
+
+    select.value = otherImage;
+    select.dispatchEvent(new Event('change'));
+    (el.querySelector('[data-testid=picture-save]') as HTMLButtonElement).click();
+    await tick();
+
+    expect(patched).toEqual([
+      {
+        chatId: 'chat-1',
+        messageId: 'card-1',
+        patch: { description: 'my photo', kind: 'file', image: otherImage },
+      },
+    ]);
+  });
+
+  it('a file picked from disk is previewed, saved into the chat and then given the description', async () => {
+    const { fixture, el } = await render(card({ generation: { source: 'upload' }, text: 'my photo' }));
+    const input = el.querySelector('[data-testid=picture-file]') as HTMLInputElement;
+    const file = new File([new Uint8Array([1, 2, 3])], 'cat.png', { type: 'image/png' });
+    Object.defineProperty(input, 'files', { value: [file], configurable: true });
+    input.dispatchEvent(new Event('change'));
+    // the file is read asynchronously (FileReader) — wait for the preview
+    for (let i = 0; i < 50; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+      fixture.detectChanges();
+      const src = (el.querySelector('.preview img') as HTMLImageElement).getAttribute('src') ?? '';
+      if (src.startsWith('data:image/png')) break;
+    }
+
+    const preview = el.querySelector('.preview img') as HTMLImageElement;
+    expect(preview.getAttribute('src')?.startsWith('data:image/png')).toBe(true);
+
+    (el.querySelector('[data-testid=picture-save]') as HTMLButtonElement).click();
+    await tick();
+    await tick();
+
+    expect(replaced).toHaveLength(1);
+    expect(replaced[0].image).toBe(cardImage);
+    expect(replaced[0].data.startsWith('data:image/png')).toBe(true);
+    // the description lands on the swapped card
+    expect(patched).toEqual([
+      { chatId: 'chat-1', messageId: 'card-1', patch: { description: 'my photo', kind: 'file' } },
+    ]);
   });
 });
 

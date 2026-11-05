@@ -546,6 +546,38 @@ describe("the message primitives", () => {
     expect(sidecar).toMatchObject({ description: "a different scene", prompt: "a snowy pine ridge" });
   });
 
+  it("editImageCard drops the generation block from the row and the sidecar (the card is a plain file now)", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    const image = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=");
+    chats.addImageMessage(chat, image, {
+      description: "as saved",
+      generation: { prompt: "as drawn", refs: [image], source: "manual", model: "m1" },
+    });
+    const fresh = chats.get(chat.id)!;
+    const card = fresh.messages[0];
+    chats.editImageCard(fresh, card, { generation: null });
+
+    const saved = chats.get(chat.id)!.messages[0];
+    // the sidecar wins over the row on read, so it must be cleaned too —
+    // otherwise the prompt would come back
+    expect(saved.generation).toBeUndefined();
+    const sidecar = JSON.parse(fs.readFileSync(`${path.join(root, image)}.json`, "utf-8")) as Record<string, unknown>;
+    expect(sidecar.description).toBe("as saved");
+    for (const key of ["prompt", "refs", "source", "model"]) expect(sidecar).not.toHaveProperty(key);
+  });
+
+  it("editImageCard replaces the generation block with the given one", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    const image = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=");
+    chats.addImageMessage(chat, image, { description: "x", generation: { source: "upload" } });
+    const fresh = chats.get(chat.id)!;
+    chats.editImageCard(fresh, fresh.messages[0], {
+      generation: { prompt: "a snowy pine ridge", source: "manual" },
+    });
+    const saved = chats.get(chat.id)!.messages[0];
+    expect(saved.generation).toEqual({ prompt: "a snowy pine ridge", source: "manual" });
+  });
+
   it("setMessageText rewrites one row's caption (a background job has no message object)", () => {
     const chat = chats.create(["a"], "m1", "me");
     chats.addUserMessage(chat, "one");

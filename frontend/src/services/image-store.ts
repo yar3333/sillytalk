@@ -70,6 +70,11 @@ export class ImageStore {
         this.genMode.set(false);
         lastChatId = id;
       }
+      // The picture editor belongs to one card: it closes with the chat it was
+      // opened in, or when its message is gone (a poll applying the chat keeps
+      // it open — the card is still there).
+      const open = this.pictureEdit();
+      if (open && !chat?.messages.some((m) => m.id === open.messageId)) this.pictureEdit.set(null);
       this.maintainPolling();
     });
   }
@@ -156,17 +161,6 @@ export class ImageStore {
       .then((res) => this.chatStore.applyChat(res.chat))
       .catch((e) => this.ui.error.set(String((e as Error).message)));
   }
-  // Replaces a ready message image with a file the user picked (a data URL):
-  // the server saves it into the chat files/ and swaps it for the old one —
-  // no generation round-trip, the image is ready immediately.
-  replaceImage(messageId: string, image: string, data: string): Promise<void> {
-    const c = this.chatStore.chat();
-    if (!c) return Promise.resolve();
-    return this.api
-      .replaceImage(c.id, messageId, image, data)
-      .then((res) => this.chatStore.applyChat(res.chat))
-      .catch((e) => this.ui.error.set(String((e as Error).message)));
-  }
   // Cancels the in-flight generation: the image becomes the "broken" one with
   // the "Regenerate" button (the server answer carries the update).
   cancelImage(messageId: string, image: string): void {
@@ -178,16 +172,51 @@ export class ImageStore {
       .catch((e) => this.ui.error.set(String((e as Error).message)));
   }
 
-  // Edits what a card says about its picture — the description (what is on it)
-  // and the prompt it should be redrawn with. The server writes both into the
-  // message and into the sidecar next to the file.
-  editPicture(messageId: string, patch: { description?: string; prompt?: string }): Promise<void> {
+  // Saves the picture-editor dialog in one go. A card the user calls "from a
+  // file" is re-pointed at the picture they picked — an id of the data folder
+  // or a file just read from disk — and stops claiming a generation; a
+  // "generated" card keeps its picture and gets the prompt it is redrawn with.
+  // Resolves true when the saved card was applied (the dialog closes).
+  async savePictureEdit(
+    messageId: string,
+    image: string,
+    edit: { kind: 'generated' | 'file'; description: string; prompt?: string; imageId?: string; data?: string },
+  ): Promise<boolean> {
     const c = this.chatStore.chat();
-    if (!c) return Promise.resolve();
-    return this.api
-      .patchPicture(c.id, messageId, patch)
-      .then((res) => this.chatStore.applyChat(res.chat))
-      .catch((e) => this.ui.error.set(String((e as Error).message)));
+    if (!c) return false;
+    try {
+      // A file picked from disk becomes a picture of the chat's own files/
+      // first — the swap drops the old generation data, the description below
+      // then lands on the new card.
+      let target = image;
+      if (edit.kind === 'file' && edit.data) {
+        const saved = await this.api.replaceImage(c.id, messageId, image, edit.data);
+        this.chatStore.applyChat(saved.chat);
+        target = saved.chat.messages.find((m) => m.id === messageId)?.images[0] ?? image;
+      }
+      const res = await this.api.patchPicture(c.id, messageId, {
+        description: edit.description,
+        kind: edit.kind,
+        ...(edit.kind === 'generated' ? { prompt: edit.prompt ?? '' } : {}),
+        ...(edit.kind === 'file' && edit.imageId && edit.imageId !== target ? { image: edit.imageId } : {}),
+      });
+      this.chatStore.applyChat(res.chat);
+      return true;
+    } catch (e) {
+      this.ui.error.set(String((e as Error).message));
+      return false;
+    }
+  }
+
+  // ---- the picture-editor dialog ----
+  // Which card is being edited (null — closed). The dialog lives in the app
+  // shell, so its target is a signal here; a row only opens it.
+  readonly pictureEdit = signal<{ messageId: string; image: string } | null>(null);
+  openPictureEdit(messageId: string, image: string): void {
+    this.pictureEdit.set({ messageId, image });
+  }
+  closePictureEdit(): void {
+    this.pictureEdit.set(null);
   }
 
   // ---- the background-job polling ----

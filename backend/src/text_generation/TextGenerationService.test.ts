@@ -193,6 +193,107 @@ describe("translatePrompt", () => {
   });
 });
 
+describe("tunePrompt", () => {
+  const originalFetch = global.fetch;
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it("asks for one English prompt shaped for a generator and returns the answer", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(jsonRes({ choices: [{ message: { content: "a cat on a windowsill, morning light" } }] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const out = await textGenerationService.tunePrompt(model, "кот на подоконнике", { temperature: 0.4 });
+    expect(out).toBe("a cat on a windowsill, morning light");
+    const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
+    const body = JSON.parse(init.body) as {
+      messages: Array<{ role: string; content: string }>;
+      temperature?: number;
+    };
+    expect(body.messages[0].content).toContain("image generation prompt");
+    expect(body.messages[0].content).toContain("English");
+    expect(body.messages[1].content).toBe("кот на подоконнике");
+    // the chat's sampling rides along like on every other call of the chat
+    expect(body.temperature).toBe(0.4);
+  });
+});
+
+describe("describePicture", () => {
+  const originalFetch = global.fetch;
+  const originalDataDir = process.env.SILLYTALK_DATA_DIR;
+  let dataDir: string;
+  let picture: string;
+
+  beforeAll(() => {
+    dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "sillytalk-describe-"));
+    process.env.SILLYTALK_DATA_DIR = dataDir;
+    const file = path.join(dataDir, "chats", "c1", "files", "a-red-boat.png");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, Buffer.from("not really a png"));
+    picture = PathHelper.imageIdOf(file);
+  });
+
+  afterAll(() => {
+    if (originalDataDir === undefined) delete process.env.SILLYTALK_DATA_DIR;
+    else process.env.SILLYTALK_DATA_DIR = originalDataDir;
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it("sends an existing picture of the data folder as an image_url part", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(jsonRes({ choices: [{ message: { content: "A red boat on a calm lake. " } }] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const out = await textGenerationService.describePicture(model, { imageId: picture });
+    expect(out).toBe("A red boat on a calm lake.");
+    const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
+    const body = JSON.parse(init.body) as {
+      messages: Array<{ role: string; content: unknown }>;
+    };
+    expect(body.messages[0].content).toContain("ONE short sentence in English");
+    const parts = body.messages[1].content as Array<{ type: string; image_url?: { url: string } }>;
+    expect(parts[0].type).toBe("text");
+    expect(parts[1].image_url?.url.startsWith("data:image/png;base64,")).toBe(true);
+  });
+
+  it("accepts a data URL of a file the user just picked", async () => {
+    const fetchMock = jest.fn().mockResolvedValue(jsonRes({ choices: [{ message: { content: "A cat." } }] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const out = await textGenerationService.describePicture(model, { dataUrl: "data:image/jpeg;base64,aGVsbG8=" });
+    expect(out).toBe("A cat.");
+    const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
+    const parts = (JSON.parse(init.body) as { messages: Array<{ content: unknown }> }).messages[1].content as Array<{
+      image_url?: { url: string };
+    }>;
+    expect(parts[1].image_url?.url).toBe("data:image/jpeg;base64,aGVsbG8=");
+  });
+
+  it("refuses a model without vision, a non-picture data URL and an unknown id — without calling the provider", async () => {
+    const fetchMock = jest.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+    await expect(
+      textGenerationService.describePicture({ ...model, supportsImages: false }, { imageId: picture }),
+    ).rejects.toThrow(/cannot see pictures/);
+    await expect(textGenerationService.describePicture(model, { dataUrl: "data:text/plain;base64,aGk=" })).rejects.toThrow(
+      /picture data URL/,
+    );
+    await expect(textGenerationService.describePicture(model, { imageId: "chats/c1/files/gone.png" })).rejects.toThrow(
+      /Unknown picture/,
+    );
+    await expect(textGenerationService.describePicture(model, {})).rejects.toThrow(/No picture/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
 describe("trimHistory", () => {
   it("always keeps the first (system) message and the latest ones", () => {
     const system = msg("system", "assistant");

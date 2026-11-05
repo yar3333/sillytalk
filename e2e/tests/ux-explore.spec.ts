@@ -469,6 +469,69 @@ test('UX 10: gen mode — draw, pending, ready; cancel -> broken; fail', async (
   await page.screenshot({ path: `${SHOTS}/ux-10e-failed.png` });
 });
 
+test('UX 10b: the picture editor — the prompt, the description, the file kind', async ({ page }) => {
+  await openApp(page);
+  // Draw a picture to edit.
+  await page.getByTestId('gen-toggle').click();
+  await page.getByTestId('input').fill('a red circle');
+  await page.getByTestId('send').click();
+  await expect(page.getByTestId('img-pending')).toBeVisible({ timeout: 15000 });
+  await expect(cardImages(page).first()).toBeVisible({ timeout: 20000 });
+  const card = page.locator('.msg.user').filter({ has: page.getByTestId('image-card') }).last();
+  await expect(card.getByTestId('card-prompt')).toContainText('a red circle');
+
+  // The ✎ of a card opens the picture editor (not the bottom edit field).
+  await card.hover();
+  await card.locator('.msg-edit.edit').click();
+  const dialog = page.getByTestId('picture-dialog');
+  await expect(dialog).toBeVisible();
+  await expect(page.getByTestId('picture-kind-generated')).toBeChecked();
+  await expect(page.getByTestId('picture-prompt')).toHaveValue('a red circle');
+  await page.screenshot({ path: `${SHOTS}/ux-10b-editor.png` });
+
+  // "From the chat": the model writes the prompt — and the description the
+  // card never had.
+  await page.getByTestId('picture-prompt-from-chat').click();
+  await expect(page.getByTestId('picture-prompt')).toHaveValue('a red circle on a white background', {
+    timeout: 20000,
+  });
+  await expect(page.getByTestId('picture-description')).toHaveValue('A red circle drawn on a white paper sheet');
+
+  // "Make it English" rewrites a typed prompt for the generator.
+  await page.getByTestId('picture-prompt').fill('круг');
+  await page.getByTestId('picture-prompt-english').click();
+  await expect(page.getByTestId('picture-prompt')).toHaveValue('a red circle on a white background', {
+    timeout: 20000,
+  });
+
+  // "Describe the picture": the model looks at the picture and replaces the
+  // description.
+  await page.getByTestId('picture-describe').click();
+  await expect(page.getByTestId('picture-description')).toHaveValue(/described by the mock model/, {
+    timeout: 20000,
+  });
+
+  await page.getByTestId('picture-save').click();
+  await expect(dialog).toBeHidden();
+  await expect(card.getByTestId('card-prompt')).toContainText('a red circle on a white background');
+  await expect(card.getByTestId('card-caption')).toContainText('described by the mock model');
+  await page.screenshot({ path: `${SHOTS}/ux-10b-saved.png` });
+
+  // "From a file": pick the character photo of the data folder — the card
+  // points at it and stops claiming a generation (no prompt, no redraw).
+  await card.hover();
+  await card.locator('.msg-edit.edit').click();
+  await page.getByTestId('picture-kind-file').check();
+  await expect(page.getByTestId('picture-prompt')).toHaveCount(0);
+  await page.getByTestId('picture-id').selectOption('characters/alice/photos/photo1.png');
+  await page.getByTestId('picture-save').click();
+  await expect(dialog).toBeHidden();
+  await expect(card.locator('[data-testid=image-card] img')).toHaveAttribute('src', /photo1\.png/);
+  await expect(card.getByTestId('card-prompt')).toHaveCount(0);
+  await expect(card.getByTestId('img-regenerate')).toHaveCount(0);
+  await page.screenshot({ path: `${SHOTS}/ux-10b-file.png` });
+});
+
 test('UX 11: the picture of the user turn (the 📷 button)', async ({ page }) => {
   await setDelay(200);
   await openApp(page);

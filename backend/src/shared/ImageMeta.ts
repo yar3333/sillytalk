@@ -37,6 +37,21 @@ export type ImageMeta = {
   [key: string]: unknown;
 };
 
+// The sidecar keys that describe how the picture was made. The picture editor
+// removes exactly these when the user says the card is just a file — the
+// description and the timestamps are not part of the generation data.
+export const IMAGE_GENERATION_KEYS = [
+  "prompt",
+  "negativePrompt",
+  "refs",
+  "source",
+  "generator",
+  "model",
+  "width",
+  "height",
+  "steps",
+] as const;
+
 // The generator settings worth remembering about a run (stored into the
 // sidecar when the generator reports them).
 export type ImageGenerationRecord = {

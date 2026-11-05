@@ -8,7 +8,7 @@ import { ConfigurationService } from "../configuration/ConfigurationService";
 import { Model } from "../configuration/Model";
 import { PathHelper } from "../shared/PathHelper";
 import { createToken } from "../di";
-import { ImageBrief, TextGenerationService } from "../text_generation/TextGenerationService";
+import { ImageBrief, ImagePromptPlan, TextGenerationService } from "../text_generation/TextGenerationService";
 import { ImageGenerationService } from "../image_generation/ImageGenerationService";
 import { ImageGenerationRecord } from "../shared/ImageMeta";
 import { ImageJob } from "../image_generation/ImageJob";
@@ -462,16 +462,101 @@ export class ReplyService {
     return fresh;
   }
 
-  // Edits what a picture says about itself: its description (what is on it)
-  // and, for a generated one, the prompt it should be redrawn with. The message
-  // and the sidecar next to the file are both updated. Returns the saved chat
-  // (null — the card is gone).
-  editPicture(chat: Chat, message: ChatMessage, patch: { description?: string; prompt?: string }): Chat | null {
+  // Edits what a picture says about itself — the picture-editor dialog:
+  //   description — what is on it;
+  //   prompt      — the prompt it should be redrawn with (a generated picture);
+  //   image       — point the card at another picture of the data folder (the
+  //                 swap drops the old generation data);
+  //   kind        — what the card IS now: "generated" keeps/creates the
+  //                 generation block (source "manual" when it had none), "file"
+  //                 drops it (a plain file has nothing to be redrawn from). An
+  //                 omitted kind leaves the block alone.
+  // The message and the sidecar next to its file are both updated. Returns the
+  // saved chat (null — the card is gone).
+  editPicture(
+    chat: Chat,
+    message: ChatMessage,
+    patch: { description?: string; prompt?: string; image?: string; kind?: "generated" | "file" },
+  ): Chat | null {
     const fresh = this.chats.get(chat.id);
     const fmsg = fresh?.messages.find((m) => m.id === message.id);
     if (!fresh || !fmsg) return null;
-    this.chats.editImageCard(fresh, fmsg, patch);
+    // Re-pointing the card at another picture comes first: the swap drops the
+    // generation block, then the fields below describe the new picture.
+    const current = fmsg.images[0];
+    const repointed = patch.image !== undefined && patch.image !== current;
+    if (repointed) this.chats.replaceMessageImage(fresh, fmsg, current, patch.image as string);
+    const prompt = patch.prompt?.trim();
+    let generation: ImageGenerationData | null | undefined;
+    if (patch.kind === "file") {
+      // The card keeps its picture but stops claiming a generation. The
+      // sidecar's generation keys go too, or the prompt would come back on
+      // read. A re-pointed card needs nothing: the swap already dropped the
+      // block, and the new file's sidecar (which another card may share) is
+      // not ours to rewrite.
+      generation = repointed ? undefined : null;
+    } else if (patch.kind === "generated" || prompt !== undefined) {
+      generation = {
+        ...(fmsg.generation ?? {}),
+        // an empty prompt is a real edit — the card then has nothing to redraw
+        // from until the user writes one
+        ...(prompt !== undefined ? { prompt } : {}),
+        source: fmsg.generation?.source ?? ("manual" as const),
+      };
+    }
+    this.chats.editImageCard(fresh, fmsg, {
+      ...(patch.description !== undefined ? { description: patch.description } : {}),
+      ...(generation !== undefined ? { generation } : {}),
+    });
     return fresh;
+  }
+
+  // ---- the LLM helpers of the picture editor ----
+
+  // The prompt for one picture card, planned by the model from the dialogue —
+  // the "From the chat" button: what the user wants to show right now, with the
+  // card being edited left out of the dialogue and of the picture catalogue (it
+  // is what is being planned). Returns null when the chat is gone and when the
+  // model cannot produce a readable plan.
+  async planPicturePrompt(chatId: string, messageId?: string): Promise<ImagePromptPlan | null> {
+    const chat = this.chats.get(chatId);
+    if (!chat) return null;
+    const model = this.resolveChatModel(chat);
+    if (!model) return null;
+    return this.textGeneration.composeImagePrompt(model, {
+      scene: this.dialogueForImage(chat, messageId),
+      images: this.pictureCatalogue(chat, messageId),
+      sampling: chat.sampling,
+    });
+  }
+
+  // Rewrites a typed prompt for the generator — English + tuned (the "Make it
+  // English" button). The chat's model does the work with the chat's sampling;
+  // null when the chat is gone (a model error propagates to the route).
+  async tunePicturePrompt(chatId: string, prompt: string): Promise<string | null> {
+    const chat = this.chats.get(chatId);
+    if (!chat) return null;
+    const model = this.resolveChatModel(chat);
+    if (!model) throw new Error("No model configured for the chat");
+    return (await this.textGeneration.tunePrompt(model, prompt, chat.sampling)).trim();
+  }
+
+  // Describes a picture with the chat's model (vision) — the "Describe the
+  // picture" button: an existing picture of the data folder or a data URL of a
+  // file the user just picked. Null when the chat is gone (a model error — no
+  // vision, no model — propagates to the route).
+  async describePicture(
+    chatId: string,
+    input: { imageId?: string; dataUrl?: string },
+  ): Promise<string | null> {
+    const chat = this.chats.get(chatId);
+    if (!chat) return null;
+    const model = this.resolveChatModel(chat);
+    if (!model) throw new Error("No model configured for the chat");
+    if (!model.supportsImages) {
+      throw new Error("The chat's model cannot see pictures — choose a model that supports images");
+    }
+    return (await this.textGeneration.describePicture(model, input, chat.sampling)).trim();
   }
 
   // The visible error line of a failed model call: appended as an assistant

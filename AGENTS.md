@@ -32,9 +32,13 @@ backend/               Express API; also serves the built frontend
     text_generation/   the LLM domain: the top-level service class
                        (TextGenerationService.ts — the OpenAI-compatible provider client:
                        chatCompletion (text + the image_url parts of the
-                       pictures a card shows), translatePrompt and
+                       pictures a card shows), translatePrompt, tunePrompt
+                       (English + shaped for the generator — the picture
+                       editor's "Make it English"), describePicture (a vision
+                       caption for the editor's "Describe the picture") and
                        composeImagePrompt (the JSON plan of the picture of the
-                       user's turn) — all three on the one requestCompletion;
+                       user's turn, reused as the editor's "From the chat") —
+                       all on the one requestCompletion;
                        resolveModel (the chat's model by llmModels key with
                        the first-model fallback); the system prompt (which now
                        says the model itself cannot attach or draw pictures),
@@ -68,7 +72,9 @@ backend/               Express API; also serves the built frontend
                        it takes the text-generation and configuration services
                        and knows nothing about chats, messages or the database);
                        image.routes.ts — the /image routes (the availability
-                       flag + the ComfyUI model list + the manual generation);
+                       flag + the ComfyUI model list + the manual generation +
+                       the picture editor's catalog and LLM helpers:
+                       /pictures, /prompt, /tune-prompt, /describe);
                        ImageGenerationService.test.ts —
                        jest unit tests (an in-file mock ComfyUI server:
                        the PARAM_* substitution, the workflow per reference
@@ -106,8 +112,12 @@ backend/               Express API; also serves the built frontend
                        addressed by its data-root-relative ID, never by an
                        absolute path), the message primitives (addUserMessage,
                        addImageMessage, editMessage, setMessageText,
-                       deleteMessage), the picture-card edits (editImageCard,
-                       replaceMessageImage, replaceMessageImageId),
+                       deleteMessage), the picture-card edits (editImageCard —
+                       the description and the generation block, which can be
+                       dropped as a whole (a card that is "just a file": the
+                       sidecar's generation keys go with it, or the prompt would
+                       come back on read) — replaceMessageImage,
+                       replaceMessageImageId),
                        the per-image generation status (setMessageImageStatus)
                        and the sidecar metadata (writeSidecar; get() refreshes
                        the stored description/prompt from the files next to
@@ -162,8 +172,13 @@ backend/               Express API; also serves the built frontend
                        saveErrorMessage (the visible error line), the
                        in-flight reply registry (beginReply/endReply/
                        cancelReply), the manual image operations (manualImage,
-                       regenerateImage, editPicture, replaceImage,
-                       cancelImage); DI token
+                       regenerateImage, editPicture — the picture editor's save:
+                       description / prompt / the image the card points at /
+                       kind "generated"|"file", replaceImage, cancelImage) and
+                       the editor's LLM helpers (planPicturePrompt — the prompt
+                       from the dialogue, tunePicturePrompt — English + shaped
+                       for the generator, describePicture — a vision caption);
+                       DI token
                        DI_REPLY_SERVICE, the six domain services injected) and
                        ReplyService.test.ts — jest unit tests
     shared/            small cross-domain helpers as stateless classes with
@@ -185,7 +200,10 @@ backend/               Express API; also serves the built frontend
                        image ID pair imageIdOf/resolveImageId — the latter
                        refusing any path that escapes the data folders — plus
                        the stricter resolvePictureId of the media route, which
-                       accepts only the folders pictures live in; PathHelper
+                       accepts only the folders pictures live in, and
+                       listPictureIds — the newest-first catalog of the picture
+                       editor, reading only those folders and only the names
+                       HttpHelper.isImage accepts; PathHelper
                        and HttpHelper have their own tests)
   jest.config.js       ts-jest setup
 
@@ -208,8 +226,9 @@ frontend/              Angular app
                        new-chat dialog
     image-store.ts     ImageStore: image GENERATION — genMode/genRefs/generating,
                        draw(), requestTurnImage() (the 📷 picture of the user's
-                       turn), cancel/regenerate/replace/editPicture of message
-                       images, the lightbox, the background-job polling;
+                       turn), cancel/regenerate of message images, the picture
+                       editor's target (pictureEdit) + savePictureEdit, the
+                       lightbox, the background-job polling;
                        depends ONE-WAY on ChatStore
     ui-store.ts        UiStore: cross-cutting UI state (global error banner)
     helpers.ts         pure helpers: chat labels, times, the chat title
@@ -227,9 +246,15 @@ frontend/              Angular app
     message-list/      history: empty state, messages, typing indicator
     message-row/       one message: avatar, text, or the image CARD (the picture
                        with its caption, prompt and reference count; the
-                       pending/broken/cancelled placeholders; the inline
-                       prompt editor) + the hover buttons (image actions via
-                       ImageStore, the ✎ of a card caption)
+                       pending/broken/cancelled placeholders; the ↻ quick
+                       redraw) + the hover buttons (image actions via
+                       ImageStore, the ✎ of a card = the picture editor)
+    picture-dialog/    the picture editor, opened by the ✎ of a card — the
+                       kind (generated / from a file), the prompt (with "From
+                       the chat" and "Make it English"), the description (with
+                       "Describe the picture"), the picture id pick of the data
+                       folder / a file from disk, the preview; Save only edits
+                       the card (drawing stays the card's ↻)
     input-panel/       input: error banner, gen-mode bar, 📎 attachments, the 📷
                        "picture of my turn" button, send;
                        orchestrates the "what to send" decision (edit/gen/text)
@@ -521,11 +546,28 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   job and marks the image failed. `POST /api/chats/:id/messages/:messageId/regenerate-image`
   (body `{ image, prompt? }`) re-runs the generator in the background against the SAME id (no
   file swap, so no later reference needs repointing), after cancelling any job still running for it.
-  `PATCH /api/chats/:id/messages/:messageId/picture` (body `{ description?, prompt? }`) edits what
-  the card says and rewrites the sidecar; `POST /api/chats/:id/messages/:messageId/replace-image`
+  `PATCH /api/chats/:id/messages/:messageId/picture` (body `{ description?, prompt?, image?, kind? }`)
+  is what the picture editor saves: the description and the prompt (both mirrored into the sidecar),
+  `image` — an existing picture id of the data folder the card should point at (the card's generation
+  data is dropped; a card whose picture is still `pending` refuses the swap), and `kind` —
+  `"generated"` (keep/create the generation block, source `manual` when it had none) or `"file"`
+  (drop it, from the row AND from the sidecar, since the sidecar wins on read). An empty prompt is a
+  real edit — the card then has nothing to redraw from. `POST /api/chats/:id/messages/:messageId/replace-image`
   (body `{ image, data }`) repoints the card at a file the user picked — the old picture keeps its
   own file and sidecar (nothing references it anymore) and the card's generation data is dropped,
   because the new file was not generated by the app.
+- **The picture editor's LLM helpers** (`/api/image`, all taking `chatId`; the model work is
+  `TextGenerationService`, the orchestration `ReplyService`, and all of it uses the chat's sampling):
+  `GET /api/image/pictures` → `{ images }`, every picture of the data folder as an image id, newest
+  first (`PathHelper.listPictureIds` walks only the folders pictures live in and keeps only names
+  `HttpHelper.isImage` accepts, so each id loads through `/media` — the "from a file" pick);
+  `POST /api/image/prompt` `{ chatId, messageId? }` → `{ prompt, description }`, the plan of the card
+  from the dialogue (`composeImagePrompt` on the whole dialogue and picture catalogue, the card
+  itself left out; 502 when the model gives nothing readable); `POST /api/image/tune-prompt`
+  `{ chatId, prompt }` → `{ prompt }`, the typed prompt translated to English and shaped for the
+  generator (`tunePrompt` — not a literal translation, unlike `translatePrompt`); and
+  `POST /api/image/describe` `{ chatId, image? | data? }` → `{ description }`, one English sentence
+  about a picture (`describePicture`), which needs a model with vision (400 otherwise).
 - **Generation prompts are always English.** Manually typed prompts (gen mode) and stored non-English
   prompts (regeneration) are translated to English via the chat's model (`translatePrompt` in
   `TextGenerationService`, called by `ImageGenerationService.ensureEnglishPrompt`) before hitting the
@@ -686,6 +728,16 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   order: the picture, then its caption (`card-caption`), then the prompt it was drawn from
   (`card-prompt`) and how many references it used (`card-refs`) — the text of a message is above and
   below the images, never beside.
+- **The picture editor is the ONE place a card is edited** (the ✎ of the card opens the
+  `picture-dialog`; the bottom input's edit mode is for text messages only). A card is one of two
+  things, and the dialog's kind says which: **generated** — a prompt (with "From the chat", which
+  plans it from the dialogue via the model, and "Make it English", which translates + shapes the
+  typed text for the generator) — or **from a file** — the picture's id, picked from the catalog of
+  the data folder (`GET /api/image/pictures`) or from disk. Both carry a **description** (with
+  "Describe the picture", a vision call). Save only edits what the card says and which file it
+  points at — it never draws: redrawing stays the card's ↻ (shown only when there is a prompt). The
+  dialog is destroyed/re-initialized per card, so it always reads the card from the store, and it
+  closes itself when the card is gone.
 - **📷 is a turn affordance, not a generator switch.** It shows only when a generator is available
   AND the last message is a plain assistant answer (`ChatStore.isUserTurn`), so it never competes
   with the 🎨 prompt box, the edit mode, or a turn that already has the user's message in it. One
@@ -780,18 +832,24 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
     (`pendingImages`), `isUserTurn` (the last message is a plain assistant answer — the only moment
     the 📷 button belongs), edit, chat mgmt, new-chat dialog. Injects `ConfigStore` + `UiStore`.
     Editing a message never re-attaches its picture: `startEdit` clears `pendingImages` and
-    `saveEdit` patches the text only (a card's caption is edited through `ImageStore.editPicture`).
+    `saveEdit` patches the text only (a card's ✎ does not go through `startEdit` at all — it opens
+    the picture editor, whose Save is `ImageStore.savePictureEdit`).
   - `ImageStore` — the image-GENERATION domain: `genMode`/`genRefs`/`generating`, `draw()`,
     `requestTurnImage()` (the 📷 picture of the user's turn — it only fires the request and applies
     the chat with the placeholder card; the background job and the polling do the rest),
-    `cancelImage`/`regenerateImage`/`replaceImage`/`editPicture`, the `lightbox`, and the
-    background-job polling (re-reads the chat on a
-    1.5 s interval while any image is "pending"). Injects `ChatStore` (one-way) + `ConfigStore`
+    `cancelImage`/`regenerateImage`, the picture editor (`pictureEdit` — the card it edits, opened by
+    a row; `savePictureEdit` — the one Save of the dialog: the description, the prompt, the kind and
+    the picture the card points at, a disk pick going through `replaceImage` first), the `lightbox`,
+    and the background-job polling (re-reads the chat on a
+    1.5 s interval while any image is "pending"). The editor closes itself when its card is gone
+    (chat switched or message deleted). Injects `ChatStore` (one-way) + `ConfigStore`
     + `UiStore`. It reads the current chat / character / edit target and applies the server chat
     back through `ChatStore.applyChat()`. The "what to send" decision (edit → `saveEdit`,
     gen-mode → `draw`, else → `send`) is orchestrated by `InputPanel`, which is what keeps the
     graph acyclic — `ChatStore` never reads `ImageStore` (the 📷 button lives in `InputPanel` too and
-    asks `ChatStore.isUserTurn()` and `ImageStore.canGen()` there).
+    asks `ChatStore.isUserTurn()` and `ImageStore.canGen()` there). The picture editor's own LLM
+    buttons call `ApiService` directly (`composePicturePrompt` / `tunePicturePrompt` /
+    `describePicture`) — they only fill the dialog's fields, so they belong to the component.
   - `ConfigStore` — config + catalogs (models/users/characters), image-gen availability,
     settings dialog (`settingsOpen`/`editingConfig`/`saveSettings`), `loadAll()`. Injects `UiStore`.
   - `UiStore` — cross-cutting UI: the global error banner (written by stores + components).
@@ -880,15 +938,17 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   5 s, anything else → a short pause and a real generated PNG from `/view` — so the failure, the
   pending/spinner and the ready-card paths are all covered without a real ComfyUI. `beforeAll` starts
   the mock LLM and the mock ComfyUI, `beforeEach` points the config's `llmModels`/`imageGenerators`
-  at them, so the run is fast and does not depend on the user's real models. The mock LLM recognizes the
-  three kinds of call by their system prompt: a chat reply answers
+  at them, so the run is fast and does not depend on the user's real models. The mock LLM recognizes
+  the calls by their system prompt: a chat reply answers
   "Mock reply from <character name>." (the name is read from the system prompt, and a
   `customReplies` option can override the wording); a prompt translation ("Translate …")
   answers with an English description that keeps the "fail"/"slow" markers so a test can steer
   the generator; the picture planning of the user's turn ("You plan one picture …") answers
   with the JSON plan the suite sets through `MockLlm.setImagePlan` — `setImagePlan(null)` makes
-  it answer with prose instead, which is how the "the model could not plan it" path is covered.
-  The "hanging model" cancel test in `app.spec.ts` still
+  it answer with prose instead, which is how "the model could not plan it" path is covered; the
+  picture editor's "Make it English" ("You prepare an image generation prompt …") answers an
+  English prompt, and its "Describe the picture" ("You describe pictures …") a fixed sentence —
+  that is what UX 10b drives. The "hanging model" cancel test in `app.spec.ts` still
   spins up its own never-answering server (on top of the mocks).
 - `beforeEach` also creates the catalog via the API (`PUT /persons`: Carol + Dave;
   `PUT /characters`: Alice + Bob) and clears all chats so each test opens a fresh empty chat.
@@ -904,14 +964,18 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   `delete-chat` live in its dropdown,
   not in the label's own menu), `new-chat` / `new-chat-dialog` / `new-chat-confirm`, `user-name`,
   `settings`, `history`, `message`, `msg-sender`, `msg-edit` (the ✎ of a message,
-  and of a picture card — it edits the caption), `input`, `send` (➤ normally; ✕
+  and of a picture card — a text message goes into the bottom field's edit mode, a card opens
+  the picture editor), `input`, `send` (➤ normally; ✕
   while a reply is generating — it is the cancel then), `attach`,
   `gen-toggle`, `auto-image` (the 📷 picture of the user's turn; only then),
   `error-banner`, `typing`. The picture card: `image-card`, `card-caption`,
   `card-prompt`, `card-refs`, and inside it the state placeholders `img-pending`
   (+ `img-cancel`), `img-cancelled` / `img-broken` (+ `img-regen`, `img-error-text`) and the
-  ready picture's `img-regenerate` / `img-edit-prompt` / `img-replace` (the ✎ prompt editor is
-  `img-prompt-input` + `img-prompt-save`/`img-prompt-cancel`) + `lightbox`/`lightbox-close`. The entity dialogs: `character-dialog`/`user-dialog`/
+  ready picture's quick redraw `img-regenerate` + `lightbox`/`lightbox-close`. The picture
+  editor (`picture-dialog`, opened by the card's ✎): `picture-kind-generated` /
+  `picture-kind-file` (the radios), `picture-prompt`, `picture-prompt-from-chat`,
+  `picture-prompt-english`, `picture-description`, `picture-describe`, `picture-id` (the catalog
+  `<select>`), `picture-file` (the disk pick), `picture-save` / `picture-cancel`. The entity dialogs: `character-dialog`/`user-dialog`/
   `model-dialog` + `char-name-input`/`user-name-input`/`model-name-input`/`model-id-input` and
   `char-save`/`char-clone`/`char-delete` (the `user-*`/`model-*` analogues); the model dialog also
   has `model-reasoning-select` + `model-reasoning-levels-input`. The per-chat dialog:

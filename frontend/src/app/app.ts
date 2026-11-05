@@ -8,6 +8,7 @@ import { Settings } from '../components/settings/settings';
 import { CharacterDialog } from '../components/character-dialog/character-dialog';
 import { UserDialog } from '../components/user-dialog/user-dialog';
 import { ModelDialog } from '../components/model-dialog/model-dialog';
+import { PictureDialog } from '../components/picture-dialog/picture-dialog';
 import { ImageLightbox } from '../components/image-lightbox/image-lightbox';
 import { ConfigStore } from '../services/config-store';
 import { ChatStore } from '../services/chat-store';
@@ -25,6 +26,7 @@ import { ImageStore } from '../services/image-store';
     CharacterDialog,
     UserDialog,
     ModelDialog,
+    PictureDialog,
     ImageLightbox,
   ],
   template: `
@@ -127,6 +129,20 @@ import { ImageStore } from '../services/image-store';
             }
           }
         }
+      }
+
+      <!-- The picture editor: opened by the ✎ of an image card — its prompt,
+           its description, or the file it points at. -->
+      @if (imageStore.pictureEdit()) {
+        <div class="modal-backdrop" (click)="imageStore.closePictureEdit()">
+          <div class="modal modal-md" (click)="$event.stopPropagation()">
+            <div class="modal-head">
+              <span>Picture</span>
+              <button class="icon-btn" (click)="imageStore.closePictureEdit()" title="Close">✕</button>
+            </div>
+            <app-picture-dialog />
+          </div>
+        </div>
       }
 
       <!-- The image lightbox: opened when the user clicks an image in the chat. -->

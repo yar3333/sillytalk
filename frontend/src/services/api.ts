@@ -337,17 +337,52 @@ export class ApiService {
     });
   }
 
-  // Edits what a card says about its picture: the description (what is on it)
-  // and the prompt to redraw it with. The sidecar next to the file is updated
-  // along with the message.
+  // Edits what a card says about its picture — the picture-editor dialog: the
+  // description (what is on it), the prompt to redraw it with, the picture the
+  // card should point at (`image` — an existing id of the data folder) and what
+  // the card IS now (`kind`). The sidecar next to the file is updated along
+  // with the message.
   patchPicture(
     chatId: string,
     messageId: string,
-    patch: { description?: string; prompt?: string },
+    patch: { description?: string; prompt?: string; image?: string; kind?: 'generated' | 'file' },
   ): Promise<{ chat: Chat }> {
     return this.req('/chats/' + chatId + '/messages/' + messageId + '/picture', {
       method: 'PATCH',
       body: JSON.stringify(patch),
+    });
+  }
+
+  // The picture catalog: every picture of the data folder as an image id,
+  // newest first — the "from a file" pick of the picture editor.
+  pictureCatalog(): Promise<{ images: string[] }> {
+    return this.req<{ images: string[] }>('/image/pictures');
+  }
+
+  // The prompt for a picture card, planned from the dialogue ("From the chat").
+  composePicturePrompt(chatId: string, messageId?: string): Promise<{ prompt: string; description: string }> {
+    return this.req<{ prompt: string; description: string }>('/image/prompt', {
+      method: 'POST',
+      body: JSON.stringify({ chatId, messageId }),
+    });
+  }
+
+  // Rewrites a prompt into English and shapes it for the generator
+  // ("Make it English").
+  tunePicturePrompt(chatId: string, prompt: string): Promise<{ prompt: string }> {
+    return this.req<{ prompt: string }>('/image/tune-prompt', {
+      method: 'POST',
+      body: JSON.stringify({ chatId, prompt }),
+    });
+  }
+
+  // One sentence about a picture ("Describe the picture"): an existing picture
+  // of the data folder or a data URL of a file just picked from disk. Needs a
+  // model with vision — the backend answers a clear 400 without one.
+  describePicture(chatId: string, body: { image?: string; data?: string }): Promise<{ description: string }> {
+    return this.req<{ description: string }>('/image/describe', {
+      method: 'POST',
+      body: JSON.stringify({ chatId, ...body }),
     });
   }
 

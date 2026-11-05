@@ -1,7 +1,10 @@
 import express from "express";
+import fs from "fs";
 import { CharactersService } from "../characters/CharactersService";
 import { ImageGenerationService } from "../image_generation/ImageGenerationService";
 import { ReplyService } from "../reply/ReplyService";
+import { HttpHelper } from "../shared/HttpHelper";
+import { PathHelper } from "../shared/PathHelper";
 import { ChatsService } from "./ChatsService";
 
 // The /chats routes: the chat CRUD, the messages (a text line and the image
@@ -410,10 +413,12 @@ export function createChatsRouter(
     res.json({ chat: fresh });
   });
 
-  // Edits what the card says about its picture: the description (what is on
-  // it) and the prompt it should be redrawn with. The sidecar *.json next to
-  // the file is updated along with the message, so the copy the user can
-  // hand-edit never lags behind.
+  // Edits what the card says about its picture — the picture-editor dialog:
+  // the description (what is on it), the prompt it should be redrawn with, the
+  // picture itself (`image` — an existing image id of the data folder the card
+  // should point at) and the `kind` the card is now ("generated" / "file").
+  // The sidecar *.json next to the file is updated along with the message, so
+  // the copy the user can hand-edit never lags behind.
   router.patch("/:id/messages/:messageId/picture", (req, res) => {
     const chat = chats.get(req.params.id);
     if (!chat) {
@@ -425,7 +430,7 @@ export function createChatsRouter(
       res.status(404).json({ error: "Message not found" });
       return;
     }
-    const { description, prompt } = req.body ?? {};
+    const { description, prompt, image, kind } = req.body ?? {};
     if (description !== undefined && typeof description !== "string") {
       res.status(400).json({ error: "Expected description (string)" });
       return;
@@ -434,9 +439,34 @@ export function createChatsRouter(
       res.status(400).json({ error: "Expected prompt (string)" });
       return;
     }
+    if (kind !== undefined && kind !== "generated" && kind !== "file") {
+      res.status(400).json({ error: 'Expected kind "generated" or "file"' });
+      return;
+    }
+    if (image !== undefined) {
+      if (typeof image !== "string") {
+        res.status(400).json({ error: "Expected image (string)" });
+        return;
+      }
+      // The picture the card should point at: a picture of the data folder the
+      // media route can serve (the same rule the /media route applies).
+      const file = PathHelper.resolveImageId(image);
+      if (!file || !fs.existsSync(file) || !HttpHelper.isImage(file)) {
+        res.status(400).json({ error: `Unknown picture "${image}"` });
+        return;
+      }
+      // The picture the card carries now may still be generating — repointing
+      // it would leave the job writing to an id nobody points at any more.
+      if (msg.images[0] !== image && msg.imageStatus?.[msg.images[0]] === "pending") {
+        res.status(400).json({ error: "The picture is still being generated" });
+        return;
+      }
+    }
     const fresh = reply.editPicture(chat, msg, {
       ...(description !== undefined ? { description } : {}),
       ...(prompt !== undefined ? { prompt } : {}),
+      ...(image !== undefined ? { image } : {}),
+      ...(kind !== undefined ? { kind } : {}),
     });
     if (!fresh) {
       res.status(404).json({ error: "Message not found" });

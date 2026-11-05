@@ -6,7 +6,7 @@ import { Chat } from "./Chat";
 import { ChatMessage, ImageGenerationData, isImageMessage } from "./ChatMessage";
 import { ChatSummary } from "./ChatSummary";
 import { PathHelper } from "../shared/PathHelper";
-import { ImageMeta } from "../shared/ImageMeta";
+import { ImageMeta, IMAGE_GENERATION_KEYS } from "../shared/ImageMeta";
 import { ImageMetaFile } from "../shared/ImageMetaFile";
 import { ConfigurationService } from "../configuration/ConfigurationService";
 import { createToken } from "../di";
@@ -455,15 +455,35 @@ export class ChatsService {
   editImageCard(
     chat: Chat,
     message: ChatMessage,
-    patch: { description?: string; prompt?: string },
+    patch: {
+      description?: string;
+      prompt?: string;
+      // undefined — keep the generation block as it is; null — the card stops
+      // claiming a generation (the picture is just a file now); an object —
+      // replaces the block (the caller merges what it keeps).
+      generation?: ImageGenerationData | null;
+    },
   ): void {
     if (patch.description !== undefined) message.text = patch.description;
     if (patch.prompt !== undefined) {
       message.generation = { ...(message.generation ?? {}), prompt: patch.prompt };
     }
+    if (patch.generation !== undefined) {
+      if (patch.generation === null) delete message.generation;
+      else message.generation = patch.generation;
+    }
     this.db()
       .prepare("UPDATE messages SET data = ? WHERE chat_id = ? AND id = ?")
       .run(JSON.stringify(message), chat.id, message.id);
+    // The sidecar wins over the row on read, so a dropped generation block has
+    // to go from the file too (ImageMetaFile.write removes a key given as
+    // undefined) — otherwise the prompt would come back on the next read.
+    const file = patch.generation === null ? PathHelper.resolveImageId(message.images[0]) : null;
+    if (file) {
+      const cleared: ImageMeta = {};
+      for (const key of IMAGE_GENERATION_KEYS) cleared[key] = undefined;
+      ImageMetaFile.write(file, cleared);
+    }
     this.writeSidecar(message.images[0], message.text, message.generation);
   }
 
@@ -680,7 +700,10 @@ export class ChatsService {
     const meta: ImageMeta = {};
     if (description && description.trim()) meta.description = description.trim();
     if (generation) {
-      if (generation.prompt) meta.prompt = generation.prompt;
+      // An empty prompt is written as-is: clearing the prompt of a card is a
+      // real edit (the picture then has nothing to be redrawn from), and only
+      // an explicit value — never its absence — may overwrite the sidecar.
+      if (generation.prompt !== undefined) meta.prompt = generation.prompt;
       if (generation.refs && generation.refs.length > 0) meta.refs = generation.refs;
       if (generation.negativePrompt) meta.negativePrompt = generation.negativePrompt;
       if (generation.source) meta.source = generation.source;

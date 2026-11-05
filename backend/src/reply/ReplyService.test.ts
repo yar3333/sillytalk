@@ -34,10 +34,16 @@ function model(): Model {
 }
 
 // The config is stubbed: the reply flow reads it only for the model
-// resolution (resolveChatModel) — no real config.json is involved.
+// resolution (resolveChatModel) — no real config.json is involved. `vision`
+// turns the one model into one that can see pictures (the describe tests).
 class StubConfigurationService extends ConfigurationService {
+  vision = false;
   loadConfig(): Config {
-    return { listen: "127.0.0.1:3210", llmModels: { m1: model() }, imageGenerators: [] };
+    return {
+      listen: "127.0.0.1:3210",
+      llmModels: { m1: { ...model(), supportsImages: this.vision } },
+      imageGenerators: [],
+    };
   }
 }
 
@@ -79,6 +85,22 @@ class StubTextGeneration extends TextGenerationService {
     this.planInput = { scene: input.scene, images: input.images };
     await this.planGate;
     return this.plan;
+  }
+
+  // The picture-editor helpers: canned answers that record what they were given.
+  tunedPrompt = "a tuned english prompt";
+  tuneInput: string | null = null;
+  description = "a small red boat on a calm lake";
+  describeInput: { imageId?: string; dataUrl?: string } | null = null;
+
+  async tunePrompt(_model: Model, text: string): Promise<string> {
+    this.tuneInput = text;
+    return this.tunedPrompt;
+  }
+
+  async describePicture(_model: Model, input: { imageId?: string; dataUrl?: string }): Promise<string> {
+    this.describeInput = input;
+    return this.description;
   }
 }
 
@@ -156,6 +178,7 @@ let chats: ChatsService;
 let characters: CharactersService;
 let persons: PersonsService;
 let textGeneration: StubTextGeneration;
+let configuration: StubConfigurationService;
 let fake: ReturnType<typeof makeFakeImageGeneration>;
 let imageGeneration: ImageGenerationService;
 let reply: ReplyService;
@@ -163,7 +186,8 @@ let reply: ReplyService;
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "sillytalk-reply-"));
   process.env.SILLYTALK_DATA_DIR = root;
-  chats = new ChatsService(() => path.join(root, "chats"), new StubConfigurationService());
+  configuration = new StubConfigurationService();
+  chats = new ChatsService(() => path.join(root, "chats"), configuration);
   characters = new CharactersService(() => path.join(root, "characters"));
   persons = new PersonsService(() => path.join(root, "users"));
   characters.save({ id: "alice", name: "Alice", description: "A test character." });
@@ -171,7 +195,7 @@ beforeEach(() => {
   textGeneration = new StubTextGeneration();
   fake = makeFakeImageGeneration();
   imageGeneration = fake.imageGeneration;
-  reply = new ReplyService(characters, persons, chats, textGeneration, imageGeneration, new StubConfigurationService());
+  reply = new ReplyService(characters, persons, chats, textGeneration, imageGeneration, configuration);
 });
 
 afterEach(async () => {
@@ -760,6 +784,90 @@ describe("editPicture", () => {
     const { chat, message } = chatWithCard();
     chats.deleteMessage(chat, message.id, true);
     expect(reply.editPicture(chat, message, { description: "x" })).toBeNull();
+  });
+
+  it("points the card at another picture of the data folder and drops the old generation", () => {
+    const { chat, message, image } = chatWithCard({ prompt: "a red fox" });
+    const oldPath = PathHelper.resolveImageId(image)!;
+    fs.mkdirSync(path.dirname(oldPath), { recursive: true });
+    fs.writeFileSync(oldPath, "old");
+    const other = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=", { nameHint: "a blue boat" });
+    const fresh = reply.editPicture(chat, message, { image: other, description: "a blue boat" });
+    const msg = fresh!.messages.find((m) => m.id === message.id)!;
+    expect(msg.images).toEqual([other]);
+    expect(msg.text).toBe("a blue boat");
+    // the picture is not the one that was drawn any more
+    expect(msg.generation).toBeUndefined();
+    expect(fs.existsSync(PathHelper.resolveImageId(image)!)).toBe(true); // the old file stays
+  });
+
+  it('kind "file" clears the prompt from the row and the sidecar, kind "generated" keeps it', () => {
+    const { chat, message, image } = chatWithCard({ prompt: "a red fox" });
+    const asFile = reply.editPicture(chat, message, { kind: "file" })!;
+    const cleared = asFile.messages.find((m) => m.id === message.id)!;
+    expect(cleared.generation).toBeUndefined();
+    expect(ImageMetaFile.read(PathHelper.resolveImageId(image) as string)?.prompt).toBeUndefined();
+    // persist the cleared state before reading it back (the row is what the
+    // service keeps in memory here)
+    chats.save(asFile);
+    expect(chats.get(chat.id)!.messages.find((m) => m.id === message.id)!.generation).toBeUndefined();
+
+    const asGenerated = reply.editPicture(chat, message, { kind: "generated", prompt: "a red fox at dawn" })!;
+    const made = asGenerated.messages.find((m) => m.id === message.id)!;
+    expect(made.generation).toMatchObject({ prompt: "a red fox at dawn", source: "manual" });
+  });
+
+  it("an empty prompt is stored as a real edit (the card has nothing to redraw from)", () => {
+    const { chat, message } = chatWithCard({ prompt: "a red fox" });
+    const fresh = reply.editPicture(chat, message, { kind: "generated", prompt: "   " });
+    const msg = fresh!.messages.find((m) => m.id === message.id)!;
+    expect(msg.generation?.prompt).toBe("");
+  });
+});
+
+// The three LLM helpers of the picture-editor dialog. The model client is the
+// stub: what matters here is what the reply service hands it and what it
+// answers with.
+describe("the picture editor's LLM helpers", () => {
+  it("plans the prompt of a card from the dialogue, leaving the card itself out", async () => {
+    const { chat, message } = chatWithCard({ prompt: "a red fox" });
+    const plan = await reply.planPicturePrompt(chat.id, message.id);
+    expect(plan?.prompt).toBe("a red boat on a calm lake, the sky orange, low evening light");
+    expect(plan?.description).toBe("a red boat on a calm lake at dusk");
+    // the dialogue the model read is the user's line only — the card being
+    // planned is not part of the conversation it is planned into
+    expect(textGeneration.planInput?.scene).toContain("Hi");
+    expect(textGeneration.planInput?.scene).not.toContain("a red fox in the snow");
+    expect(textGeneration.planInput?.images).toEqual([]);
+  });
+
+  it("returns null when the chat is gone and when the model cannot plan", async () => {
+    expect(await reply.planPicturePrompt("nope")).toBeNull();
+    textGeneration.plan = null;
+    const { chat, message } = chatWithCard();
+    expect(await reply.planPicturePrompt(chat.id, message.id)).toBeNull();
+  });
+
+  it("tunes a prompt for the generator with the chat's model", async () => {
+    const chat = newChat();
+    expect(await reply.tunePicturePrompt(chat.id, "кот на подоконнике")).toBe("a tuned english prompt");
+    expect(textGeneration.tuneInput).toBe("кот на подоконнике");
+    expect(await reply.tunePicturePrompt("nope", "x")).toBeNull();
+  });
+
+  it("describes an existing picture and a data URL, and refuses a model without vision", async () => {
+    const { chat } = chatWithCard();
+    configuration.vision = true;
+    expect(await reply.describePicture(chat.id, { imageId: "chats/x/files/a.png" })).toBe(
+      "a small red boat on a calm lake",
+    );
+    expect(textGeneration.describeInput).toEqual({ imageId: "chats/x/files/a.png" });
+    await reply.describePicture(chat.id, { dataUrl: "data:image/png;base64,aGVsbG8=" });
+    expect(textGeneration.describeInput).toEqual({ dataUrl: "data:image/png;base64,aGVsbG8=" });
+
+    configuration.vision = false;
+    await expect(reply.describePicture(chat.id, { imageId: "a.png" })).rejects.toThrow(/cannot see pictures/);
+    expect(await reply.describePicture("nope", { imageId: "a.png" })).toBeNull();
   });
 });
 

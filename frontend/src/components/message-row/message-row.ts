@@ -3,17 +3,17 @@ import { ApiService, ChatMessage } from '../../services/api';
 import { ConfigStore } from '../../services/config-store';
 import { ChatStore } from '../../services/chat-store';
 import { ImageStore } from '../../services/image-store';
-import { UiStore } from '../../services/ui-store';
 import { avatarLetter, imageHintFor, splitNarration as splitNarrationParts } from '../../services/helpers';
 
 // One line of the history. Two shapes:
 //   a text message — the author, the line, the hover buttons (edit / delete);
 //   an image card  — the picture with its description (what is on it) and,
 //                    when it was drawn, the prompt and the references it came
-//                    from, plus the picture's own buttons (regenerate / change
-//                    the prompt / replace with your own file).
+//                    from, plus the quick redraw (↻) — everything else about
+//                    the picture (its prompt, its description, the file it
+//                    points at) is the picture editor dialog its ✎ opens.
 // Chat actions (edit / delete / regenerate the reply) — ChatStore; image
-// actions (cancel / regenerate / replace / edit one picture, add a reference) —
+// actions (cancel / regenerate / open the editor, add a reference) —
 // ImageStore.
 @Component({
   selector: 'app-message-row',
@@ -47,8 +47,8 @@ import { avatarLetter, imageHintFor, splitNarration as splitNarrationParts } fro
         <button
           class="msg-edit edit"
           data-testid="msg-edit"
-          (click)="chatStore.startEdit(message())"
-          [title]="isCard() ? 'Edit the description' : 'Edit the message'"
+          (click)="onEdit()"
+          [title]="isCard() ? 'Edit the picture' : 'Edit the message'"
         >
           ✎
         </button>
@@ -124,69 +124,25 @@ import { avatarLetter, imageHintFor, splitNarration as splitNarrationParts } fro
                   </span>
                 }
                 @default {
-                  <span class="msg-img-wrap" [class.editing]="editingImg() === img">
+                  <span class="msg-img-wrap">
                     <img
                       [src]="mediaUrl(img)"
                       (click)="onImageClick(img)"
                       [title]="imageHint(img)"
                       [alt]="caption() || 'Picture shared by ' + senderName()"
                     />
-                    @if (editingImg() === img) {
-                      <!-- The inline prompt editor: change the prompt and
-                           redraw the picture with it (in the background, into
-                           the same file). -->
-                      <div class="img-edit-panel">
-                        <textarea
-                          rows="3"
-                          data-testid="img-prompt-input"
-                          placeholder="Prompt for the image"
-                          (input)="onPromptInput($event)"
-                          [value]="promptDraft()"
-                        ></textarea>
-                        <div class="img-edit-actions">
-                          <button
-                            class="img-edit-btn primary"
-                            data-testid="img-prompt-save"
-                            (click)="savePromptEdit(img)"
-                          >
-                            Regenerate
-                          </button>
-                          <button
-                            class="img-edit-btn"
-                            data-testid="img-prompt-cancel"
-                            (click)="cancelPromptEdit()"
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      </div>
-                    } @else {
-                      @if (canRedraw()) {
-                        <button
-                          class="img-regen"
-                          data-testid="img-regenerate"
-                          (click)="imageStore.regenerateImage(message().id, img)"
-                          title="Regenerate the image"
-                        >
-                          🔄
-                        </button>
-                        <button
-                          class="img-edit-prompt"
-                          data-testid="img-edit-prompt"
-                          (click)="startPromptEdit(img)"
-                          title="Change the prompt and regenerate"
-                        >
-                          ✎
-                        </button>
-                      }
-                      <label
-                        class="img-replace"
-                        data-testid="img-replace"
-                        title="Replace the image with your own"
+                    <!-- The quick redraw. Everything else about the picture
+                         (its prompt, its description, the file it points at)
+                         lives in the picture editor — the ✎ button. -->
+                    @if (canRedraw()) {
+                      <button
+                        class="img-regen"
+                        data-testid="img-regenerate"
+                        (click)="imageStore.regenerateImage(message().id, img)"
+                        title="Regenerate the image"
                       >
-                        ⬆
-                        <input type="file" hidden accept="image/*" (change)="onReplace($event, img)" />
-                      </label>
+                        🔄
+                      </button>
                     }
                   </span>
                 }
@@ -221,7 +177,6 @@ export class MessageRow implements OnDestroy {
   readonly chatStore = inject(ChatStore);
   readonly imageStore = inject(ImageStore);
   private configStore = inject(ConfigStore);
-  private ui = inject(UiStore);
 
   readonly message = input.required<ChatMessage>();
   readonly isLast = input.required<boolean>();
@@ -256,53 +211,15 @@ export class MessageRow implements OnDestroy {
       : 'Generating the image…';
   }
 
-  // The inline prompt editor: which image is being re-prompted and the draft
-  // text. Local to the row — one image is edited at a time.
-  readonly editingImg = signal<string | null>(null);
-  readonly promptDraft = signal('');
-
-  // Opens the inline prompt editor for one image, pre-filled with its stored
-  // prompt (the description is edited in the bottom field, not here).
-  startPromptEdit(img: string): void {
-    this.editingImg.set(img);
-    this.promptDraft.set(this.promptText());
-  }
-  onPromptInput(e: Event): void {
-    this.promptDraft.set((e.target as HTMLTextAreaElement).value);
-  }
-  cancelPromptEdit(): void {
-    this.editingImg.set(null);
-  }
-  // Saves the typed prompt: redraws the picture with it against the same file
-  // ("edit prompt then regenerate") and closes the editor. An empty prompt is
-  // refused — the image needs a description to draw.
-  savePromptEdit(img: string): void {
-    const prompt = this.promptDraft().trim();
-    if (!prompt) {
-      this.ui.error.set('Describe what to draw');
+  // The ✎ of the row: a text message goes into the bottom field's edit mode; a
+  // picture card opens the picture editor (its prompt, its description and the
+  // file it points at all live there).
+  onEdit(): void {
+    if (this.isCard() && this.message().images[0]) {
+      this.imageStore.openPictureEdit(this.message().id, this.message().images[0]);
       return;
     }
-    this.editingImg.set(null);
-    void this.imageStore.regenerateImage(this.message().id, img, prompt);
-  }
-
-  // Replaces the picture with a file the user picks: read as a data URL and
-  // handed to the server (swap in the card, its generation data goes with the
-  // old file), no generation round-trip.
-  onReplace(e: Event, img: string): void {
-    const input = e.target as HTMLInputElement;
-    const file = input.files?.[0];
-    input.value = '';
-    if (!file) return;
-    void this.readFile(file).then((data) => this.imageStore.replaceImage(this.message().id, img, data));
-  }
-  private readFile(file: File): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result));
-      reader.onerror = () => reject(reader.error);
-      reader.readAsDataURL(file);
-    });
+    this.chatStore.startEdit(this.message());
   }
 
   // The "armed" state of the delete buttons: the 🗑 (this message) and the 🧹

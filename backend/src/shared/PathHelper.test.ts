@@ -90,3 +90,51 @@ describe("PathHelper.comfyWorkflowsDir", () => {
     expect(PathHelper.comfyWorkflowsDir()).toBe(path.join(dataRoot, "comfyui"));
   });
 });
+
+describe("PathHelper.listPictureIds (the catalog the picture editor offers)", () => {
+  it("lists the pictures of the chats, the characters and the personas — and nothing else", () => {
+    const write = (rel: string, content = "x"): void => {
+      const file = path.join(dataRoot, rel);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, content);
+    };
+    write("chats/c1/files/a-red-boat.png");
+    write("chats/c1/files/a-red-boat.png.json", "{}"); // a sidecar, not a picture
+    write("chats/c1/files/notes.txt");
+    write("chats/chats.db");
+    write("characters/alice/photos/photo1.jpg");
+    write("characters/alice/character.json", "{}");
+    write("users/default/avatar.webp");
+    write("comfyui/qwen-image-2.1.json", "{}");
+
+    const ids = PathHelper.listPictureIds();
+    expect(ids).toContain("chats/c1/files/a-red-boat.png");
+    expect(ids).toContain("characters/alice/photos/photo1.jpg");
+    expect(ids).toContain("users/default/avatar.webp");
+    expect(ids.some((id) => id.endsWith(".json"))).toBe(false);
+    expect(ids).not.toContain("chats/c1/files/notes.txt");
+    expect(ids).not.toContain("chats/chats.db");
+    expect(ids).not.toContain("comfyui/qwen-image-2.1.json");
+    // every id it offers is one the media route can serve
+    for (const id of ids) expect(PathHelper.resolvePictureId(id)).not.toBeNull();
+  });
+
+  it("caps the list and puts the most recently touched picture first", () => {
+    const write = (rel: string): void => {
+      const file = path.join(dataRoot, rel);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, "x");
+    };
+    write("chats/c2/files/old.png");
+    write("chats/c2/files/new.png");
+    const old = path.join(dataRoot, "chats/c2/files/old.png");
+    const past = new Date(Date.now() - 60_000);
+    fs.utimesSync(old, past, past);
+
+    const ids = PathHelper.listPictureIds();
+    const fresh = ids.indexOf("chats/c2/files/new.png");
+    expect(fresh).toBeGreaterThanOrEqual(0);
+    expect(fresh).toBeLessThan(ids.indexOf("chats/c2/files/old.png"));
+    expect(PathHelper.listPictureIds(1)).toHaveLength(1);
+  });
+});

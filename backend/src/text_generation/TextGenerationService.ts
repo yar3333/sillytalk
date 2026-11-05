@@ -196,6 +196,83 @@ export class TextGenerationService {
     ]);
   }
 
+  // Prepares a prompt for the generator: it is translated to English AND
+  // rewritten the way a text-to-image model reads best — the "Make it English"
+  // button of the picture editor. Unlike translatePrompt this is not a literal
+  // translation: the model may reorder and enrich the text (subject first, then
+  // setting, light and style) while keeping everything the user asked for.
+  async tunePrompt(model: Model, text: string, sampling?: ChatSampling): Promise<string> {
+    return this.requestCompletion(
+      model,
+      [
+        {
+          role: "system",
+          content:
+            "You prepare an image generation prompt for a text-to-image model. " +
+            "Rewrite the user's text as ONE prompt in English: keep every subject, action, place and " +
+            "detail it mentions; put the subject and the action first, then the setting, the lighting, " +
+            "the mood and the style; you may add details that make the picture better, but never people, " +
+            "events or objects the text does not imply. " +
+            "Answer with the prompt itself: a flowing description of the scene, no lists, no quotes, " +
+            'no preamble, no "image of".',
+        },
+        { role: "user", content: text },
+      ],
+      undefined,
+      sampling,
+    );
+  }
+
+  // Describes a picture with a model that can see: one sentence in English
+  // saying what is on it — the "Describe the picture" button of the editor.
+  // The text becomes the card's caption, which is also what a model without
+  // vision is told about the picture in the history.
+  //
+  // The picture comes either as an image id of the data folder (a picture the
+  // chat already has, or one picked from the catalog) or as a data URL (a file
+  // the user just picked from disk).
+  async describePicture(
+    model: Model,
+    input: { imageId?: string; dataUrl?: string },
+    sampling?: ChatSampling,
+  ): Promise<string> {
+    if (!model.supportsImages) {
+      throw new Error("The model cannot see pictures — choose a model that supports images");
+    }
+    let url = "";
+    if (input.dataUrl) {
+      if (!/^data:image\//.test(input.dataUrl)) throw new Error("Expected a picture data URL");
+      url = input.dataUrl;
+    } else if (input.imageId) {
+      const file = PathHelper.resolveImageId(input.imageId);
+      if (!file || !fs.existsSync(file)) throw new Error(`Unknown picture "${input.imageId}"`);
+      url = TextGenerationService.imageDataUrl(file);
+    }
+    if (!url) throw new Error("No picture to describe");
+    const answer = await this.requestCompletion(
+      model,
+      [
+        {
+          role: "system",
+          content:
+            "You describe pictures for a roleplay chat. Answer with ONE short sentence in English, " +
+            "present tense: who or what is on the picture, what happens, the setting and the light. " +
+            "No preamble, no quotes, no lists.",
+        },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "What is on this picture?" },
+            { type: "image_url", image_url: { url } },
+          ],
+        },
+      ],
+      undefined,
+      sampling,
+    );
+    return answer.trim();
+  }
+
   // ---- planning a picture for the user's turn ----
 
   // Asks the model to plan the picture the user wants on their own turn: it

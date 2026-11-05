@@ -2,6 +2,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { randomUUID } from "crypto";
+import { HttpHelper } from "./HttpHelper";
 
 // The shared data-layout helper: the data root (~/.config/sillytalk,
 // overridable by environment variables for e2e tests and relocatable
@@ -157,6 +158,48 @@ export class PathHelper {
   private static isInside(target: string, root: string): boolean {
     const prefix = root.endsWith(path.sep) ? root : root + path.sep;
     return target === root || target.startsWith(prefix);
+  }
+
+  // Every picture of the data catalog as an image id, newest first — the list
+  // the picture editor offers when the user points a card at a file of the data
+  // folder instead of a generated picture.
+  //
+  // It walks ONLY the folders pictures live in and keeps only the names
+  // HttpHelper.isImage accepts, so every id it hands out can be loaded through
+  // the media route — the catalog never offers a file the browser would get a
+  // 400/404 for. Sidecars (*.png.json), the chats database and the workflow
+  // files are not pictures and stay out. `limit` caps the walk of an unusually
+  // large data folder.
+  static listPictureIds(limit = 1000): string[] {
+    const found: Array<{ id: string; mtime: number }> = [];
+    const walk = (dir: string, depth: number): void => {
+      if (found.length >= limit || depth > 4) return;
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        if (found.length >= limit) return;
+        if (entry.name.startsWith(".")) continue;
+        const full = path.join(dir, entry.name);
+        if (PathHelper.isDirEntry(dir, entry)) {
+          walk(full, depth + 1);
+          continue;
+        }
+        if (!HttpHelper.isImage(full)) continue;
+        try {
+          found.push({ id: PathHelper.imageIdOf(full), mtime: fs.statSync(full).mtimeMs });
+        } catch {
+          // removed while walking — not a picture of the catalog any more
+        }
+      }
+    };
+    for (const root of PathHelper.pictureRoots()) walk(root, 0);
+    // Newest first: the picture the user just worked with is at the top.
+    found.sort((a, b) => b.mtime - a.mtime || a.id.localeCompare(b.id));
+    return found.map((f) => f.id);
   }
 
   // Creates the data root and the domain folders (when missing).
