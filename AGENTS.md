@@ -317,9 +317,26 @@ first (`npm run start`, in the background), then run the suite.
 
 ## CI / npm publish
 
-`.github/workflows/publish.yml` (mirrors the aiservermanager setup): on push/PR to master it installs
-backend + frontend deps, runs the jest suite, builds, and packs the release; on a `v*` tag or a manual
-run it additionally publishes to npm (environment `NPM`, secret `NPM_TOKEN`).
+`.github/workflows/publish.yml` (mirrors the aiservermanager setup) runs on a `v*` **tag**, a **PR** to
+main/master, and **manual dispatch** — and deliberately **not on branch pushes**: a release push carries
+its tag, so the tag run (which runs the same tests) is the only build of that commit. Deduplicating by a
+shared `concurrency` group was the earlier attempt and it is racy — the branch run and the tag run cancel
+each other, and the cancelled one can be the run that publishes (aiservermanager hit exactly this).
+
+- **`build`** — installs backend + frontend deps, runs the jest suite, `npm run build`,
+  `node scripts/package-npm.mjs`, and uploads `release/sillytalk` as the `npm-release` artifact.
+- **`publish`** (`needs: build`, tag or manual dispatch only) **downloads that artifact** and publishes it —
+  the release is the tree that was tested, never a rebuild. No `NPM_TOKEN`: npm **trusted publishing** —
+  `environment: NPM`, `permissions: id-token: write`, `npm install -g npm@latest` (trusted publishing
+  needs npm ≥ 11.5 and the runner image lags), `npm pack --dry-run`, then
+  `npm publish --access public --provenance`.
+  One-time setup on npmjs.com: register `sillytalk`'s trusted publisher as this repo +
+  `.github/workflows/publish.yml` + the `NPM` environment (and the `NPM` environment must exist in the
+  repo settings). The `NPM_TOKEN` secret is no longer read and can be deleted.
+
+Release flow: `npm version patch|minor|major` (bumps the root `package.json` version — the version
+`scripts/package-npm.mjs` puts into the package — and makes the release commit + tag), then
+`git push origin master --tags`; the tag triggers the pipeline.
 
 `npm run package` (`scripts/package-npm.mjs`) builds `release/sillytalk/` — the publishable package:
 `bin/sillytalk.js` (the `npx sillytalk` entry), `backend/dist/`, and the built frontend at

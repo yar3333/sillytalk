@@ -2,15 +2,22 @@ name: Build and Publish to npm
 
 on:
   push:
-    branches: [main, master]
     tags:
       - "v*"
   pull_request:
     branches: [main, master]
   workflow_dispatch:
 
+# Builds run on tags (release + publish), PRs (CI) and manual dispatch.
+# Branch pushes are intentionally not built — pushing a release with its tag
+# triggers the tag run, which runs the same tests, so the same commit is never
+# built twice and there is no ordering race between the two runs. (Dedupe by a
+# shared concurrency group was the other attempt and it is racy: the branch run
+# and the tag run cancel each other and the run that publishes can be the one
+# that gets cancelled.)
+
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -23,6 +30,10 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
 
       - name: Install backend dependencies
         working-directory: backend
@@ -42,6 +53,12 @@ jobs:
       - name: Package npm release
         run: node scripts/package-npm.mjs
 
+      - name: Upload npm release artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: npm-release
+          path: release/sillytalk
+
   publish:
     needs: build
     runs-on: ubuntu-latest
@@ -49,8 +66,22 @@ jobs:
 
     environment: NPM
 
+    # npm trusted publishing: the job exchanges this OIDC token for a short
+    # publish right, so no NPM_TOKEN secret exists to leak. The package
+    # "sillytalk" on npmjs.com has this repo, this workflow file and the NPM
+    # environment registered as its trusted publisher.
+    permissions:
+      id-token: write
+      contents: read
+
     steps:
-      - uses: actions/checkout@v5
+      # The artifact the build job tested and packaged is what gets published —
+      # publishing never rebuilds, so the release cannot drift from the tested tree.
+      - name: Download npm release artifact
+        uses: actions/download-artifact@v6
+        with:
+          name: npm-release
+          path: release/sillytalk
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
@@ -58,26 +89,14 @@ jobs:
           node-version: 24
           registry-url: "https://registry.npmjs.org"
 
-      - name: Install backend dependencies
-        working-directory: backend
-        run: npm ci
-
-      - name: Install frontend dependencies
-        working-directory: frontend
-        run: npm ci
-
-      - name: Build
-        run: npm run build
-
-      - name: Package npm release
-        run: node scripts/package-npm.mjs
+      # Trusted publishing needs npm >= 11.5.x; the runner image can lag behind.
+      - name: Ensure npm supports trusted publishing
+        run: npm install -g npm@latest
 
       - name: Dry-run pack (sanity check)
         working-directory: release/sillytalk
         run: npm pack --dry-run
 
-      - name: Publish to npm
+      - name: Publish to npm (trusted publishing)
         working-directory: release/sillytalk
-        run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public --provenance
