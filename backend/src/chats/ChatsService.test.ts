@@ -91,6 +91,7 @@ describe("create / get / list", () => {
     const chat = chats.create(["alice", "bob"], "m1", "me");
     expect(chat).toEqual({
       id: expect.any(String),
+      createdAt: expect.any(Number),
       characterIds: ["alice", "bob"],
       userId: "me",
       modelId: "m1",
@@ -121,6 +122,7 @@ describe("create / get / list", () => {
     expect(list.map((c) => c.id)).toEqual([b.id, a.id]);
     expect(list[0]).toEqual({
       id: b.id,
+      createdAt: b.createdAt,
       characterIds: ["b"],
       userId: "me",
       modelId: "m1",
@@ -157,7 +159,7 @@ describe("the migration from the legacy chat.json folders", () => {
     expect(fs.existsSync(path.join(root, "c1", "chat.json.migrated"))).toBe(true);
   });
 
-  it("the retired fields do not survive the import", () => {
+  it("the retired fields do not survive the import (the creation date does)", () => {
     writeChat("c1", {
       id: "c1",
       title: "old title",
@@ -172,7 +174,9 @@ describe("the migration from the legacy chat.json folders", () => {
     });
     const stored = peek("c1") as Record<string, unknown>;
     expect(stored.title).toBeUndefined();
-    expect(stored.createdAt).toBeUndefined();
+    // createdAt is a live field again (it titles a nameless chat), and the old
+    // format stored it — so an imported chat keeps its real creation date.
+    expect(stored.createdAt).toBe(1);
     expect(stored.updatedAt).toBeUndefined();
     expect(stored.characterId).toBeUndefined();
     expect(stored.userIds).toBeUndefined();
@@ -252,6 +256,196 @@ describe("delete", () => {
 
   it("returns false for a missing chat", () => {
     expect(chats.delete("nope")).toBe(false);
+  });
+});
+
+describe("the chat name and its creation date", () => {
+  const PNG = "data:image/png;base64,aGVsbG8=";
+
+  it("a new chat carries its creation date and no name", () => {
+    const before = Date.now();
+    const chat = chats.create(["a"], "m1", "me");
+    expect(chat.name).toBeUndefined();
+    expect(chat.createdAt).toBeGreaterThanOrEqual(before);
+    expect(peek(chat.id)?.createdAt).toBe(chat.createdAt);
+    // the list carries it too — that is what titles a nameless chat there
+    expect(chats.list()[0].createdAt).toBe(chat.createdAt);
+    expect(chats.list()[0].name).toBeUndefined();
+  });
+
+  it("a row without a creation date takes the date of its first message, and it is persisted", () => {
+    writeChat("c1", {
+      id: "c1",
+      characterIds: ["a"],
+      userId: "me",
+      modelId: "m1",
+      messages: [
+        { id: "m1", role: "user", userId: "me", text: "old", images: [], timestamp: 5 },
+        { id: "m2", role: "assistant", characterId: "a", text: "hi", images: [], timestamp: 9 },
+      ],
+    });
+    expect(chats.get("c1")?.createdAt).toBe(5);
+    expect(peek("c1")?.createdAt).toBe(5);
+  });
+
+  it("an empty row without a creation date gets the moment it is first read", () => {
+    const before = Date.now();
+    writeChat("c1", { id: "c1", characterIds: ["a"], userId: "me", modelId: "m1", messages: [] });
+    const created = chats.get("c1")!.createdAt;
+    expect(created).toBeGreaterThanOrEqual(before);
+    expect(peek("c1")?.createdAt).toBe(created);
+  });
+
+  it("the name is stored trimmed; an empty one is dropped, so the date titles the chat again", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    const named = chats.get(chat.id)!;
+    named.name = "  Road trip  ";
+    chats.save(named);
+    expect(chats.get(chat.id)?.name).toBe("Road trip");
+    expect(chats.list()[0].name).toBe("Road trip");
+
+    const cleared = chats.get(chat.id)!;
+    cleared.name = "   ";
+    chats.save(cleared);
+    expect(chats.get(chat.id)?.name).toBeUndefined();
+    expect(peek(chat.id) as unknown as Record<string, unknown>).not.toHaveProperty("name");
+  });
+
+  it("the name is a title: a picture file is still named by its own prompt slug", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    const withName = chats.get(chat.id)!;
+    withName.name = "Важный чат";
+    chats.save(withName);
+    const image = chats.saveImage(chat.id, PNG, { nameHint: "a red boat" });
+    expect(image).toMatch(new RegExp(`^${chat.id}/files/a-red-boat-[0-9a-f]{6}\\.png$`));
+    expect(chats.get(chat.id)?.name).toBe("Важный чат");
+  });
+});
+
+describe("clone", () => {
+  const PNG = "data:image/png;base64,aGVsbG8=";
+
+  it("copies the messages, the participants and the settings under a new id", () => {
+    const chat = chats.create(["alice", "bob"], "m1", "me");
+    const configured = chats.get(chat.id)!;
+    configured.name = "Road trip";
+    configured.sampling = { temperature: 0.7 };
+    configured.systemSuffix = "terse answers";
+    chats.save(configured);
+    const withLines = chats.get(chat.id)!;
+    chats.addUserMessage(withLines, "hi");
+    withLines.messages.push({
+      id: "a1",
+      role: "assistant",
+      kind: "text",
+      characterId: "alice",
+      text: "hey",
+      images: [],
+      timestamp: 2,
+    });
+    chats.save(withLines);
+
+    const copy = chats.clone(chat.id)!;
+    expect(copy.id).not.toBe(chat.id);
+    expect(copy.name).toBe("Road trip (copy)");
+    expect(copy.createdAt).toBeGreaterThanOrEqual(chat.createdAt);
+    expect(copy.characterIds).toEqual(["alice", "bob"]);
+    expect(copy.userId).toBe("me");
+    expect(copy.modelId).toBe("m1");
+    expect(copy.sampling).toEqual({ temperature: 0.7 });
+    expect(copy.systemSuffix).toBe("terse answers");
+    expect(copy.messages.map((m) => m.text)).toEqual(["hi", "hey"]);
+    expect(copy.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+    expect(copy.messages.map((m) => m.characterId)).toEqual([undefined, "alice"]);
+    // fresh message ids — the two chats are edited independently
+    expect(copy.messages.map((m) => m.id)).not.toEqual(chats.get(chat.id)!.messages.map((m) => m.id));
+
+    // the source keeps everything it had
+    const source = chats.get(chat.id)!;
+    expect(source.name).toBe("Road trip");
+    expect(source.messages).toHaveLength(2);
+    // and the copy survives a reopen
+    expect(peek(copy.id)?.messages.map((m) => m.text)).toEqual(["hi", "hey"]);
+  });
+
+  it("a nameless chat is cloned nameless, titled by its own creation date", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    const copy = chats.clone(chat.id)!;
+    expect(copy.name).toBeUndefined();
+    expect(peek(copy.id) as unknown as Record<string, unknown>).not.toHaveProperty("name");
+    expect(copy.createdAt).toBeGreaterThanOrEqual(chat.createdAt);
+  });
+
+  it("copies the pictures into the copy's own folder and repoints the card, its refs and its sidecar", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    const ref = chats.saveImage(chat.id, PNG, { nameHint: "a red boat" });
+    const card = chats.saveImage(chat.id, PNG, { nameHint: "a fox" });
+    chats.addImageMessage(chats.get(chat.id)!, card, {
+      description: "a fox in the snow",
+      generation: { prompt: "a fox in the snow", refs: [ref], source: "manual" },
+    });
+
+    const copy = chats.clone(chat.id)!;
+    const copiedCard = copy.messages[0];
+    const copiedRef = copiedCard.generation!.refs![0];
+    expect(copiedCard.images[0]).not.toBe(card);
+    expect(copiedCard.images[0]).toMatch(new RegExp(`^${copy.id}/files/a-fox-[0-9a-f]{6}\\.png$`));
+    expect(copiedRef).toMatch(new RegExp(`^${copy.id}/files/a-red-boat-[0-9a-f]{6}\\.png$`));
+    expect(copiedCard.text).toBe("a fox in the snow");
+
+    // both files of the copy exist on disk, with their sidecars
+    const cardFile = path.join(root, copiedCard.images[0]!.split("/").join(path.sep));
+    const refFile = path.join(root, copiedRef!.split("/").join(path.sep));
+    expect(fs.existsSync(cardFile)).toBe(true);
+    expect(fs.existsSync(refFile)).toBe(true);
+    const sidecar = JSON.parse(fs.readFileSync(`${cardFile}.json`, "utf-8")) as {
+      description?: string;
+      prompt?: string;
+      refs?: string[];
+    };
+    expect(sidecar.description).toBe("a fox in the snow");
+    expect(sidecar.prompt).toBe("a fox in the snow");
+    expect(sidecar.refs).toEqual([copiedRef]);
+
+    // the two chats are independent: deleting the source leaves the copy intact
+    expect(chats.delete(chat.id)).toBe(true);
+    const after = chats.get(copy.id)!;
+    expect(after.messages[0].text).toBe("a fox in the snow");
+    expect(fs.existsSync(cardFile)).toBe(true);
+  });
+
+  it("a picture that was still being drawn becomes a broken card with a reason", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    const pending = chats.reservedImageId(chat.id, "a sunset");
+    chats.addImageMessage(chats.get(chat.id)!, pending, {
+      generation: { source: "auto" },
+      status: "pending",
+    });
+
+    const copy = chats.clone(chat.id)!;
+    const card = copy.messages[0];
+    // never "pending": the job belongs to the source chat, so a spinner here
+    // would poll forever
+    expect(Object.values(card.imageStatus ?? {})).toEqual(["failed"]);
+    expect(Object.values(card.imageErrors ?? {})[0]).toContain("cloned");
+  });
+
+  it("a failed or cancelled card keeps its state and its reason", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    const image = chats.reservedImageId(chat.id, "a sunset");
+    chats.addImageMessage(chats.get(chat.id)!, image, {
+      generation: { prompt: "a sunset", source: "manual" },
+      status: "failed",
+      error: "GPU exploded",
+    });
+    const copy = chats.clone(chat.id)!;
+    const card = copy.messages[0];
+    expect(card.imageStatus?.[card.images[0]]).toBe("failed");
+    expect(card.imageErrors?.[card.images[0]]).toBe("GPU exploded");
+  });
+
+  it("returns null for a missing chat", () => {
+    expect(chats.clone("nope")).toBeNull();
   });
 });
 

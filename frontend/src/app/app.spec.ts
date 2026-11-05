@@ -13,6 +13,8 @@ import {
 } from '../services/api';
 import { InputPanel } from '../components/input-panel/input-panel';
 import { MessageRow } from '../components/message-row/message-row';
+import { TopBar } from '../components/top-bar/top-bar';
+import { ChatSettingsDialog } from '../components/chat-settings-dialog/chat-settings-dialog';
 import { ChatStore } from '../services/chat-store';
 import { ConfigStore } from '../services/config-store';
 import { ImageStore } from '../services/image-store';
@@ -20,6 +22,7 @@ import {
   DEFAULT_REASONING_LEVELS,
   chatLabelOf,
   chatTimeOf,
+  chatTitleOf,
   chatUserLabelOf,
   messageCountLabel,
   parseReasoningLevels,
@@ -66,6 +69,7 @@ describe('chat labels (helpers.ts)', () => {
     const users: User[] = [{ id: 'u1', name: 'Bob', description: '' }];
     const cs: ChatSummary = {
       id: 'ch1',
+      createdAt: 0,
       characterIds: ['c1'],
       userId: 'u1',
       modelId: 'm1',
@@ -147,6 +151,7 @@ describe('ImageStore — the background image generation', () => {
 
   const baseChat: Chat = {
     id: 'chat-1',
+    createdAt: 0,
     characterIds: ['char-1'],
     userId: 'user-1',
     modelId: 'model-1',
@@ -308,6 +313,7 @@ describe('InputPanel — message editing', () => {
     fixture.detectChanges();
     store.chat.set({
       id: 'chat-1',
+      createdAt: 0,
       characterIds: ['c1'],
       userId: 'u1',
       modelId: 'm1',
@@ -474,6 +480,7 @@ describe('InputPanel — message editing', () => {
 describe('ChatStore — empty send ("another message from the AI")', () => {
   const baseChat: Chat = {
     id: 'chat-1',
+    createdAt: 0,
     characterIds: ['char-1'],
     userId: 'user-1',
     modelId: 'model-1',
@@ -557,6 +564,7 @@ describe('ChatStore — empty send ("another message from the AI")', () => {
 describe('ChatStore — canceling the generation', () => {
   const baseChat: Chat = {
     id: 'chat-1',
+    createdAt: 0,
     characterIds: ['char-1', 'char-2'],
     userId: 'user-1',
     modelId: 'model-1',
@@ -816,8 +824,12 @@ const fakeApiForTurnButton = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
+// A chat of the 📷 / title tests. The creation date is fixed so the default
+// title is a known string ("03.08.2026, 12:00").
+const CHAT_CREATED_AT = new Date(2026, 7, 3, 12, 0).getTime();
 const turnChat = (messages: ChatMessage[]): Chat => ({
   id: 'chat-1',
+  createdAt: CHAT_CREATED_AT,
   characterIds: ['c1'],
   userId: 'u1',
   modelId: 'm1',
@@ -1133,5 +1145,141 @@ describe('MessageRow — an author that is no longer a participant', () => {
     // a character that is gone from the catalog entirely has no name to show
     expect(chatStore.characterOf('gone')).toBeNull();
     expect(chatStore.characterNameOf('gone')).toBe('Model');
+  });
+});
+
+// ---- the chat name (the header title) and cloning a chat ----
+
+describe('chatTitleOf (helpers.ts)', () => {
+  const created = new Date(2026, 7, 3, 12, 0).getTime();
+
+  it('the name wins, the creation date is the default name', () => {
+    expect(chatTitleOf({ name: 'Road trip', createdAt: created })).toBe('Road trip');
+    expect(chatTitleOf({ createdAt: created })).toContain('03/08/2026');
+    expect(chatTitleOf({ createdAt: created })).toContain('12:00');
+  });
+
+  it('a blank name is no name, and a row without a creation date falls back to its last message', () => {
+    expect(chatTitleOf({ name: '   ', createdAt: created })).toContain('03/08/2026');
+    expect(chatTitleOf({ createdAt: 0, lastMessageAt: created })).toContain('03/08/2026');
+    expect(chatTitleOf({})).toBe('');
+  });
+});
+
+describe('The chat title and cloning a chat', () => {
+  let cloneCalls: string[];
+  let patchBodies: Record<string, unknown>[];
+  const copyChat: Chat = {
+    ...turnChat([]),
+    id: 'chat-2',
+    name: 'Road trip (copy)',
+    createdAt: CHAT_CREATED_AT + 1000,
+  };
+
+  beforeEach(async () => {
+    cloneCalls = [];
+    patchBodies = [];
+    await TestBed.resetTestingModule();
+    await TestBed.configureTestingModule({
+      imports: [TopBar, ChatSettingsDialog],
+      providers: [
+        {
+          provide: ApiService,
+          useValue: fakeApiForTurnButton({
+            cloneChat: (id: string) => {
+              cloneCalls.push(id);
+              return Promise.resolve(copyChat);
+            },
+            patchChat: (id: string, patch: Record<string, unknown>) => {
+              patchBodies.push(patch);
+              return Promise.resolve({ ...turnChat([]), ...patch });
+            },
+            getChats: () =>
+              Promise.resolve<ChatSummary[]>([{ ...copyChat, messageCount: 0, lastMessageAt: 0 }]),
+          }),
+        },
+      ],
+    }).compileComponents();
+  });
+
+  function renderHeader(): { store: ChatStore; fixture: ComponentFixture<TopBar>; el: HTMLElement } {
+    const store = TestBed.inject(ChatStore);
+    store.chat.set(turnChat([]));
+    const fixture = TestBed.createComponent(TopBar);
+    fixture.detectChanges();
+    return { store, fixture, el: fixture.nativeElement as HTMLElement };
+  }
+
+  it('the header shows the chat name, or the creation date while the chat has no name', () => {
+    const { store, fixture, el } = renderHeader();
+    const label = el.querySelector('[data-testid=chat-date]')!;
+    expect(label.textContent).toContain('03/08/2026');
+    expect(label.textContent).toContain('12:00');
+
+    store.chat.set({ ...turnChat([]), name: 'Road trip' });
+    fixture.detectChanges();
+    expect(store.chatTitle()).toBe('Road trip');
+    expect(label.textContent).toContain('Road trip');
+  });
+
+  it('the chat-actions menu has Clone chat above Delete chat and opens the copy', async () => {
+    const { store, fixture, el } = renderHeader();
+    (el.querySelector('[data-testid=chat-dots]') as HTMLButtonElement).click();
+    fixture.detectChanges();
+    const cloneBtn = el.querySelector('[data-testid=clone-chat]') as HTMLButtonElement;
+    const deleteBtn = el.querySelector('[data-testid=delete-chat]') as HTMLButtonElement;
+    expect(cloneBtn).toBeTruthy();
+    expect(deleteBtn).toBeTruthy();
+    const items = [...el.querySelectorAll('.dropdown [data-testid]')].map((n) =>
+      n.getAttribute('data-testid'),
+    );
+    expect(items).toEqual(['chat-settings', 'clone-chat', 'delete-chat']);
+
+    cloneBtn.click();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(cloneCalls).toEqual(['chat-1']);
+    expect(store.chat()?.id).toBe('chat-2');
+    expect(store.chatTitle()).toBe('Road trip (copy)');
+    // the list is re-read so the copy shows up in the chat menu
+    expect(store.chats().map((c) => c.id)).toEqual(['chat-2']);
+  });
+
+  it('the settings dialog carries the name and saves it trimmed', async () => {
+    const store = TestBed.inject(ChatStore);
+    store.chat.set({ ...turnChat([]), name: 'Road trip' });
+    const fixture = TestBed.createComponent(ChatSettingsDialog);
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+
+    const input = el.querySelector('[data-testid=chat-name-input]') as HTMLInputElement;
+    expect(input.value).toBe('Road trip');
+    // the placeholder shows the title an empty field stands for
+    expect(input.getAttribute('placeholder')).toContain('03/08/2026');
+
+    input.value = '  Evening at the harbour  ';
+    input.dispatchEvent(new Event('input'));
+    (el.querySelector('[data-testid=chat-settings-save]') as HTMLButtonElement).click();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(patchBodies[0]).toMatchObject({ name: 'Evening at the harbour' });
+    expect(store.chat()?.name).toBe('Evening at the harbour');
+    expect(store.chatSettingsOpen()).toBe(false);
+  });
+
+  it('clearing the name in the dialog sends an empty name (the date titles the chat again)', async () => {
+    const store = TestBed.inject(ChatStore);
+    store.chat.set({ ...turnChat([]), name: 'Road trip' });
+    const fixture = TestBed.createComponent(ChatSettingsDialog);
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+
+    const input = el.querySelector('[data-testid=chat-name-input]') as HTMLInputElement;
+    input.value = '';
+    input.dispatchEvent(new Event('input'));
+    (el.querySelector('[data-testid=chat-settings-save]') as HTMLButtonElement).click();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(patchBodies[0]).toMatchObject({ name: '' });
   });
 });

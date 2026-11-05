@@ -92,7 +92,7 @@
 .model-wrap .dropdown {
   right: 0;
 }
-/* The chat date — an ordinary flex item that opens the chat menu. It stays
+/* The chat title — an ordinary flex item that opens the chat menu. It stays
    near the center and shifts right when the names take up more room. */
 .chat-date {
   position: relative;
@@ -100,6 +100,15 @@
   white-space: nowrap;
   flex: none;
   cursor: pointer;
+}
+/* A chat name is the user's text of any length: the title gets an ellipsis
+   instead of pushing the model chip out of the header. */
+.chat-date-label {
+  display: inline-block;
+  max-width: 34vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
 }
 /* the hover highlight covers only the date text — hovering the ⋮ inside
    the same cell must not light the label up */

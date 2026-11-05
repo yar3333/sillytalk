@@ -1,7 +1,7 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 import { ApiService, Character, Chat, ChatMessage, ChatSummary, Model, User } from './api';
 import { ConfigStore } from './config-store';
-import { formatTime } from './helpers';
+import { chatTitleOf } from './helpers';
 import { UiStore } from './ui-store';
 
 // The current chat and the chat list: messages, sending, the 📎 attachments,
@@ -125,11 +125,11 @@ export class ChatStore {
   });
   readonly modelLabel = computed<string>(() => this.currentModel()?.name ?? '—');
   readonly idShort = computed<string>(() => this.chat()?.id ?? '');
-  readonly lastTime = computed<string>(() => {
-    const msgs = this.chat()?.messages ?? [];
-    const t = msgs.length > 0 ? msgs[msgs.length - 1].timestamp : 0;
-    if (!t) return '';
-    return formatTime(t);
+  // The title shown in the header: the chat's own name, or the date it was
+  // created while it has no name (chatTitleOf).
+  readonly chatTitle = computed<string>(() => {
+    const c = this.chat();
+    return c ? chatTitleOf(c) : '';
   });
   // Is it the user's turn to speak: the characters have had their say (the
   // last line is one of theirs, not an error) and nothing is being generated.
@@ -592,21 +592,30 @@ export class ChatStore {
     this.chatSettingsOpen.set(false);
   }
 
-  // Saves the chat settings of the current chat (a PATCH): the sampling
-  // overrides and the system-prompt addition. A fully empty sampling object
-  // and an empty systemSuffix remove the blocks server-side (the provider
+  // Saves the chat settings of the current chat (a PATCH): its name, the
+  // sampling overrides and the system-prompt addition. An empty name makes the
+  // chat nameless again (its creation date titles it), a fully empty sampling
+  // object and an empty systemSuffix remove the blocks server-side (the provider
   // defaults apply / nothing is appended).
   saveChatSettings(settings: {
+    name: string;
     sampling: { temperature?: number; minP?: number; repetitionPenalty?: number };
     systemSuffix: string;
   }): void {
     const c = this.chat();
     if (!c) return;
     this.api
-      .patchChat(c.id, { sampling: settings.sampling, systemSuffix: settings.systemSuffix })
+      .patchChat(c.id, {
+        name: settings.name.trim(),
+        sampling: settings.sampling,
+        systemSuffix: settings.systemSuffix,
+      })
       .then((ch) => {
         this.setChat(ch);
         this.chatSettingsOpen.set(false);
+        // The name titles the chat in the header and in the chat menu, so the
+        // list is re-read to show it there too.
+        return this.refreshChats();
       })
       .catch((e) => this.ui.error.set(String((e as Error).message)));
   }
@@ -624,6 +633,20 @@ export class ChatStore {
       .createChat(sel.characterIds, modelId, sel.userId)
       .then((chat) => {
         this.setChat(chat);
+        return this.refreshChats();
+      })
+      .catch((e) => this.ui.error.set(String((e as Error).message)));
+  }
+
+  // Duplicates the current chat (its messages, its pictures, its settings) and
+  // opens the copy. The server returns the copy already stored, so no re-read.
+  cloneCurrentChat(): void {
+    const c = this.chat();
+    if (!c) return;
+    this.api
+      .cloneChat(c.id)
+      .then((copy) => {
+        this.setChat(copy);
         return this.refreshChats();
       })
       .catch((e) => this.ui.error.set(String((e as Error).message)));

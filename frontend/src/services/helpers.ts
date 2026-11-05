@@ -39,6 +39,20 @@ export function chatTimeOf(cs: ChatSummary): string {
   return cs.lastMessageAt ? formatTime(cs.lastMessageAt) : '';
 }
 
+// The title of a chat: its own name, or the date it was created when it has
+// none (that is a chat's default name). A row that carries no creation date at
+// all falls back to its last message date, so the header is never empty.
+export function chatTitleOf(chat: {
+  name?: string;
+  createdAt?: number;
+  lastMessageAt?: number;
+}): string {
+  const name = chat.name?.trim();
+  if (name) return name;
+  const t = chat.createdAt || chat.lastMessageAt || 0;
+  return t ? formatTime(t) : '';
+}
+
 // The message count label: "1 message", "2 messages", "5 messages".
 export function messageCountLabel(n: number): string {
   return `${n} message${n === 1 ? '' : 's'}`;

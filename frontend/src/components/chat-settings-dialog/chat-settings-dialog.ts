@@ -1,15 +1,33 @@
 import { Component, OnInit, inject, signal } from '@angular/core';
 import { ChatStore } from '../../services/chat-store';
+import { formatTime } from '../../services/helpers';
 import { UiStore } from '../../services/ui-store';
 
-// The "Chat settings" dialog: the per-chat sampling overrides sent to the
-// provider with every reply (temperature / min-p / repetition penalty).
-// An empty field = the parameter is not overridden (the provider default
-// applies); all three empty = the whole block is cleared server-side.
+// The "Chat settings" dialog: the chat's own name (the header title), the
+// per-chat sampling overrides sent to the provider with every reply
+// (temperature / min-p / repetition penalty) and the system-prompt addition.
+// An empty name = the chat is titled by its creation date; an empty sampling
+// field = the parameter is not overridden (the provider default applies) and
+// all three empty = the whole block is cleared server-side.
 @Component({
   selector: 'app-chat-settings-dialog',
   template: `
     <div class="dialog-body" data-testid="chat-settings-dialog">
+      <label class="field">
+        <span>Name</span>
+        <input
+          class="grow"
+          type="text"
+          maxlength="80"
+          [placeholder]="defaultTitle()"
+          data-testid="chat-name-input"
+          [value]="name()"
+          (input)="setName($event)"
+        />
+      </label>
+      <div class="dialog-hint">
+        The title shown at the top. Left empty, the chat is titled by the date it was created.
+      </div>
       <label class="field">
         <span>Temperature</span>
         <input
@@ -80,20 +98,29 @@ export class ChatSettingsDialog implements OnInit {
   private readonly chatStore = inject(ChatStore);
   private ui = inject(UiStore);
 
+  readonly name = signal('');
   readonly temperature = signal('');
   readonly minP = signal('');
   readonly repetitionPenalty = signal('');
   readonly systemSuffix = signal('');
+  // The title an empty Name field stands for — the chat's creation date, shown
+  // as the field's placeholder so the user sees what the header will say.
+  readonly defaultTitle = signal('');
 
   ngOnInit(): void {
     const c = this.chatStore.chat();
     const s = c?.sampling;
+    this.name.set(c?.name ?? '');
+    this.defaultTitle.set(c ? formatTime(c.createdAt) : 'the creation date');
     this.temperature.set(s?.temperature !== undefined ? String(s.temperature) : '');
     this.minP.set(s?.minP !== undefined ? String(s.minP) : '');
     this.repetitionPenalty.set(s?.repetitionPenalty !== undefined ? String(s.repetitionPenalty) : '');
     this.systemSuffix.set(c?.systemSuffix ?? '');
   }
 
+  setName(e: Event): void {
+    this.name.set((e.target as HTMLInputElement).value);
+  }
   setTemperature(e: Event): void {
     this.temperature.set((e.target as HTMLInputElement).value);
   }
@@ -124,6 +151,7 @@ export class ChatSettingsDialog implements OnInit {
       return;
     }
     this.chatStore.saveChatSettings({
+      name: this.name(),
       sampling: { temperature: temp, minP: minP, repetitionPenalty: rep },
       systemSuffix: this.systemSuffix(),
     });

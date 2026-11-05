@@ -34,7 +34,7 @@ function configOf(models: Model[]): Config {
 }
 
 function chatWithModel(modelId: string): Chat {
-  return { id: "chat-1", characterIds: [], userId: "", modelId, messages: [] };
+  return { id: "chat-1", createdAt: 0, characterIds: [], userId: "", modelId, messages: [] };
 }
 
 function jsonRes(body: unknown, status = 200) {

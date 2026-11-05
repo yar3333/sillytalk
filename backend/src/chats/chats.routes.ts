@@ -74,7 +74,14 @@ export function createChatsRouter(
       res.status(404).json({ error: "Chat not found" });
       return;
     }
-    const { characterIds, modelId, userId, sampling, systemSuffix } = req.body ?? {};
+    const { characterIds, modelId, userId, sampling, systemSuffix, name } = req.body ?? {};
+    // The chat's own name — the title in the header. An empty name is stored as
+    // "no name", which is what makes the header fall back to the creation date.
+    if (name !== undefined) {
+      const t = typeof name === "string" ? name.trim() : "";
+      if (t) chat.name = t;
+      else delete chat.name;
+    }
     // Participants can change at any time; the characterIds order = reply
     // priority (changed with the ↑/↓ buttons in the participants menu).
     if (characterIds !== undefined) {
@@ -116,6 +123,18 @@ export function createChatsRouter(
 
   router.delete("/:id", (req, res) => {
     res.json({ deleted: chats.delete(req.params.id) });
+  });
+
+  // Duplicates the chat: its messages, its pictures (copied into the copy's own
+  // folder) and its settings. The answer is the copy — the client opens it, the
+  // same way a new chat is opened.
+  router.post("/:id/clone", (req, res) => {
+    const copy = chats.clone(req.params.id);
+    if (!copy) {
+      res.status(404).json({ error: "Chat not found" });
+      return;
+    }
+    res.json({ chat: copy });
   });
 
   // Imports a character photo into the chat files/ (a reference for the 🎨

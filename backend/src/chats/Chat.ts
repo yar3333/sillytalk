@@ -10,6 +10,13 @@ export type ChatSampling = {
 
 export type Chat = {
   id: string;
+  // The chat's own name as the user typed it (the header title). Absent — the
+  // header shows the creation date instead, so a chat always has a title.
+  name?: string;
+  // When the chat was created (ms since the epoch) — the title of a nameless
+  // chat. Set once at create; a chat imported without it takes the date of its
+  // first message (see ChatsService.normalize).
+  createdAt: number;
   // The chat's characters in priority order: for every user message they
   // reply in turns (a silent one — [SILENT] — writes no message).
   characterIds: string[];

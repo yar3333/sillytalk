@@ -9,7 +9,8 @@ import {
   messageCountLabel,
 } from '../../services/helpers';
 
-// The header: character / persona (dropdown menus), date and model, the "⋮" menu.
+// The header: character / persona (dropdown menus), the chat title and model,
+// the "⋮" menu.
 // Opening/closing the menus — local state of the header: a click away
 // (document) closes everything; clicks on menu items bubble up to document,
 // so the menu closes by itself after a selection.
@@ -132,17 +133,18 @@ import {
         </span>
       </div>
 
-      <!-- The chat menu: the "Chat: <date>" label opens it (the chat-management
-           items moved out of the ⋮ menu). It is wider than the usual dropdown.
-           The chat-actions ⋮ (settings / delete) lives INSIDE the same cell —
-           no gap between the date and the dots. -->
+      <!-- The chat menu: the chat's title (its name, or the creation date while
+           it has no name) opens it (the chat-management items moved out of the
+           ⋮ menu). It is wider than the usual dropdown.
+           The chat-actions ⋮ (settings / clone / delete) lives INSIDE the same
+           cell — no gap between the title and the dots. -->
       <span
         class="chat-date"
         data-testid="chat-date"
         title="Chat menu"
         (click)="$event.stopPropagation(); toggleChatMenu()"
       >
-        <span class="chat-date-label">{{ chatStore.lastTime() ? 'Chat: ' + chatStore.lastTime() : 'Chat' }}</span>
+        <span class="chat-date-label">{{ chatStore.chatTitle() || 'Chat' }}</span>
         <span class="chat-dots-wrap">
           <button
             class="dots"
@@ -164,6 +166,13 @@ import {
                 (click)="$event.stopPropagation(); chatDotsOpen.set(false); chatStore.openChatSettings()"
               >
                 Chat settings…
+              </button>
+              <button
+                class="opt"
+                data-testid="clone-chat"
+                (click)="$event.stopPropagation(); chatDotsOpen.set(false); chatStore.cloneCurrentChat()"
+              >
+                Clone chat
               </button>
               <button
                 class="opt danger"
@@ -339,8 +348,8 @@ export class TopBar implements OnInit, OnDestroy {
       this.chatMenuOpen.set(false);
     }
   }
-  // The chat menu (New chat / the chat list) opens on the "Chat: <date>"
-  // label in the header.
+  // The chat menu (New chat / the chat list) opens on the chat title in the
+  // header.
   toggleChatMenu(): void {
     const open = !this.chatMenuOpen();
     this.chatMenuOpen.set(open);
@@ -352,7 +361,7 @@ export class TopBar implements OnInit, OnDestroy {
       this.chatDotsOpen.set(false);
     }
   }
-  // The chat-actions menu (⋮ next to the date): chat settings / delete chat.
+  // The chat-actions menu (⋮ next to the title): chat settings / clone / delete.
   toggleChatDots(): void {
     const open = !this.chatDotsOpen();
     this.chatDotsOpen.set(open);

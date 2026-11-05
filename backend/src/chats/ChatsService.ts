@@ -139,12 +139,13 @@ export class ChatsService {
     }
   }
 
-  // The chats-table blob of a chat: only the stored fields — the retired
-  // ones (title/createdAt/updatedAt, a single characterId and userIds) are
-  // never serialized.
+  // The chats-table blob of a chat: only the stored fields — the retired ones
+  // (title/updatedAt, a single characterId and userIds) are never serialized.
   private chatData(chat: Chat): string {
     return JSON.stringify({
       id: chat.id,
+      name: chat.name,
+      createdAt: chat.createdAt,
       characterIds: chat.characterIds,
       userId: chat.userId,
       modelId: chat.modelId,
@@ -170,6 +171,8 @@ export class ChatsService {
         const chat = JSON.parse(row.data) as Chat;
         result.push({
           id: chat.id,
+          name: chat.name,
+          createdAt: chat.createdAt,
           characterIds: chat.characterIds,
           userId: chat.userId,
           modelId: chat.modelId,
@@ -220,7 +223,6 @@ export class ChatsService {
     this.normalize(chat);
     const legacy = chat as Record<string, unknown>;
     delete legacy.title;
-    delete legacy.createdAt;
     delete legacy.updatedAt;
     delete legacy.characterId;
     delete legacy.userIds;
@@ -240,6 +242,7 @@ export class ChatsService {
   create(characterIds: string[], modelId: string, userId: string): Chat {
     const chat: Chat = {
       id: PathHelper.newId(),
+      createdAt: Date.now(),
       characterIds: [...characterIds],
       userId,
       modelId,
@@ -259,6 +262,84 @@ export class ChatsService {
     });
     fs.rmSync(PathHelper.chatDir(chatId, this.chatsRoot()), { recursive: true, force: true });
     return exists;
+  }
+
+  // Duplicates a chat: a new id, a copy of every message and a copy of the
+  // chat's files/ folder with its sidecars. The participants, the persona, the
+  // model, the sampling overrides and the system-prompt addition are copied;
+  // the name gets a " (copy)" suffix (a nameless copy is titled by its own
+  // creation date, exactly like the original).
+  //
+  // A picture is addressed by its path inside its own chat's folder, so the
+  // copy must not point at the original's files: the folder is copied first and
+  // every id of the copy — in the cards, in their reference lists and in the
+  // sidecars — is repointed at the copy's folder. From then on the two chats
+  // are independent: deleting either one leaves the other intact.
+  clone(chatId: string): Chat | null {
+    const source = this.get(chatId);
+    if (!source) return null;
+    const copy: Chat = {
+      id: PathHelper.newId(),
+      ...(source.name ? { name: `${source.name} (copy)` } : {}),
+      createdAt: Date.now(),
+      characterIds: [...source.characterIds],
+      userId: source.userId,
+      modelId: source.modelId,
+      ...(source.sampling ? { sampling: { ...source.sampling } } : {}),
+      ...(source.systemSuffix ? { systemSuffix: source.systemSuffix } : {}),
+      messages: [],
+    };
+    const sourceDir = PathHelper.chatFilesDir(source.id, this.chatsRoot());
+    const copyDir = PathHelper.chatFilesDir(copy.id, this.chatsRoot());
+    if (fs.existsSync(sourceDir)) fs.cpSync(sourceDir, copyDir, { recursive: true });
+    // The two folders as id prefixes ("chats/<id>/files/") — an id is a path
+    // relative to the data root, so the prefix is computed, not guessed (the
+    // chats folder may live outside the data root).
+    const from = `${PathHelper.imageIdOf(sourceDir)}/`;
+    const to = `${PathHelper.imageIdOf(copyDir)}/`;
+    const repoint = (id: string): string => (id.startsWith(from) ? to + id.slice(from.length) : id);
+    copy.messages = source.messages.map((m) => {
+      const message: ChatMessage = { ...m, id: PathHelper.newId(), images: m.images.map(repoint) };
+      if (m.generation?.refs?.length) {
+        message.generation = { ...m.generation, refs: m.generation.refs.map(repoint) };
+      }
+      if (m.imageStatus) {
+        const status: Record<string, "pending" | "failed" | "cancelled"> = {};
+        const errors: Record<string, string> = {};
+        for (const [id, value] of Object.entries(m.imageStatus)) {
+          const img = repoint(id);
+          if (value === "pending") {
+            // The job that draws it belongs to the original chat — its file
+            // lands there, never in the copy. A spinner that can never finish
+            // is worse than a broken card with a reason and a Regenerate button.
+            status[img] = "failed";
+            errors[img] = "The chat was cloned while this picture was being drawn — regenerate it.";
+          } else {
+            status[img] = value;
+            const error = m.imageErrors?.[id];
+            if (error) errors[img] = error;
+          }
+        }
+        message.imageStatus = status;
+        if (Object.keys(errors).length > 0) message.imageErrors = errors;
+      }
+      return message;
+    });
+    // The sidecars came along with the folder, so the references they list
+    // still name the original's files; only a sidecar whose refs actually
+    // changed is rewritten (its updatedAt is the user's copy, not ours to bump).
+    for (const m of copy.messages) {
+      for (const id of m.images) {
+        const file = PathHelper.resolveImageId(id);
+        if (!file) continue;
+        const meta = ImageMetaFile.read(file);
+        if (!meta?.refs?.length) continue;
+        const refs = meta.refs.map(repoint);
+        if (refs.join(",") !== meta.refs.join(",")) ImageMetaFile.write(file, { ...meta, refs });
+      }
+    }
+    this.save(copy);
+    return this.get(copy.id) ?? copy;
   }
 
   // ---- messages ----
@@ -720,10 +801,31 @@ export class ChatsService {
   // ---- on-disk format guards ----
 
   // Guarantees the current chat format: characterIds — an array of strings,
-  // userId — a string. After the one-off conversion of old chat.json files
-  // this is only a guard against garbage, not support for the old format.
+  // userId — a string, createdAt — the creation date. After the one-off
+  // conversion of old chat.json files this is only a guard against garbage, not
+  // support for the old format.
   private normalize(chat: Chat): boolean {
     let dirty = false;
+    // The creation date is the title of a nameless chat, so a chat without one
+    // (a row written before the field existed) takes the date of its first
+    // message — the closest thing to when it started — or, for an empty one,
+    // the moment it is first read.
+    if (typeof chat.createdAt !== "number" || !Number.isFinite(chat.createdAt)) {
+      const first = Array.isArray(chat.messages) ? chat.messages[0]?.timestamp : undefined;
+      chat.createdAt = typeof first === "number" && Number.isFinite(first) ? first : Date.now();
+      dirty = true;
+    }
+    // name: a trimmed non-empty string or nothing at all (an absent name means
+    // "title this chat by its creation date"). Emptying it in the dialog is
+    // flagged dirty so the cleanup is persisted.
+    if (chat.name !== undefined) {
+      const t = typeof chat.name === "string" ? chat.name.trim() : "";
+      if (t) chat.name = t;
+      else {
+        delete chat.name;
+        dirty = true;
+      }
+    }
     if (!Array.isArray(chat.characterIds)) {
       chat.characterIds = [];
       dirty = true;

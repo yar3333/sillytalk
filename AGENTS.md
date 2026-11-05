@@ -88,6 +88,9 @@ backend/               Express API; also serves the built frontend
                        imported once at database open and renamed to
                        chat.json.migrated; the service opens the database
                        lazily and close() is final — later use throws): CRUD,
+                       the clone (clone — the messages, the settings and the
+                       files/ folder copied, every image id and sidecar ref
+                       repointed at the copy's folder),
                        the format guards, the model
                        fallback, the chat files (saveImage with an English
                        name hint, reservedImageId, importImage,
@@ -104,7 +107,8 @@ backend/               Express API; also serves the built frontend
                        DI token DI_CHATS_SERVICE, the root folder and the
                        configuration service injected); chats.routes.ts — the
                        /chats routes
-                       (the chat CRUD, the messages, the reply queue, the
+                       (the chat CRUD + the clone (POST /:id/clone), the
+                       messages, the reply queue, the
                        picture of the user's turn (POST /:id/auto-image), the
                        card edit (PATCH /:id/messages/:id/picture), the
                        per-image generation controls);
@@ -182,20 +186,23 @@ frontend/              Angular app
     chat-store.ts      ChatStore: current chat + chat list — messages, send
                        (send/saveEdit), the 📎 attachments (pendingImages), the
                        isUserTurn flag (when the 📷 button belongs), edit,
-                       chat mgmt, new-chat dialog
+                       chat mgmt (incl. the chatTitle and the clone),
+                       new-chat dialog
     image-store.ts     ImageStore: image GENERATION — genMode/genRefs/generating,
                        draw(), requestTurnImage() (the 📷 picture of the user's
                        turn), cancel/regenerate/replace/editPicture of message
                        images, the lightbox, the background-job polling;
                        depends ONE-WAY on ChatStore
     ui-store.ts        UiStore: cross-cutting UI state (global error banner)
-    helpers.ts         pure helpers: chat labels and times, message counts, the
+    helpers.ts         pure helpers: chat labels, times and the chat title
+                       (chatTitleOf), message counts, the
                        avatar letter, the narration split, the image hover hint
                        (imageHintFor), the reasoning-levels list parse
   src/components/      UI components, each with its own .scss (encapsulation!);
                        read state/actions via injected stores — no big input lists
     top-bar/           header: character/user menus (edit icons + "New"),
-                       model chip (menu + edit icons), ⋮ menu
+                       the chat title + its chat-actions ⋮ (settings / clone /
+                       delete), model chip (menu + edit icons), ⋮ menu
     message-list/      history: empty state, messages, typing indicator
     message-row/       one message: avatar, text, or the image CARD (the picture
                        with its caption, prompt and reference count; the
@@ -211,8 +218,8 @@ frontend/              Angular app
     user-dialog/       persona edit dialog (name, description, avatar, Delete/Clone)
     model-dialog/      model edit dialog (llmModels entry fields, the reasoning
                        pick + levels, Delete/Clone)
-    chat-settings-dialog/ the per-chat overrides: temperature / min-P /
-                       repetition penalty + the system-prompt addition
+    chat-settings-dialog/ the per-chat name + the per-chat overrides: temperature /
+                       min-P / repetition penalty + the system-prompt addition
     image-lightbox/    a picture enlarged over a dark backdrop (ImageStore
                        .lightbox carries the media URL)
     settings/          settings modal (listen address / image generation)
@@ -535,19 +542,39 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   "+ New character" button), active persona (opens the persona menu — click switches the active
   persona, ✎ edit icon per item, "+ New persona"), model chip (opens the **model menu** — the model
   pick, ✎ edit icon per item, "+ New model"; the chip is the ONLY model picker — the "⋮" menu has no
-  model submenu), a "Chat: <last-message date>" label (clickable — opens the **chat menu**: new chat
-  + the chat list; wider than the usual dropdown, centered under the label, always visible) with a
-  **chat-actions ⋮ right next to it in the same cell** ("Chat settings…" and "Delete chat" — the chat
+  model submenu), the **chat title** label (the chat's own `name`, or the date it was created while
+  it has no name — `ChatStore.chatTitle` / `helpers.chatTitleOf`; clickable — opens the **chat menu**:
+  new chat + the chat list; wider than the usual dropdown, centered under the label, always visible;
+  a long name gets an ellipsis) with a
+  **chat-actions ⋮ right next to it in the same cell** ("Chat settings…", "Clone chat" and
+  "Delete chat" — the chat
   management moved out of the label's own menu), and a "⋮" menu (settings only now).
   Opening any one of these menus closes the others —
   they must never overlap. The persona/model menus are single-select (the active row is highlighted,
   no ●/○ mark); the character menu keeps the ●/○ mark (membership is a multi-select toggle) and its
   rows are ordered by reply priority, so the ↑/↓ arrows reorder the menu itself.
-- **Per-chat settings** (the chat-actions ⋮ → "Chat settings…", `chat-settings-dialog`): the
+- **The chat's name and cloning it.** `Chat.name` is the user's own title (`ChatSettingsDialog`'s
+  "Name" field, saved with `PATCH /api/chats/:id`; an empty name is stored as no name) and
+  `Chat.createdAt` is the creation date written once by `ChatsService.create` — the **default title**
+  of a nameless chat (`normalize` gives a row without one the date of its first message, or the
+  moment it is first read when it is empty, and `list()` carries both fields). The header shows the
+  name, falling back to that date; the chat list in the chat menu keeps showing the characters, the
+  persona and the last-message date. "Clone chat" (the chat-actions ⋮) calls
+  `POST /api/chats/:id/clone` → `{ chat }` (`ChatsService.clone`): a new id, a copy of every message,
+  the participants / persona / model / sampling / systemSuffix, the name suffixed " (copy)" (a
+  nameless copy stays nameless), and the chat `files/` folder copied into the copy's folder with
+  every image id repointed — in the cards, in their `generation.refs` and in the sidecars — so the
+  two chats are independent and deleting either leaves the other intact. A card whose picture was
+  still "pending" becomes **failed** in the copy with its own reason (the job belongs to the source
+  chat, and a pending card in the copy would poll forever). The frontend opens the copy and refreshes
+  the chat list (`ChatStore.cloneCurrentChat`).
+- **Per-chat settings** (the chat-actions ⋮ → "Chat settings…", `chat-settings-dialog`): the chat's
+  **name** plus the
   sampling overrides of THIS chat — temperature / min-P / repetition penalty — plus a free-text
-  **system-prompt addition**. An empty field means "do not override" (the provider default); all
+  **system-prompt addition**. An empty sampling field means "do not override" (the provider default); all
   three sampling fields empty clear the whole block server-side. Stored on the chat as
-  `Chat.sampling = { temperature?, minP?, repetitionPenalty? }` and `Chat.systemSuffix`, saved with
+  `Chat.sampling = { temperature?, minP?, repetitionPenalty? }`, `Chat.systemSuffix` and
+  `Chat.name`, saved with
   `PATCH /api/chats/:id` (the only place they are set — `POST /api/chats` takes just the
   participants, the persona and the model). `ReplyService.appendAssistantReply`
   appends `systemSuffix` to the system prompt of every reply in the chat, and `sampling` goes into
@@ -774,8 +801,10 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   ● in-chat / ○ out), `model-option` (a model-menu row opened by the chip),
   `char-edit`/`user-edit`/`model-edit` (the ✎ row icons), `new-character`/`new-persona`/`new-model`
   (the "+ New" buttons), `user-option-row`/`model-option-row` (a row wrapper), `chat-date` (the
-  "Chat: <date>" label that opens the chat menu) with a **chat-actions ⋮ right next to it in the
-  same cell** (`chat-dots` — `chat-settings` "Chat settings…" and `delete-chat` live in its dropdown,
+  chat-title label — the chat name, or the creation date while it has no name — that opens the chat
+  menu) with a **chat-actions ⋮ right next to it in the
+  same cell** (`chat-dots` — `chat-settings` "Chat settings…", `clone-chat` "Clone chat" and
+  `delete-chat` live in its dropdown,
   not in the label's own menu), `new-chat` / `new-chat-dialog` / `new-chat-confirm`, `user-name`,
   `settings`, `history`, `message`, `msg-sender`, `msg-edit` (the ✎ of a message,
   and of a picture card — it edits the caption), `input`, `send` (➤ normally; ✕
@@ -789,6 +818,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   `model-dialog` + `char-name-input`/`user-name-input`/`model-name-input`/`model-id-input` and
   `char-save`/`char-clone`/`char-delete` (the `user-*`/`model-*` analogues); the model dialog also
   has `model-reasoning-select` + `model-reasoning-levels-input`. The per-chat dialog:
-  `chat-settings-dialog` + `chat-temp-input`/`chat-minp-input`/`chat-reppen-input`/
+  `chat-settings-dialog` + `chat-name-input` +
+  `chat-temp-input`/`chat-minp-input`/`chat-reppen-input`/
   `chat-sysprompt-input` + `chat-settings-save`.
 - The suite captures screenshots into `e2e/screenshots/`.

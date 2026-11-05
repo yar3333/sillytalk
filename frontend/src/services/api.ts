@@ -126,6 +126,11 @@ export interface ImageGenerationData {
 
 export interface Chat {
   id: string;
+  // The chat's own name — the title in the header. Absent: the header shows the
+  // creation date instead, so a chat always has a title.
+  name?: string;
+  // When the chat was created (ms) — the title of a nameless chat.
+  createdAt: number;
   // The character participants in priority order: they reply in turn,
   // a silent one ([SILENT]) writes no message.
   characterIds: string[];
@@ -149,6 +154,7 @@ export interface Chat {
 export interface ChatSummary extends Omit<Chat, 'messages'> {
   messageCount: number;
   // The last message date, computed by the server on the fly (0 for an empty chat).
+  // The name and createdAt come from the chat row itself — they title it.
   lastMessageAt: number;
 }
 
@@ -260,6 +266,12 @@ export class ApiService {
 
   deleteChat(id: string): Promise<{ deleted: boolean }> {
     return this.req<{ deleted: boolean }>('/chats/' + id, { method: 'DELETE' });
+  }
+
+  // Duplicates the chat — its messages, its pictures (copied into the copy's own
+  // folder) and its settings. The answer is the copy, which the store opens.
+  cloneChat(id: string): Promise<Chat> {
+    return this.req<{ chat: Chat }>(`/chats/${id}/clone`, { method: 'POST' }).then((r) => r.chat);
   }
 
   // Imports a character photo into the chat files/ as a 🎨 reference; the
