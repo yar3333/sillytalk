@@ -113,7 +113,16 @@ export class ReplyService {
     // who said what. With a single character and a single persona the history
     // is left as-is. The chat's personas are derived from message authors;
     // there is no Chat.userIds.
-    const multi = chat.characterIds.length > 1 || new Set(chat.messages.map((m) => m.userId)).size > 1;
+    // The character authors are the ids the messages actually carry, resolved
+    // through the whole catalog — a character that was toggled out of the chat
+    // keeps its name on the lines it already said (and the count of voices
+    // takes it into account, so those lines stay labeled).
+    const authorIds = [
+      ...new Set(chat.messages.map((m) => m.characterId).filter((id): id is string => !!id)),
+    ];
+    const multi =
+      new Set([...chat.characterIds, ...authorIds]).size > 1 ||
+      new Set(chat.messages.map((m) => m.userId)).size > 1;
     // The message being regenerated stays in the chat (visible to the user)
     // but is not part of the history the model sees — it is being replaced.
     const replacedIndex = replaceLast && chat.messages.length > 0 ? chat.messages.length - 1 : -1;
@@ -123,9 +132,7 @@ export class ReplyService {
       this.textGeneration.labelHistory(
         chat.messages.filter((m) => m !== replacedMessage && !m.error),
         Object.fromEntries(
-          chat.characterIds
-            .map((id) => [id, this.characters.get(id)?.name ?? id] as const)
-            .filter(([id]) => chat.messages.some((m) => m.characterId === id)),
+          authorIds.map((id) => [id, this.characters.get(id)?.name ?? id] as const),
         ),
         Object.fromEntries(
           [...new Set(chat.messages.map((m) => m.userId).filter((id): id is string => !!id))].map(

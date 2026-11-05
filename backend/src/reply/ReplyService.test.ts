@@ -259,6 +259,29 @@ describe("appendAssistantReply", () => {
     expect(chats.get(chat.id)!.messages).toHaveLength(1);
   });
 
+  it("a character switched out of the chat keeps its name on the lines it already said", async () => {
+    characters.save({ id: "bob", name: "Bob", description: "Another test character." });
+    const chat = chats.create(["bob"], "m1", "me");
+    chat.messages.push(
+      { id: "u1", role: "user", userId: "me", kind: "text", text: "Hi", images: [], timestamp: 1 },
+      { id: "b1", role: "assistant", characterId: "bob", kind: "text", text: "Hey.", images: [], timestamp: 2 },
+    );
+    chats.save(chat);
+    // Bob is out of the chat: the history he wrote stays, only the new replies
+    // stop coming from him.
+    const switched = chats.get(chat.id)!;
+    switched.characterIds = ["alice"];
+    chats.save(switched);
+
+    const msg = await reply.appendAssistantReply(chats.get(chat.id)!, model(), "alice");
+    expect(msg?.characterId).toBe("alice");
+    // the model still reads whose line it is — the author is resolved through
+    // the catalog, not the current participant list
+    const bobsLine = textGeneration.lastHistory.find((m) => m.id === "b1");
+    expect(bobsLine?.text).toBe("Bob: Hey.");
+    expect(bobsLine?.characterId).toBe("bob");
+  });
+
   it("strips a copied author-name prefix from the reply", async () => {
     const chat = newChat();
     textGeneration.replyText = "Alice: hello there";

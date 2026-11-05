@@ -402,7 +402,7 @@ export class MessageRow implements OnDestroy {
       return u?.hasAvatar ? this.api.userAvatarUrl(u.id) : '';
     }
     const id = this.message().characterId ?? this.chatStore.character()?.id;
-    const c = this.chatStore.chatCharacters().find((x) => x.id === id);
+    const c = this.chatStore.characterOf(id);
     return c?.hasAvatar ? this.api.characterAvatarUrl(c.id) : '';
   }
   letter(): string {

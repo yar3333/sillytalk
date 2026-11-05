@@ -490,7 +490,13 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   answer priority). Every `ChatMessage` carries its author — `characterId` (assistant) /
   `userId` (user) — stored at send time, so switching participants or the active persona never
   rewrites history; the personas that ever spoke in a chat are derived from the messages'
-  `userId` values on the fly (there is no stored `Chat.userIds`). `POST /api/chats/:id/messages`
+  `userId` values on the fly (there is no stored `Chat.userIds`). Toggling a character out of a
+  chat is a **reply-queue** decision only: the author of a message is resolved for the display
+  (`ChatStore.characterOf` / `characterNameOf` → the name + avatar in `message-row`) and for the
+  labeled history (`appendAssistantReply` builds its author map from the message authors, not from
+  `chat.characterIds`) through the WHOLE catalog, so a former participant keeps its name and avatar
+  on the lines it already said. `ChatStore.chatCharacters()` stays participant-scoped — it drives
+  the header label, the mention match and the reply order. `POST /api/chats/:id/messages`
   only stores the user message — the **frontend** then drives the reply queue: for every
   participant in order (starting from the one mentioned by name in the text, else turn order) it
   calls `POST /api/chats/:id/reply` `{ characterId }` (backend: `appendAssistantReply`), so each

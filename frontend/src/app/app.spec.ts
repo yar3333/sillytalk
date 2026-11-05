@@ -1073,3 +1073,65 @@ describe('MessageRow — the image card', () => {
     expect(el.querySelector('.msg-text')?.textContent).toContain('just words');
   });
 });
+
+// Toggling a character out of a chat is a reply-queue decision: it must not
+// touch the history it already wrote.
+describe('MessageRow — an author that is no longer a participant', () => {
+  const alice: Character = { id: 'c1', name: 'Alice', description: '', hasAvatar: false };
+  const bob: Character = { id: 'c2', name: 'Bob', description: '', hasAvatar: true };
+
+  beforeEach(async () => {
+    await TestBed.resetTestingModule();
+    await TestBed.configureTestingModule({
+      imports: [MessageRow],
+      providers: [
+        {
+          provide: ApiService,
+          useValue: fakeApiForTurnButton({
+            getCharacters: () => Promise.resolve([alice, bob]),
+            characterAvatarUrl: (id: string) => 'avatar-of-' + id,
+          }),
+        },
+      ],
+    }).compileComponents();
+  });
+
+  function renderAuthorLine(message: ChatMessage): HTMLElement {
+    const chatStore = TestBed.inject(ChatStore);
+    // Bob was switched out of the chat — Alice is its only participant.
+    chatStore.chat.set({ ...turnChat([message]), characterIds: ['c1'] });
+    TestBed.inject(ConfigStore).characters.set([alice, bob]);
+
+    const fixture = TestBed.createComponent(MessageRow);
+    fixture.componentRef.setInput('message', message);
+    fixture.componentRef.setInput('isLast', false);
+    fixture.detectChanges();
+    return fixture.nativeElement as HTMLElement;
+  }
+
+  it('keeps its name and avatar in the history', () => {
+    const el = renderAuthorLine({ ...assistantLine, characterId: 'c2', text: 'a line of Bob' });
+    expect(el.querySelector('[data-testid=msg-sender]')?.textContent).toBe('Bob');
+    expect(el.querySelector('.avatar img')?.getAttribute('src')).toBe('avatar-of-c2');
+
+    // the current participant is unaffected by the lookup change
+    const aliceEl = renderAuthorLine({ ...assistantLine, text: 'a line of Alice' });
+    expect(aliceEl.querySelector('[data-testid=msg-sender]')?.textContent).toBe('Alice');
+    // no avatar file for Alice → the letter of her name, not 'M'
+    expect(aliceEl.querySelector('.avatar img')).toBeNull();
+    expect(aliceEl.querySelector('.avatar')?.textContent?.trim()).toBe('A');
+  });
+
+  it('the participant list still drives who answers next (only the display is catalog-wide)', () => {
+    const chatStore = TestBed.inject(ChatStore);
+    chatStore.chat.set({ ...turnChat([assistantLine]), characterIds: ['c1'] });
+    TestBed.inject(ConfigStore).characters.set([alice, bob]);
+
+    expect(chatStore.chatCharacters().map((c) => c.id)).toEqual(['c1']);
+    expect(chatStore.characterOf('c2')?.name).toBe('Bob');
+    expect(chatStore.characterNameOf('c2')).toBe('Bob');
+    // a character that is gone from the catalog entirely has no name to show
+    expect(chatStore.characterOf('gone')).toBeNull();
+    expect(chatStore.characterNameOf('gone')).toBe('Model');
+  });
+});

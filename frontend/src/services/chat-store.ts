@@ -82,10 +82,18 @@ export class ChatStore {
     const list = this.chatCharacters();
     return list.length > 0 ? list.map((c) => c.name).join(', ') : '—';
   });
-  // The name of a character participant by id (for the label of a specific message).
+  // A character by id from the WHOLE catalog — not only the current participants,
+  // so the author of an old message keeps its name and avatar after the chat
+  // participants change (toggling a character out of a chat affects the reply
+  // queue only, never the history).
+  characterOf(id: string | undefined): Character | null {
+    if (!id) return null;
+    return this.configStore.characters().find((c) => c.id === id) ?? null;
+  }
+  // The name of a message author by id; without an author — the first participant.
   characterNameOf(id: string | undefined): string {
     if (!id) return this.character()?.name ?? 'Model';
-    return this.chatCharacters().find((c) => c.id === id)?.name ?? 'Model';
+    return this.characterOf(id)?.name ?? 'Model';
   }
   // The persona of this chat (chat.userId); if the field is missing (old chat) — the first one.
   readonly chatUser = computed<User | null>(() => {
