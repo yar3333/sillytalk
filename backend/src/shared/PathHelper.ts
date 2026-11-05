@@ -112,10 +112,25 @@ export class PathHelper {
   // Id -> absolute path, or null when it escapes every data folder (a
   // hand-edited chat or sidecar must not turn the image route into an
   // arbitrary file reader).
+  //
+  // This is the STORAGE-side rule — what an id stored by the app or written by
+  // hand in a sidecar may point at. Serving a file over HTTP is stricter, see
+  // resolvePictureId.
   static resolveImageId(id: string): string | null {
     if (!id || id.includes("\0")) return null;
     const abs = path.resolve(PathHelper.configDir(), id.split("/").join(path.sep));
     return PathHelper.dataRoots().some((root) => PathHelper.isInside(abs, root)) ? abs : null;
+  }
+
+  // The HTTP-side rule: id -> absolute path, but only for a file inside one of
+  // the folders pictures live in. The data root itself is NOT one of them, so
+  // the media route cannot be pointed at config.json (which can hold a literal
+  // API key), at the chats database, or at the user's ComfyUI workflow files —
+  // all of which sit in the data root next to the picture folders.
+  static resolvePictureId(id: string): string | null {
+    if (!id || id.includes("\0")) return null;
+    const abs = path.resolve(PathHelper.configDir(), id.split("/").join(path.sep));
+    return PathHelper.pictureRoots().some((root) => PathHelper.isInside(abs, root)) ? abs : null;
   }
 
   // The folders an image is allowed to live in: the data root plus the
@@ -129,6 +144,14 @@ export class PathHelper {
         PathHelper.personsDir(),
       ]),
     ].map((p) => path.resolve(p));
+  }
+
+  // The folders pictures live in: the chat files, the character folders (their
+  // photos and avatars), the persona folders (their avatars).
+  private static pictureRoots(): string[] {
+    return [...new Set([PathHelper.chatsDir(), PathHelper.charactersDir(), PathHelper.personsDir()])].map(
+      (p) => path.resolve(p),
+    );
   }
 
   private static isInside(target: string, root: string): boolean {

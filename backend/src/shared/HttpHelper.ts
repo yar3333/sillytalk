@@ -13,20 +13,30 @@ export class HttpHelper {
     ".jpeg": "image/jpeg",
     ".webp": "image/webp",
     ".gif": "image/gif",
+    ".bmp": "image/bmp",
+    ".avif": "image/avif",
   };
 
-  // Streams the file to the response (404 when it does not exist). The
-  // explicit stream with a fixed Content-Type — not res.sendFile — is
-  // deliberate: sendFile threw NotFoundError for these files.
+  // Whether the file name ends in a format the app serves as a picture. Every
+  // file response goes through sendImage, which refuses anything else: a
+  // picture route must not turn into a reader of whatever else sits next to the
+  // pictures (a chat.json, a *.png.json sidecar, a character.json).
+  static isImage(file: string): boolean {
+    return Object.hasOwn(HttpHelper.IMAGE_CONTENT_TYPE, path.extname(file).toLowerCase());
+  }
+
+  // Streams the file to the response (404 when it is not a picture format or
+  // does not exist). The explicit stream with a fixed Content-Type — not
+  // res.sendFile — is deliberate: sendFile threw NotFoundError for these files.
   static sendImage(res: express.Response, file: string): void {
-    if (!fs.existsSync(file)) {
+    const contentType = HttpHelper.isImage(file)
+      ? HttpHelper.IMAGE_CONTENT_TYPE[path.extname(file).toLowerCase()]
+      : undefined;
+    if (!contentType || !fs.existsSync(file)) {
       res.status(404).end();
       return;
     }
-    res.setHeader(
-      "Content-Type",
-      HttpHelper.IMAGE_CONTENT_TYPE[path.extname(file).toLowerCase()] ?? "application/octet-stream",
-    );
+    res.setHeader("Content-Type", contentType);
     fs.createReadStream(file).pipe(res);
   }
 }

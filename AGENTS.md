@@ -170,7 +170,10 @@ backend/               Express API; also serves the built frontend
                        static methods: AvatarFile.ts (the avatar.<ext>
                        find/save/delete, shared by the character and the
                        person services), HttpHelper.ts (sendImage — the file
-                       streaming, a routes-layer concern), ImageMeta.ts (the
+                       streaming and the picture-format guard isImage, both a
+                       routes-layer concern; every file response of the app
+                       goes through them, and each has its test),
+                       ImageMeta.ts (the
                        sidecar shape: the open ImageMeta record + the
                        ImageGenerationRecord written at generation time),
                        ImageMetaFile.ts (the <image>.json sidecar: read/write
@@ -180,7 +183,10 @@ backend/               Express API; also serves the built frontend
                        the shared data-layout helpers (the data root, the
                        domain folders, expandPath, newId, isDirEntry, and the
                        image ID pair imageIdOf/resolveImageId — the latter
-                       refusing any path that escapes the data folders)
+                       refusing any path that escapes the data folders — plus
+                       the stricter resolvePictureId of the media route, which
+                       accepts only the folders pictures live in; PathHelper
+                       and HttpHelper have their own tests)
   jest.config.js       ts-jest setup
 
 frontend/              Angular app
@@ -457,15 +463,29 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
 - **Every picture is addressed by an ID that is its path relative to the data folder**
   (`PathHelper.imageIdOf` / `resolveImageId`, e.g. `chats/<chatId>/files/a-sunset-1a2b3c.png`,
   `characters/alice/photos/photo1.jpg`). An id is resolved only when it stays inside one of the data
-  folders (`configDir`, `chatsDir`, `charactersDir`, `personsDir`), so an id from a request can never
-  reach an arbitrary file; an unparsable or escaping id resolves to `null` and is rejected with a
-  clear error. `ChatMessage.images` holds ids, `generation.refs` holds ids, the generator receives
+  folders (`configDir`, `chatsDir`, `charactersDir`, `personsDir`), so an id written by hand in a chat
+  or a sidecar can never reach an arbitrary file; an unparsable or escaping id resolves to `null` and
+  is rejected with a clear error. This is the **storage** rule — what a stored id may point at;
+  serving a file over HTTP is stricter, see the next bullet.
+  `ChatMessage.images` holds ids, `generation.refs` holds ids, the generator receives
   absolute paths resolved by `ImageGenerationService.resolveRefPaths` (references whose file is gone
   are dropped, not passed as junk), and the browser loads a picture through the one
   id-addressed route `GET /api/media?path=<id>` (`ApiService.mediaUrl(id)`). File names are
   human-readable English: `ChatsService.slugify` transliterates Cyrillic, keeps up to five leading
   words and lowercases them, so a saved picture is `a-sunset-over-the-sea-1a2b3c.png`; the 6-hex
   suffix keeps a reserved name unique (`reservedImageId`).
+- **The media route serves pictures, not the data folder.** `GET /api/media` resolves the id with
+  `PathHelper.resolvePictureId`, which accepts only a file inside one of the folders pictures live in
+  (`chatsDir`, `charactersDir`, `personsDir`) and **not** the data root itself, so the route cannot be
+  pointed at `config.json` (it can hold a literal provider key), at `comfyui/*.json` (the user's own
+  workflow files) or at anything else that shares the data root with them — such an id gives `400
+  {"error":"Unknown image path"}`. The second rule is by name: `HttpHelper.sendImage` streams only a
+  name whose extension is a picture format (`HttpHelper.isImage` — png / jpg / jpeg / webp / gif / bmp
+  / avif), which also covers the files that sit *inside* a picture folder (`chats/chats.db`, a
+  `<image>.png.json` sidecar, a `chat.json.migrated`) with `404`. Both rules guard the character photo
+  and the avatar routes too — every file response of the app goes through `sendImage`. The storage
+  side stays looser on purpose: a hand-edited sidecar may point a reference at any image of the data
+  folder.
 - **A picture carries its description and generation data in a sidecar next to the file**:
   `<image>.png.json` — `{ name, description, prompt, negativePrompt, refs, source, generator, model,
   width, height, steps, createdAt, updatedAt }` (`shared/ImageMeta.ts`, read/written by
@@ -810,7 +830,11 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
 - **Serving images.** `HttpHelper.sendImage()` (`shared/HttpHelper.ts`, used by the per-domain
   routers) streams via `fs.createReadStream(...).pipe(res)` with
   an explicit Content-Type — **not** `res.sendFile` (which threw NotFoundError for these files). Keep the
-  streaming approach for chat files, character photos and avatars.
+  streaming approach for chat files, character photos and avatars. It also answers `404` for a name
+  whose extension is not a picture format (`HttpHelper.isImage`) — the guard every file response of the
+  app passes, so no picture route can hand out the JSON that sits next to the pictures; a new file
+  route must resolve its path the same way the media route does (`PathHelper.resolvePictureId`) rather
+  than joining a user-supplied name onto a folder.
 - **Frontend dist path.** Angular outputs to `frontend/dist/frontend/browser`. `index.ts` checks that
   path first, then falls back to `frontend/dist/browser`. If you change the Angular output path, update
   both candidates.

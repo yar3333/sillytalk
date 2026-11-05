@@ -219,6 +219,13 @@ resolved by `resolveApiKey()`: `envKey` (an environment variable) takes priority
   hand-editable, and the app reads it back) (the old per-chat `chat.json` files are imported
   into the database once and renamed to `chat.json.migrated`)
 
+The server has **no login** — anyone who can reach the listen address can read the chats and generate
+with your models, so keep `listen` on `127.0.0.1` unless you put it behind something that
+authenticates. What it exposes over HTTP is limited to what the app itself shows: the file route
+serves pictures of the chat, character and persona folders and nothing else from the data folder —
+the config (with the provider key), your workflow files and the chat database are not readable
+through it.
+
 ## Project structure
 
 ```
