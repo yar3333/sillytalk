@@ -1,5 +1,4 @@
 import fs from "fs";
-import { ChildProcess } from "child_process";
 import { SdApiSettings } from "../../configuration/SdApiSettings";
 import { IImageGeneratorDriver } from "../IImageGeneratorDriver";
 
@@ -7,9 +6,12 @@ import { IImageGeneratorDriver } from "../IImageGeneratorDriver";
 // HTTP. Availability is a short-timeout GET on /sd-models.
 export class SdApiDriver implements IImageGeneratorDriver {
   readonly key: string;
+  readonly queueKey: string;
 
   constructor(private readonly cfg: SdApiSettings) {
-    this.key = `url:${SdApiDriver.normalizeUrl(cfg.url)}`;
+    this.key = `sdapi:${SdApiDriver.normalizeUrl(cfg.url)}`;
+    // One SD instance answers one request at a time, so its queue is its own.
+    this.queueKey = this.key;
   }
 
   // Strips the trailing slashes of an SD API base URL.
@@ -39,7 +41,6 @@ export class SdApiDriver implements IImageGeneratorDriver {
     prompt: string,
     refPaths: string[],
     outPath: string,
-    _registerChild?: (child: ChildProcess) => void,
     registerAbort?: (ctrl: AbortController) => void,
   ): Promise<void> {
     const endpoint = refPaths.length > 0 ? "/sdapi/v1/img2img" : "/sdapi/v1/txt2img";

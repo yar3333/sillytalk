@@ -105,3 +105,60 @@ describe("reasoningLevelsOf", () => {
     );
   });
 });
+
+// The imageGenerators entries: every generator names its own kind, and the
+// defaults of each kind are filled in here.
+describe("the image generators of the config", () => {
+  const gens = (imageGenerators: unknown[]) =>
+    loadConfigWith(JSON.stringify({ listen: "127.0.0.1:3210", llmModels: {}, imageGenerators })).imageGenerators;
+
+  it("reads a ComfyUI generator and defaults its device and size", () => {
+    expect(gens([{ kind: "comfyui", url: "http://yserver:4240", model: " qwen-image-2.1 " }])).toEqual([
+      {
+        kind: "comfyui",
+        url: "http://yserver:4240",
+        model: "qwen-image-2.1",
+        device: "cuda:0",
+        width: 1328,
+        height: 1328,
+        enabled: true,
+      },
+    ]);
+  });
+
+  it("keeps the device, the size and the model a ComfyUI generator states", () => {
+    const [g] = gens([
+      { kind: "comfyui", url: "http://h:8188/", model: "qwen-image-2512", device: "cuda:3", width: 1664, height: 928, enabled: false },
+    ]);
+    expect(g).toMatchObject({ device: "cuda:3", width: 1664, height: 928, enabled: false });
+  });
+
+  it("reads an SD API generator with its defaults", () => {
+    expect(gens([{ kind: "sdapi", url: "http://127.0.0.1:7860" }])).toEqual([
+      {
+        kind: "sdapi",
+        url: "http://127.0.0.1:7860",
+        steps: 30,
+        width: 768,
+        height: 768,
+        denoisingStrength: 0.75,
+        negativePrompt: "",
+        enabled: true,
+      },
+    ]);
+  });
+
+  it("drops an entry that does not name a generator the app can run", () => {
+    // a bare url is not a kind, and neither is a generator type the app no
+    // longer has — nothing is guessed from the fields that happen to be set
+    const kept = gens([
+      { url: "http://127.0.0.1:7860" },
+      { command: "gen.cmd", args: [] },
+      { kind: "no-such-kind", url: "http://h:8188" },
+      "not an object at all",
+      { kind: "sdapi", url: "http://127.0.0.1:7860" },
+    ]);
+    expect(kept).toHaveLength(1);
+    expect(kept[0]).toMatchObject({ kind: "sdapi" });
+  });
+});

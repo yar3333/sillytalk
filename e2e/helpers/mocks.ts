@@ -1,12 +1,10 @@
-import fs from 'fs';
 import http from 'http';
-import path from 'path';
 import zlib from 'zlib';
 
 // The shared e2e mocks: a deterministic OpenAI-compatible LLM (with a
-// controllable delay) and a mock local-program image generator. Both suites
-// (app.spec.ts and ux-explore.spec.ts) use them, so the runs are fast and do
-// not depend on the user's real models.
+// controllable delay) and a mock ComfyUI server. Both suites (app.spec.ts and
+// ux-explore.spec.ts) use them, so the runs are fast and do not depend on the
+// user's real models or on a real ComfyUI.
 //
 // The mock LLM reads the character name from the system prompt ("You are
 // <name> …") and answers "Mock reply from <name>." — enough for the suite
@@ -16,13 +14,12 @@ import zlib from 'zlib';
 // the user's turn ("You write prompts for an image generator …"), which gets
 // the strict JSON plan the service parses.
 //
-// The mock generator is a node script that sleeps (5 s for prompts containing
-// "slow"), copies a template PNG to the output path, or fails when the prompt
-// contains "fail". The backend runs it via the configured imageGenerators
-// entry (command: process.execPath, args: [script, template,
-// '{absolutePathToOutputImage}', '{prompt}']). Node instead of a bash script:
-// "bash" on Windows may be a WSL stub without a distro (instant exit 1), and
-// Git Bash is not guaranteed either — node works everywhere.
+// The mock ComfyUI server speaks the part of the API the app uses — the
+// workflow converter, the input upload, the queue and history and the picture
+// download — and what a job does is decided by the prompt text the app
+// substituted into the workflow: a "fail" prompt fails on the server, a "slow"
+// one takes 5 s, anything else is drawn at once. The picture it hands out is a
+// real PNG built in process, so the browser shows it.
 
 // ------------------------------------------------------------------ helpers
 // A small valid PNG built in-process (truecolor, one solid color).
@@ -204,48 +201,192 @@ export async function startMockLlm(
 }
 
 // ------------------------------------------------------------------ the generator
-// Writes the mock generator script + a template PNG into dir and returns the
-// config entry (imageGenerators[0]) and the script/template paths.
-export interface MockGenSetup {
-  generator: {
-    command: string;
-    args: string[];
-    maxInputImages: number;
-  };
-  script: string;
-  template: string;
+// A stand-in for a ComfyUI server, carrying the endpoints the app drives:
+//
+//   GET  /system_stats    — the availability probe
+//   POST /workflow/convert — the converter custom node: the UI-format template
+//                            of a model becomes the API workflow (the mock
+//                            answers its own tiny workflow, with the PARAM_*
+//                            placeholders of the variant it was handed)
+//   POST /upload/image    — a reference into the server's input/ folder
+//   POST /prompt          — the job goes into the queue, the prompt id back
+//   GET  /history/{id}    — what the app polls until the job is done
+//   GET  /view            — the finished picture
+//   POST /queue, /interrupt — the app asks to drop a cancelled job
+//
+// What a job does follows the prompt text the app substituted into the
+// workflow: "fail" — the server fails it, "slow" — it takes 5 s, anything else
+// is drawn after a short pause.
+// One imageGenerators entry of the config — the same shape the app reads from
+// /api/config (the suites PUT it there before each test).
+export interface MockComfyGenerator {
+  kind: 'comfyui';
+  url: string;
+  model: string;
+  device: string;
+  width: number;
+  height: number;
+  enabled: boolean;
 }
 
-export function setupMockGenerator(dir: string): MockGenSetup {
-  fs.mkdirSync(dir, { recursive: true });
-  const script = path.join(dir, 'mock-gen.js');
-  const template = path.join(dir, 'template.png');
-  fs.writeFileSync(template, makePng(96, 96, 210, 60, 60));
-  fs.writeFileSync(
-    script,
-    [
-      '// The mock generator (run by plain node — no bash/WSL dependency):',
-      '// copies the template PNG to the output path; fails on a "fail" prompt,',
-      '// is slow (5 s) on a "slow" one.',
-      'const fs = require("fs");',
-      'const [template, out, prompt] = process.argv.slice(2);',
-      'if (/fail/i.test(prompt)) {',
-      '  console.error("mock generator: intentional failure");',
-      '  process.exit(1);',
-      '}',
-      'setTimeout(() => {',
-      '  fs.copyFileSync(template, out);',
-      '}, /slow/i.test(prompt) ? 5000 : 1200);',
-      '',
-    ].join('\n'),
-  );
-  return {
-    generator: {
-      command: process.execPath,
-      args: [script, template, '{absolutePathToOutputImage}', '{prompt}'],
-      maxInputImages: 2,
+export interface MockComfy {
+  url: string;
+  // the imageGenerators entry that points at this server
+  generator: MockComfyGenerator;
+  close(): void;
+}
+
+// The workflow the mock converter answers with. The placeholder of a reference
+// is only in it when the template asked for references, so an unsubstituted
+// PARAM_* in a submitted job means the app forgot one.
+function mockApiWorkflow(variant: 'text' | 'oneImage' | 'twoImages'): Record<string, unknown> {
+  const nodes: Record<string, unknown> = {
+    "1": { class_type: 'UNETLoaderMultiGPU', inputs: { unet_name: 'mock.safetensors', device: 'PARAM_DEVICE' } },
+    "5": { class_type: 'CLIPTextEncode', inputs: { text: 'PARAM_PROMPT' } },
+    "9": {
+      class_type: 'EmptySD3LatentImage',
+      inputs: { width: 'PARAM_INT_OUTPUT_IMAGE_WIDTH', height: 'PARAM_INT_OUTPUT_IMAGE_HEIGHT' },
     },
-    script,
-    template,
+    "10": { class_type: 'KSampler', inputs: { seed: 'PARAM_SEED', steps: 4, model: ['1', 0] } },
+    "13": { class_type: 'SaveImage', inputs: { filename_prefix: 'PARAM_STRING_OUTPUT_IMAGE_FILENAME' } },
+  };
+  if (variant !== 'text') {
+    nodes['20'] = {
+      class_type: 'LoadImage',
+      inputs: { image: variant === 'oneImage' ? 'PARAM_STRING_INPUT_IMAGE_FILENAME' : 'PARAM_STRING_INPUT_IMAGE_FILENAME_1' },
+    };
+  }
+  if (variant === 'twoImages') {
+    nodes['21'] = { class_type: 'LoadImage', inputs: { image: 'PARAM_STRING_INPUT_IMAGE_FILENAME_2' } };
+  }
+  return nodes;
+}
+
+interface MockComfyJob {
+  id: string;
+  prompt: string;
+  prefix: string;
+  finishesAt: number;
+  fails: boolean;
+}
+
+export async function startMockComfy(
+  model = 'qwen-image-2.1',
+  size: { width: number; height: number } = { width: 96, height: 96 },
+): Promise<MockComfy> {
+  const jobs: MockComfyJob[] = [];
+  const picture = makePng(96, 96, 210, 60, 60);
+  let nextId = 1;
+
+  const server = http.createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => {
+      const raw = Buffer.concat(chunks);
+      const url = new URL(req.url ?? '/', 'http://comfy.test');
+      const send = (status: number, body: unknown): void => {
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(body));
+      };
+      const route = `${req.method} ${url.pathname}`;
+      try {
+        if (route === 'GET /system_stats') return send(200, { mock: true });
+
+        if (route === 'POST /workflow/convert') {
+          const ui = raw.toString('utf-8');
+          const variant = ui.includes('PARAM_STRING_INPUT_IMAGE_FILENAME_1')
+            ? 'twoImages'
+            : ui.includes('PARAM_STRING_INPUT_IMAGE_FILENAME')
+              ? 'oneImage'
+              : 'text';
+          return send(200, mockApiWorkflow(variant));
+        }
+
+        if (route === 'POST /upload/image') {
+          const name = /filename="([^"]+)"/.exec(raw.toString('binary'))?.[1] ?? 'reference.png';
+          return send(200, { name, subfolder: '', type: 'input' });
+        }
+
+        if (route === 'POST /prompt') {
+          const submitted = (
+            JSON.parse(raw.toString('utf-8')) as {
+              prompt: Record<string, { class_type?: string; inputs?: Record<string, unknown> }>;
+            }
+          ).prompt;
+          const text = String(
+            Object.values(submitted).find((n) => n?.class_type === 'CLIPTextEncode')?.inputs?.text ?? '',
+          );
+          const prefix = String(
+            Object.values(submitted).find((n) => n?.class_type === 'SaveImage')?.inputs?.filename_prefix ?? '',
+          );
+          const id = `mock-${nextId++}`;
+          jobs.push({
+            id,
+            prompt: text,
+            prefix,
+            finishesAt: Date.now() + (/slow/i.test(text) ? 5000 : 400),
+            fails: /fail/i.test(text),
+          });
+          return send(200, { prompt_id: id, node_errors: {} });
+        }
+
+        if (url.pathname.startsWith('/history/')) {
+          const id = decodeURIComponent(url.pathname.slice('/history/'.length));
+          const job = jobs.find((j) => j.id === id);
+          if (!job) return send(200, {});
+          if (job.fails) {
+            return send(200, {
+              [id]: {
+                status: {
+                  status_str: 'error',
+                  completed: false,
+                  messages: [['execution_error', { exception_message: 'the mock ComfyUI failed on purpose' }]],
+                },
+              },
+            });
+          }
+          if (Date.now() < job.finishesAt) {
+            return send(200, { [id]: { status: { status_str: 'running', completed: false, messages: [] } } });
+          }
+          return send(200, {
+            [id]: {
+              status: { status_str: 'success', completed: true, messages: [] },
+              outputs: { '13': { images: [{ filename: `${job.prefix}_00001_.png`, subfolder: '', type: 'output' }] } },
+            },
+          });
+        }
+
+        if (route === 'GET /view') {
+          res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' });
+          res.end(picture);
+          return;
+        }
+
+        if (route === 'POST /queue' || route === 'POST /interrupt') return send(200, {});
+
+        return send(404, { error: `the mock ComfyUI has no ${route} route` });
+      } catch (err) {
+        return send(500, { error: String(err) });
+      }
+    });
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as { port: number };
+  const url = `http://127.0.0.1:${port}`;
+  return {
+    url,
+    generator: {
+      kind: 'comfyui',
+      url,
+      model,
+      device: 'cuda:0',
+      width: size.width,
+      height: size.height,
+      enabled: true,
+    },
+    close() {
+      server.close();
+    },
   };
 }

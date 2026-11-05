@@ -1,4 +1,5 @@
 export type SdApiSettings = {
+  kind: "sdapi";
   url: string;
   steps: number;
   width: number;

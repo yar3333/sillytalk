@@ -1,16 +1,12 @@
-import { ImageGenerator, isLocalGenerator } from "../configuration/ImageGenerator";
-import { IMachineService } from "../machine/IMachineService";
-import { LocalProgramDriver } from "./drivers/LocalProgramDriver";
+import { ImageGenerator, isComfyUiGenerator } from "../configuration/ImageGenerator";
+import { ComfyUiDriver } from "./drivers/ComfyUiDriver";
 import { SdApiDriver } from "./drivers/SdApiDriver";
 import { IImageGeneratorDriver } from "./IImageGeneratorDriver";
 
-// Builds the driver for a config entry: a local program by `command`,
-// the SD API by `url` (the same type guard the config parsing uses).
-// The machine service is passed down to the local-program driver.
+// Builds the driver for a config entry: the generator names its own kind
+// ("comfyui" / "sdapi"), and the guard picks the backend that speaks it.
 export class DriverFactory {
-  constructor(private readonly machine: IMachineService) {}
-
   create(gen: ImageGenerator): IImageGeneratorDriver {
-    return isLocalGenerator(gen) ? new LocalProgramDriver(gen, this.machine) : new SdApiDriver(gen);
+    return isComfyUiGenerator(gen) ? new ComfyUiDriver(gen) : new SdApiDriver(gen);
   }
 }

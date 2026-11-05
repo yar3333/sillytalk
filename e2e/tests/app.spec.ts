@@ -1,20 +1,18 @@
 import http from 'http';
-import path from 'path';
 import { test, expect } from '@playwright/test';
-import { MockLlm, setupMockGenerator, startMockLlm } from '../helpers/mocks';
+import { MockComfy, MockLlm, startMockComfy, startMockLlm } from '../helpers/mocks';
 
 // The server is started by the webServer from playwright.config.ts on
 // isolated data (SILLYTALK_DATA_DIR); the real chats and catalogs are
 // not touched. The model calls go to the shared mock LLM (helpers/mocks.ts)
-// and the image generation to a mock local program, so the run is fast and
+// and the image generation to a mock ComfyUI server, so the run is fast and
 // does not depend on the user's real models.
 const API = 'http://localhost:3211/api';
 const SHOTS = 'screenshots';
-const DATA = path.resolve(__dirname, '..', 'test-data');
-const ASSETS = path.join(DATA, 'app-assets');
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
 let llm: MockLlm | null = null;
+let comfy: MockComfy | null = null;
 
 test.beforeAll(async () => {
   llm = await startMockLlm(300, {
@@ -23,11 +21,14 @@ test.beforeAll(async () => {
     // narrower than the action panel. The other tests do not use the marker.
     customReplies: ({ text }) => (text.includes('SHORT') ? 'Ok.' : null),
   });
+  comfy = await startMockComfy();
 });
 
 test.afterAll(() => {
   llm?.close();
   llm = null;
+  comfy?.close();
+  comfy = null;
 });
 
 // The characters and the personas are created by the tests in the isolated
@@ -70,7 +71,6 @@ test.beforeEach(async () => {
   // its own model on top (and restores the mock afterwards).
   if (llm) {
     const cfg = (await (await fetch(`${API}/config`)).json()) as Record<string, unknown>;
-    const gen = setupMockGenerator(ASSETS);
     await fetch(`${API}/config`, {
       method: 'PUT',
       headers: JSON_HEADERS,
@@ -84,7 +84,7 @@ test.beforeEach(async () => {
             supportsImages: true,
           },
         },
-        imageGenerators: [gen.generator],
+        imageGenerators: comfy ? [comfy.generator] : [],
       }),
     });
   }

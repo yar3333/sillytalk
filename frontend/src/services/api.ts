@@ -39,6 +39,7 @@ export interface User {
 }
 
 export interface SdApiSettings {
+  kind: 'sdapi';
   url: string;
   steps: number;
   width: number;
@@ -48,23 +49,33 @@ export interface SdApiSettings {
   enabled?: boolean; // generator toggle (default true) — a disabled one is never used
 }
 
-export interface LocalProgramSettings {
-  command: string;
-  args: string[];
-  maxInputImages: number; // how many references the generator supports (0 = unlimited)
+// A ComfyUI server. One entry runs ONE model — the workflows are shipped with
+// the app and the server has to have the models of the chosen one, so a server
+// serving two models is configured as two generators.
+export interface ComfyUiSettings {
+  kind: 'comfyui';
+  url: string;
+  // The model this generator runs, a name of the catalogue the backend answers
+  // in imageStatus() (the models the app has a workflow for).
+  model: string;
+  // The GPU the model loaders of the workflow are pinned to ("cuda:0").
+  device: string;
+  width: number;
+  height: number;
   enabled?: boolean; // generator toggle (default true) — a disabled one is never used
 }
 
-// An imageGenerators entry: the type is determined by which fields are
-// present (command -> local, url -> sdapi), as in the config.
-export type ImageGenerator = SdApiSettings | LocalProgramSettings;
+// An imageGenerators entry: every generator names its own kind ("comfyui" /
+// "sdapi") — the app never guesses a type from the fields that happen to be
+// set, and an entry without a known kind is dropped by the backend.
+export type ImageGenerator = SdApiSettings | ComfyUiSettings;
 
-export function isLocalGenerator(g: ImageGenerator): g is LocalProgramSettings {
-  return typeof (g as LocalProgramSettings).command === 'string';
+export function isComfyUiGenerator(g: ImageGenerator): g is ComfyUiSettings {
+  return (g as { kind?: string }).kind === 'comfyui';
 }
 
 export function isSdApiGenerator(g: ImageGenerator): g is SdApiSettings {
-  return typeof (g as SdApiSettings).url === 'string';
+  return (g as { kind?: string }).kind === 'sdapi';
 }
 
 // Characters and users are not in the config — each one is stored in a
@@ -404,9 +415,11 @@ export class ApiService {
     return this.req(`/chats/${chatId}/auto-image`, { method: 'POST' });
   }
 
-  // Whether the active image generator is available (the first available one from the config).
-  imageStatus(): Promise<{ available: boolean }> {
-    return this.req<{ available: boolean }>('/image/status');
+  // Whether an image generator is available (any enabled one that answers),
+  // and the image models a ComfyUI generator can be pointed at — the models
+  // the app ships a workflow for.
+  imageStatus(): Promise<{ available: boolean; comfyUiModels?: string[] }> {
+    return this.req<{ available: boolean; comfyUiModels?: string[] }>('/image/status');
   }
 
   // The URL of an image by its id (a path relative to the data folder).

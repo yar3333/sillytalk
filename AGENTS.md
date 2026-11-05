@@ -43,20 +43,36 @@ backend/               Express API; also serves the built frontend
                        DI token DI_TEXT_GENERATION_SERVICE) and
                        TextGenerationService.test.ts — jest unit tests
     image_generation/  image generation: the driver
-                       interface (IImageGeneratorDriver.ts; the job model —
-                       ImageJob.ts / ImageJobResult.ts), the backends
-                       (drivers/SdApiDriver.ts / drivers/LocalProgramDriver.ts),
+                       interface (IImageGeneratorDriver.ts — key + queueKey; the
+                       job model — ImageJob.ts / ImageJobResult.ts), the backends
+                       (drivers/ComfyUiDriver.ts / drivers/SdApiDriver.ts), the
+                       ComfyUI domain folder (comfyui/ComfyUiWorkflows.ts — the
+                       loader of the models the app can draw with: the workflow
+                       of a model is a raw JSON FILE, read again for every job,
+                       so replacing one needs no rebuild — comfyUiModelNames()
+                       for the Settings pick, comfyUiWorkflowSet(model) +
+                       variantFor(refs) + comfyUiMaxRefs(set) for the driver;
+                       the app's own files are comfyui/workflows/<model>.json
+                       — qwen-image-2.1.json and qwen-image-2512.json, the UI
+                       format as ComfyUI saves it — and the user's own
+                       <data root>/comfyui/<model>.json replaces one of them or
+                       adds a model; the build copies the folder into dist —
+                       backend "scripts/copy-workflows.cjs", because tsc only
+                       compiles TypeScript),
                        the driver factory (DriverFactory.ts), and the top-level
                        service class (ImageGenerationService.ts —
                        ImageGenerationService: availability cache, the
                        background job registry keyed by the IMAGE ID the job
-                       writes to; it takes the machine, text-generation and
-                       configuration services and knows nothing about chats,
-                       messages or the database);
+                       writes to, the per-queueKey serialization with a
+                       round-robin pick between the generators of one queue;
+                       it takes the text-generation and configuration services
+                       and knows nothing about chats, messages or the database);
                        image.routes.ts — the /image routes (the availability
-                       flag + the manual generation);
+                       flag + the ComfyUI model list + the manual generation);
                        ImageGenerationService.test.ts —
-                       jest unit tests (local program, background image jobs)
+                       jest unit tests (an in-file mock ComfyUI server:
+                       the PARAM_* substitution, the workflow per reference
+                       count, the queue of one server, background image jobs)
     characters/        the character domain: the Character.ts type and the
                        top-level service class (CharactersService.ts — the
                        character catalog on the
@@ -70,14 +86,6 @@ backend/               Express API; also serves the built frontend
                        characters.routes.ts — the /characters routes (the
                        catalog sync, the clone, the photos, the avatar);
                        CharactersService.test.ts — jest unit tests
-    machine/           the local-generator machine service: the interface +
-                       platform selection (IMachineService.ts, DI token
-                       DI_MACHINE_SERVICE), the Windows impl
-                       (implementations/MachineWindowsService.ts — cmd.exe /
-                       powershell wrappers, taskkill) and the POSIX impl
-                       (implementations/MachinePosixService.ts — detached
-                       process groups, group kill); MachineService.test.ts —
-                       jest unit tests (platform selection, command lines)
     chats/             the chat domain: the Chat.ts / ChatMessage.ts /
                        ChatSummary.ts types and the top-level service class
                        (ChatsService.ts — chat + chat-file persistence on the
@@ -126,13 +134,17 @@ backend/               Express API; also serves the built frontend
     configuration/     the configuration domain: the types (Config.ts,
                        LlmModel.ts, Model.ts, and the generator settings —
                        ImageGenerator.ts, the union of SdApiSettings.ts /
-                       LocalProgramSettings.ts + the type guards: they
-                       describe the config schema, so the domain owns them),
+                       ComfyUiSettings.ts + the isSdApiGenerator /
+                       isComfyUiGenerator guards on the `kind` discriminator:
+                       they describe the config schema, so the domain owns
+                       them),
                        the top-level service class (ConfigurationService.ts —
                        the config.json load/save with normalization + JSONC
                        comment stripping, the defaults, the listen-address
                        parsing, the flat-model helpers, the legacy-field
-                       cleanup (prepareLegacyConfig); DI token
+                       cleanup (prepareLegacyConfig), normalizeGenerators (an
+                       entry without a known `kind` is dropped — a generator
+                       the app cannot run is not a generator); DI token
                        DI_CONFIGURATION_SERVICE);
                        config.routes.ts — the /config routes;
                        ConfigurationService.test.ts — jest unit tests
@@ -245,9 +257,9 @@ e2e/                   Playwright suite
                        the generation data, hand-editable)
   characters/<id>/character.json (+ photos/ — "starter" set, avatar.jpg — character avatar)
   users/<id>/user.json (+ avatar.jpg — user avatar)
-  generated/           — the scratch folder of the local generators (the temp file
-                         of a running job; the finished picture is renamed into
-                         the chat's files/ folder)
+  comfyui/           — the user's own ComfyUI workflows: <model>.json replaces the
+                       workflow the app ships for that name, or adds a model (the
+                       file name is the model name); empty by default
 ```
 
 ## Commands
@@ -308,19 +320,23 @@ or through the in-app **Settings** dialog. Paths may use `~` (resolved by `expan
       "reasoningLevels": ["low", "medium", "high", "xhigh", "max"]  // optional
     }
   },
-  // generation backends: every enabled + available one is used in parallel,
-  // the jobs of one generator are queued (enabled defaults to true)
+  // generation backends: kind = "sdapi" | "comfyui" decides the type; every
+  // enabled + available one is used in parallel, the jobs of one SERVER are
+  // queued (enabled defaults to true)
   "imageGenerators": [
     {
-      "url": "http://127.0.0.1:7860",   // SD API / Stable Diffusion WebUI (has `url`)
+      "kind": "sdapi",                  // SD API / Stable Diffusion WebUI
+      "url": "http://127.0.0.1:7860",
       "steps": 30, "width": 768, "height": 768,
       "denoisingStrength": 0.75, "negativePrompt": "",
       "enabled": true                   // generator toggle (default true)
     },
     {
-      "command": "",                    // local program (has `command`)
-      "args": ["--prompt", "{prompt}", "--input", "{absolutePathsToInputImages}", "--output", "{absolutePathToOutputImage}"],
-      "maxInputImages": 0,
+      "kind": "comfyui",                // a ComfyUI server
+      "url": "http://127.0.0.1:8188",
+      "model": "qwen-image-2.1",        // ONE of comfyUiModelNames()
+      "device": "cuda:0",               // the GPU the workflow pins its loaders to
+      "width": 1328, "height": 1328,
       "enabled": true
     }
   ]
@@ -352,36 +368,60 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   absent the default set `low, medium, high, xhigh, max` applies (and a level outside the model's list
   is normalized to off on load). Edited in the model dialog ("Reasoning levels" + "Reasoning" pick).
 - **Image generation has no `auto` toggle anymore.** `imageGenerators` is a list of
-  generators (SD API by presence of `url`, local program by presence of `command`), each with an
-  `enabled` flag (defaults to `true` — a disabled generator is never used). At startup
+  generators, each named by its `kind` (`sdapi` / `comfyui`) and carrying an
+  `enabled` flag (defaults to `true` — a disabled generator is never used). An entry whose
+  `kind` the app does not know is dropped by `normalizeGenerators` — there is **no legacy
+  format support** (no bare-`url` SD entry, no `command` entry; the old local-program
+  generators were converted once by a throwaway script). At startup
   (`refreshAvailableGenerators` in `image_generation/ImageGenerationService.ts`) all generators are probed
-  (in parallel); the
-  SD API availability is checked via `GET {url}/sdapi/v1/sd-models`, a local program is
-  available if `command` is set (and, for an absolute path, if that file exists). **Every
-  enabled and available generator is used**: jobs of different generators run in PARALLEL
-  (a new job is assigned to the least-loaded one), while the jobs of ONE generator are queued
-  (one run at a time — a local program / the GPU must not be hit concurrently; the queue is
-  keyed by the generator's command/URL, so two entries pointing at the same program share a
-  queue). `GET /api/image/status` returns `{ available }` (true when at least one generator
-  is available) for the UI. Config changes via `PUT /api/config` recompute the available
+  (in parallel): the SD API availability is checked via `GET {url}/sdapi/v1/sd-models`, a ComfyUI
+  generator is available when a readable workflow file defines its `model` (the app's own or the
+  user's) and `GET {url}/system_stats` answers. **Every enabled and available generator is used**: jobs of
+  different generators run in PARALLEL (a new job goes to the least-loaded QUEUE, and between the
+  generators of that queue the pick rotates, so two models of one server both get their jobs),
+  while the jobs of ONE server are queued (one run at a time — the GPU must not be hit
+  concurrently). This is why the driver carries TWO ids: `key` (the generator's identity — written
+  into the sidecar's `generator` and shown in the hover hint) and `queueKey` (the queue identity:
+  `comfyui:<url>` for ComfyUI, so two generators of one server share one queue; for SD API it is
+  its own `key`). `GET /api/image/status` returns `{ available, comfyUiModels }` for the UI —
+  `available` is true when at least one generator is available and `comfyUiModels` is
+  `comfyUiModelNames()`, the list the Settings dialog fills its model pick from (the frontend does
+  not mirror the model names). Config changes via `PUT /api/config` recompute the available
   generators.
-- Local-program placeholders: `{prompt}` (prompt text), `{absolutePathsToInputImages}` (comma-joined
-  absolute paths of the reference images, empty when there are none — matches
-  `-InputImagePath a.jpg,b.jpg` style), `{absolutePathToOutputImage}` (absolute path of the output
-  PNG the program must write — the backend places it in the chat's `files/` dir; there is no
-  `outputDir` config field anymore). The OS-specific launch/kill lives behind the
-  `IMachineService` interface (`machine/IMachineService.ts`, selected once at startup in `index.ts` via
-  the `createMachineService()` factory for the current OS): on **Windows** `.bat`/`.cmd` run through
-  `cmd.exe /d /s /c` with quoted args, `.ps1` through `powershell.exe -NoProfile
-  -ExecutionPolicy Bypass -File` (plain executables spawn directly — Node throws EINVAL on
-  batch files without a shell), and cancelling kills the process TREE with `taskkill /F /T
-  /PID` (a plain `child.kill()` would only terminate the wrapper); on **POSIX** programs
-  spawn directly in their own process group (`detached`) and cancelling kills the whole
-  group (`kill(-pid)`), while `.bat`/`.cmd` are refused with a clear error. Keep new
-  OS-specific behavior in the platform impls (`machine/implementations/MachineWindowsService.ts` /
-  `MachinePosixService.ts`), not in
-  the image-generation code. A generator's `maxInputImages` caps how many reference images it accepts
-  (0 = unlimited; the backend rejects the request with a clear error before spawning).
+- **A ComfyUI workflow is a JSON file, not compiled code** (`image_generation/comfyui/`, ported
+  from the PowerShell scripts that used to sit next to the app). The app ships
+  `comfyui/workflows/qwen-image-2.1.json` and `comfyui/workflows/qwen-image-2512.json`; a file
+  holds the UI-format graph under the keys `text` / `oneImage` / `twoImages` — the template per
+  number of reference images — and a model may ship fewer of them than the app's own three,
+  which is simply how many references it takes. `<data root>/comfyui/<model>.json` **replaces** the
+  shipped file of that name or **adds** a model, and the file name is the model name the generator
+  picks. The folder is created on startup and the files are re-read for every job and every
+  `/api/image/status`, so an edit takes effect on the next picture with no restart; the driver's
+  copy of the converted API workflow is cached against the **template text**, so an edited file is
+  converted again instead of being shadowed by the old copy. A file that is not readable JSON or
+  holds none of those keys makes its model unknown to the app (it drops out of the list and the
+  generator becomes unavailable) with the reason in the server log — and a broken override of a
+  shipped model does NOT fall back to the shipped graph, because the file the user wrote wins.
+  A model name is a file stem, so it cannot contain a path separator (`comfyUiWorkflowSet`
+  refuses it — a hand-written config must not point the loader at `../config.json`). The ask for
+  more references than the file has templates for is refused before the job starts.
+  The driver (`drivers/ComfyUiDriver.ts`):
+  `POST /workflow/convert` turns the UI template into the API format (the
+  `comfyui-workflow-to-api-converter-endpoint` custom node — a 404 here is reported as the node
+  not being installed); `POST /upload/image` (multipart field `image`) uploads the references
+  under a `safeName()`; the `PARAM_*` placeholders of the API workflow are then substituted by
+  whole-string match (`PARAM_PROMPT`, `PARAM_SEED` — a number in 0..2147483647, `PARAM_DEVICE`,
+  `PARAM_INT_OUTPUT_IMAGE_WIDTH`/`_HEIGHT`, `PARAM_STRING_OUTPUT_IMAGE_FILENAME`,
+  `PARAM_STRING_INPUT_IMAGE_FILENAME`/`_1`/`_2`); `POST /prompt` starts the job (its `node_errors`
+  are reported — "usually a custom node or a model file of the workflow is missing");
+  `GET /history/{prompt_id}` is polled every 2 s until the job is done (10 min cap, an error
+  carries the server's `status.messages`); `GET /view?filename&subfolder&type=output` downloads the
+  picture onto the target file. Cancelling a job aborts the local request AND tells the server to
+  drop it (`POST /queue {remove:[prompt_id]}` then `POST /interrupt {prompt_id}`, best-effort).
+  `device` is the GPU the workflow's model loaders are pinned to — on a multi-GPU server a
+  generator per GPU; the ComfyUI server needs the models of the workflow installed (the
+  `picgen-install-comfyui` script of the `d:\MyDocs\AiPic\generators` folder the workflows were
+  ported from sets such a server up — it is not part of this app).
 - **Pictures belong to the user; the model is text-only.** There is no `[IMG:…]` /
   `[PHOTO:…]` protocol and no `accessAllImages` flag anymore: `systemPromptFor` states plainly that
   the character cannot send or create images. A picture enters a chat in exactly three ways, and all
@@ -441,10 +481,12 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   user's turn, or a regeneration) is started with the TARGET IMAGE ID already stored in the card with
   `ChatMessage.imageStatus[id] = 'pending'`, the message is saved and returned without waiting, and
   `ImageGenerationService.startImageJob` runs the job (`image_generation/ImageGenerationService.ts`).
-  The job writes to a temp file and renames it to the reserved id only on success (so a name is never
+  The job writes to a temp file (a dot-file next to the target, so the rename stays atomic) and
+  renames it to the reserved id only on success (so a name is never
   left with a partial image), then writes the generation data into the sidecar; the jobs of one
-  generator are **queued** (one run at a time — a local program / the GPU must not be hit
-  concurrently) while jobs of different generators run in parallel. The registry is keyed by the
+  server are **queued** (one run at a time — the GPU must not be hit
+  concurrently; the queue is the driver's `queueKey`, so two ComfyUI generators of one URL take
+  turns) while jobs of different servers run in parallel. The registry is keyed by the
   image id, so a job can outlive its message. When the job
   finishes, `ReplyService` updates the message: ok → the status is cleared (the image is ready);
   failed/cancelled → `imageStatus[id] = 'failed'` + `imageErrors[id]` (the "broken" image),
@@ -598,7 +640,13 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   item-id`, so the dialog component is recreated and re-initializes when the item changes).
   Model clone — a duplicate entry under a free "<name> copy" key (the dialog still closes). The
   settings dialog does NOT manage them — it keeps only the
-  listen address and the image generators (with a hint pointing at the header menus).
+  listen address and the image generators (with a hint pointing at the header menus): "+ ComfyUI"
+  adds a `{ kind: 'comfyui' }` entry (URL + the model **pick** + the GPU device + width/height — the
+  pick is fed by `GET /api/image/status`'s `comfyUiModels` rather than a hardcoded frontend list, and
+  the hint under it names the converter node the server needs) and "+ SD API" the SD fields; the row
+  header shows the kind (`ComfyUI — <model>` / `SD API`). The model pick marks the current option
+  with `[selected]` on the `<option>` — `[value]` on the `<select>` would be set before the `@for`
+  options exist and silently fail (the same gotcha as the reasoning pick in the model dialog).
 - Message list is anchored to the bottom (grows upward); a "typing…" indicator shows while the model is
   generating — in reply queues it names the character being asked ("Alice is typing") with their
   avatar/letter, falling back to a neutral glyph when the author is unknown.
@@ -629,7 +677,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
 
 - **DI is a minimal hand-rolled container** (`backend/src/di.ts`, no framework): typed tokens
   (`createToken<T>()`) registered as lazy singletons. The composition root is `index.ts` — it
-  registers `DI_MACHINE_SERVICE`, `DI_CONFIGURATION_SERVICE`,
+  registers `DI_CONFIGURATION_SERVICE`,
   `DI_TEXT_GENERATION_SERVICE`, `DI_CHARACTERS_SERVICE`,
   `DI_PERSONS_SERVICE`, `DI_CHATS_SERVICE`, `DI_IMAGE_GENERATION_SERVICE` and
   `DI_REPLY_SERVICE` and resolves them once; `routes.ts` (the thin API assembler) receives the
@@ -648,7 +696,8 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
     (`DriverFactory.ts`). Interfaces get their own file named after the type
     (`IImageGeneratorDriver.ts`, `ImageJob.ts`); no barrel `index.ts` — consumers import from
     concrete files.
-  - **Dependencies are injected through the constructor** (`IMachineService`, `ConfigurationService`);
+  - **Dependencies are injected through the constructor**
+    (`TextGenerationService`, `ConfigurationService`);
     the class is registered in the container under a token defined next to it
     (`DI_IMAGE_GENERATION_SERVICE`)
     and resolved once at the composition root. Tests instantiate the class directly
@@ -665,7 +714,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
     method of `ReplyService`; file serving (`HttpHelper.sendImage`) stays a routes-layer
     concern, not a domain's.
   - **Keep the dependency graph one-way and acyclic** (`routes → reply → the domain
-    services → drivers/machine/configuration/...`): the service may call lower-level services
+    services → drivers/configuration/...`): the service may call lower-level services
     and module functions (e.g. `ImageGenerationService` calling
     `TextGenerationService.translatePrompt`;
     `ReplyService` calling all six domain services), but nothing below it may import the
@@ -680,10 +729,15 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
     `appendAssistantReply`, the in-flight reply
     registry moved from `routes.ts`); leave HTTP concerns (validation, status codes, file
     streaming) in the route files, and be able to say why.
-  - **OS/program specifics go behind an interface** selected once at startup
-    (`IMachineService` + `machine/implementations/MachineWindowsService.ts` /
-    `MachinePosixService.ts`); the domain code never
-    branches on `process.platform`.
+  - **A generation backend goes behind the driver interface**
+    (`IImageGeneratorDriver.ts` + `drivers/ComfyUiDriver.ts` / `drivers/SdApiDriver.ts`, chosen by
+    `DriverFactory` on the config entry's `kind`): the driver speaks the generator's own protocol
+    (ComfyUI's convert/upload/prompt/history/view over HTTP, the SD API's txt2img/img2img), fills
+    `key` + `queueKey` and writes the picture to the `outPath` it is handed — the service above it
+    knows neither protocols nor URLs. A new backend is a new driver + a new `kind`, not a branch in
+    `ImageGenerationService`. There is no OS-specific code left in the app (the former `machine/`
+    domain that launched external programs is gone with them), so nothing branches on
+    `process.platform`.
   - **Migration done:** every former module-level domain is now a folder with a top-level
     service class — `text_generation/TextGenerationService.ts`,
     `characters/CharactersService.ts`, `chats/ChatsService.ts`,
@@ -732,7 +786,8 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
 - **Error handling has two surfaces — keep them separate**:
   - Model/LLM failure → the backend appends an assistant message with `error: true` and still returns
     200; the UI renders it as a red bubble (`.msg.error`).
-  - Operational/network failure (e.g. the image-gen program fails to spawn, chat not found) → non-2xx →
+  - Operational/network failure (e.g. "Image generation is not configured", an unknown chat id,
+    a rejected request body) → non-2xx →
     the root `error` signal → a dismissable red banner above the input.
   - A picture that did not happen (the plan could not be read, the generator failed or was
     cancelled) is NOT an error banner and never an error message: the card itself becomes the broken
@@ -775,6 +830,11 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   `html, body` rules cover the rest. Keep the `:root` palette in the global stylesheet.
 - **TypeScript version pin.** Backend `typescript` is pinned to `^6.0.2` because `ts-jest`'s peer range
   rejects TS 7. Don't bump backend TS to 7 without resolving the peer conflict.
+- **Runtime assets next to the compiled code.** `tsc` compiles TypeScript and copies nothing, so the
+  ComfyUI workflow JSON files reach `dist` through `backend/scripts/copy-workflows.cjs`, which the
+  backend `build` script runs after `tsc` (and `scripts/package-npm.mjs` then packs with
+  `backend/dist`). A new folder of files the app reads at runtime needs a step like it, or a
+  production run finds the folder missing while tests — which read the source tree — stay green.
 
 ## E2E
 
@@ -785,11 +845,18 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   built (`npm run build` in `backend/`) before the run.
 - Uses **mocked model + image generation** — both suites share `e2e/helpers/mocks.ts`:
   a deterministic OpenAI-compatible LLM (the delay before answering is controllable at
-  runtime via `MockLlm.setDelay`) and a mock local-program image generator (a node script
-  that sleeps, fails on "fail" prompts, and is slow on "slow" ones — plain `node` instead of
-  a bash script, because "bash" on Windows may be a WSL stub without a distro). `beforeAll` starts the
-  mock LLM, `beforeEach` points the config's `llmModels`/`imageGenerators` at the mocks, so
-  the run is fast and does not depend on the user's real models. The mock LLM recognizes the
+  runtime via `MockLlm.setDelay`) and a **mock ComfyUI server** (`startMockComfy(model?, size?)` —
+  an in-process HTTP server speaking the part of the ComfyUI API the app drives:
+  `/system_stats`, `/workflow/convert` (it answers its own tiny workflow whose `PARAM_*` placeholders
+  follow the reference count of the template it was handed, so a placeholder the app forgot to
+  substitute stays visible), `/upload/image`, `/prompt`, `/history/{id}`, `/view`, `/queue`,
+  `/interrupt`; it returns `MockComfy` = `{ url, generator, close() }`, where `generator` is the
+  `kind: 'comfyui'` `imageGenerators` entry pointing at it). What a job does follows the prompt text
+  the app substituted into the workflow: "fail" → the server reports an execution error, "slow" →
+  5 s, anything else → a short pause and a real generated PNG from `/view` — so the failure, the
+  pending/spinner and the ready-card paths are all covered without a real ComfyUI. `beforeAll` starts
+  the mock LLM and the mock ComfyUI, `beforeEach` points the config's `llmModels`/`imageGenerators`
+  at them, so the run is fast and does not depend on the user's real models. The mock LLM recognizes the
   three kinds of call by their system prompt: a chat reply answers
   "Mock reply from <character name>." (the name is read from the system prompt, and a
   `customReplies` option can override the wording); a prompt translation ("Translate …")

@@ -2,17 +2,18 @@ import fs from 'fs';
 import path from 'path';
 import { test, expect, Page } from '@playwright/test';
 import {
+  MockComfy,
   MockLlm,
   dataUrl,
   makePng,
-  setupMockGenerator,
+  startMockComfy,
   startMockLlm,
 } from '../helpers/mocks';
 
 // The UX exploration suite. Unlike a real-model run it uses the shared mocks
 // (helpers/mocks.ts): a deterministic OpenAI-compatible LLM (with a
-// controllable delay) and a mock local-program image generator, so every
-// scenario is fast and does not depend on the user's real models. Each test
+// controllable delay) and a mock ComfyUI server, so every scenario is fast and
+// does not depend on the user's real models or on a running ComfyUI. Each test
 // records a video (test-results/) and screenshots (screenshots/); findings are
 // printed as [UX-ISSUE] lines in the reporter output.
 
@@ -25,6 +26,7 @@ const JSON_HEADERS = { 'Content-Type': 'application/json' };
 test.use({ video: 'on' });
 
 let llm: MockLlm | null = null;
+let comfy: MockComfy | null = null;
 
 // ------------------------------------------------------------- helpers
 let issues: string[] = [];
@@ -67,7 +69,6 @@ async function setupCatalog(): Promise<void> {
     ],
   });
   const cfg = (await api('/config')) as Record<string, unknown>;
-  const gen = setupMockGenerator(ASSETS);
   await api('/config', 'PUT', {
     ...cfg,
     llmModels: {
@@ -78,7 +79,7 @@ async function setupCatalog(): Promise<void> {
         supportsImages: true,
       },
     },
-    imageGenerators: [gen.generator],
+    imageGenerators: comfy ? [comfy.generator] : [],
   });
   // Avatars and a character photo: written/uploaded directly, the catalog
   // sync keeps existing folders.
@@ -123,11 +124,16 @@ const cardImages = (page: Page) => page.locator('[data-testid=image-card] img');
 test.beforeAll(async () => {
   issues = [];
   llm = await startMockLlm(300);
+  comfy = await startMockComfy();
+  // The scratch folder of the attachment tests (UX 09 writes its picture here).
+  fs.mkdirSync(ASSETS, { recursive: true });
 });
 
 test.afterAll(() => {
   llm?.close();
   llm = null;
+  comfy?.close();
+  comfy = null;
 });
 
 // What the mock answers to the picture-planning call of the user's turn (null

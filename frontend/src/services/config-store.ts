@@ -31,6 +31,9 @@ export class ConfigStore {
 
   // Whether the active image generator is available (the first available one from the config).
   readonly imageGenAvailable = signal(false);
+  // The image models a ComfyUI generator can run — the backend knows which
+  // workflows the app ships, the settings dialog offers exactly these.
+  readonly comfyUiModels = signal<string[]>([]);
 
   // The "Settings" dialog: open + the copy of the config being edited.
   readonly settingsOpen = signal(false);
@@ -58,6 +61,7 @@ export class ConfigStore {
       })
       .then((status) => {
         this.imageGenAvailable.set(status.available);
+        this.comfyUiModels.set(status.comfyUiModels ?? []);
         return this.api.getCharacters();
       })
       .then((chars) => {
@@ -217,6 +221,7 @@ export class ConfigStore {
       })
       .then((status) => {
         this.imageGenAvailable.set(status.available);
+        this.comfyUiModels.set(status.comfyUiModels ?? []);
         this.settingsOpen.set(false);
       })
       .catch((e) => this.ui.error.set(String((e as Error).message)));

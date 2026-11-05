@@ -207,16 +207,22 @@ export class ConfigurationService {
       const g = entry as Record<string, unknown>;
       // enabled defaults to true — a generator without the field is on.
       const enabled = typeof g.enabled === "boolean" ? g.enabled : true;
-      if (typeof g.command === "string") {
+      if (g.kind === "comfyui") {
         result.push({
-          command: g.command,
-          args: Array.isArray(g.args) ? g.args.map((a) => String(a)) : [],
-          maxInputImages: typeof g.maxInputImages === "number" ? g.maxInputImages : 0,
+          kind: "comfyui",
+          url: typeof g.url === "string" ? g.url : "",
+          // A model the app has no workflow for is kept as it is written — the
+          // driver reports it, and the generator simply is not available.
+          model: typeof g.model === "string" ? g.model.trim() : "",
+          device: typeof g.device === "string" && g.device.trim() ? g.device.trim() : "cuda:0",
+          width: typeof g.width === "number" ? g.width : 1328,
+          height: typeof g.height === "number" ? g.height : 1328,
           enabled,
         });
-      } else if (typeof g.url === "string") {
+      } else if (g.kind === "sdapi") {
         result.push({
-          url: g.url,
+          kind: "sdapi",
+          url: typeof g.url === "string" ? g.url : "",
           steps: typeof g.steps === "number" ? g.steps : 30,
           width: typeof g.width === "number" ? g.width : 768,
           height: typeof g.height === "number" ? g.height : 768,
@@ -225,6 +231,8 @@ export class ConfigurationService {
           enabled,
         });
       }
+      // any other entry (no kind, an unknown one) is dropped: a generator
+      // type the app cannot run is not a generator
     }
     return result;
   }

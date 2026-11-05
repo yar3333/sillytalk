@@ -2,6 +2,7 @@ import express from "express";
 import { ChatsService } from "../chats/ChatsService";
 import { ReplyService } from "../reply/ReplyService";
 import { ImageGenerationService } from "./ImageGenerationService";
+import { comfyUiModelNames } from "./comfyui/ComfyUiWorkflows";
 
 // The /image routes: the availability flag (it decides whether the "🎨" prompt
 // box and the "📷" turn button are shown on the frontend) and the one-shot
@@ -17,7 +18,12 @@ export function createImageRouter(
   const router = express.Router();
 
   router.get("/status", (_req, res) => {
-    res.json({ available: imageGeneration.hasAvailableGenerator() });
+    res.json({
+      available: imageGeneration.hasAvailableGenerator(),
+      // The image models a ComfyUI generator can be pointed at: what the app
+      // ships a workflow for (the settings dialog offers exactly these).
+      comfyUiModels: comfyUiModelNames(),
+    });
   });
 
   router.post("/", async (req, res) => {

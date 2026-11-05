@@ -1,7 +1,6 @@
 import fs from "fs";
 import path from "path";
 import { randomUUID } from "crypto";
-import { ChildProcess } from "child_process";
 import { Model } from "../configuration/Model";
 import { PathHelper } from "../shared/PathHelper";
 import { ImageGenerationRecord } from "../shared/ImageMeta";
@@ -10,19 +9,17 @@ import { ConfigurationService } from "../configuration/ConfigurationService";
 import { createToken } from "../di";
 import { ImageGenerator } from "../configuration/ImageGenerator";
 import { TextGenerationService } from "../text_generation/TextGenerationService";
-import { IMachineService } from "../machine/IMachineService";
 import { DriverFactory } from "./DriverFactory";
 import { ImageJobResult } from "./ImageJobResult";
 import { ImageJob } from "./ImageJob";
 import { IImageGeneratorDriver } from "./IImageGeneratorDriver";
 
-// One registered background job: the public ImageJob plus the handles its
-// cancellation needs — the abort controllers of the run in flight and the
-// spawned process (whose whole tree the MachineService kills).
+// One registered background job: the public ImageJob plus the abort
+// controllers of the run in flight (a backend that works over HTTP stops with
+// them and is told to drop the job it was given).
 interface JobEntry {
   job: ImageJob;
   aborts: AbortController[];
-  child: ChildProcess | null;
   cancelled: boolean;
 }
 
@@ -30,7 +27,7 @@ interface JobEntry {
 export const DI_IMAGE_GENERATION_SERVICE = createToken<ImageGenerationService>("ImageGenerationService");
 
 // The top-level image-generation service: the availability cache and the
-// background job registry. The dependencies (the machine, text-generation and
+// background job registry. The dependencies (the text-generation and
 // configuration services) are injected; all the state lives on the instance,
 // not in module globals.
 //
@@ -41,8 +38,8 @@ export const DI_IMAGE_GENERATION_SERVICE = createToken<ImageGenerationService>("
 export class ImageGenerationService {
   // ---- available generators ----
   // Every enabled and available generator is used: jobs of different
-  // generators run in PARALLEL, while the jobs of one generator are queued
-  // (one run at a time per generator). At startup (and after a config change)
+  // generators run in PARALLEL, while the jobs of one queue (one server / one
+  // GPU) are queued one at a time. At startup (and after a config change)
   // the imageGenerators entries are probed (in parallel) and the available
   // drivers are cached here.
   private availableDrivers: IImageGeneratorDriver[] = [];
@@ -61,27 +58,29 @@ export class ImageGenerationService {
 
   // The in-flight (and queued) jobs, keyed by the image id they write.
   private readonly jobs = new Map<string, JobEntry>();
-  // The per-generator chains: the jobs of one generator are serialized (a
-  // local program and the GPU must not be hit by several runs at once), while
-  // different generators run in parallel. The chains never reject — every
-  // task settles its own result.
+  // The per-queue chains: the jobs of one generator are serialized (a server
+  // and its GPU must not be hit by several runs at once), while different
+  // generators run in parallel. The chains never reject — every task settles
+  // its own result.
   private readonly genChains = new Map<string, Promise<void>>();
   // The current load of each chain: the running + the queued jobs of it.
   private readonly genLoads = new Map<string, number>();
+  // How many jobs each generator was given since the process started. Several
+  // generators can share one queue (one ComfyUI server, one GPU), and the
+  // queue load alone cannot tell them apart — this is what makes the jobs of
+  // one queue go to the generators in turn.
+  private readonly driverPicks = new WeakMap<IImageGeneratorDriver, number>();
 
-  private readonly drivers: DriverFactory;
+  private readonly drivers = new DriverFactory();
 
   constructor(
-    private readonly machine: IMachineService,
     // The text generation service (translatePrompt for ensureEnglishPrompt) —
-    // another domain service, injected like the machine one.
+    // another domain service, injected like the configuration one.
     private readonly textGeneration: TextGenerationService,
     // The configuration service — read on demand, so a job that starts after
     // a settings change probes the current generators.
     private readonly configuration: ConfigurationService,
-  ) {
-    this.drivers = new DriverFactory(machine);
-  }
+  ) {}
 
   hasAvailableGenerator(): boolean {
     return this.availableDrivers.length > 0;
@@ -130,8 +129,9 @@ export class ImageGenerationService {
   }
 
   // Cancels every in-flight (and queued) job. Used on server shutdown so a
-  // stop/restart does not leave orphaned generator processes running (holding
-  // the GPU). The kills are best-effort and in flight when the server exits.
+  // restart does not leave a generation running on a generator server with
+  // nobody waiting for its picture (holding the GPU). The stops are
+  // best-effort and in flight when the process exits.
   cancelAllJobs(): void {
     for (const entry of [...this.jobs.values()]) entry.job.cancel();
   }
@@ -159,7 +159,6 @@ export class ImageGenerationService {
     const entry: JobEntry = {
       job: null as unknown as ImageJob,
       aborts: [],
-      child: null,
       cancelled: false,
     };
 
@@ -179,17 +178,9 @@ export class ImageGenerationService {
         }
         fs.mkdirSync(dir, { recursive: true });
         const refPaths = ImageGenerationService.resolveRefPaths(refs);
-        await driver.run(
-          prompt,
-          refPaths,
-          temp,
-          (child) => {
-            entry.child = child;
-          },
-          (ctrl) => {
-            entry.aborts.push(ctrl);
-          },
-        );
+        await driver.run(prompt, refPaths, temp, (ctrl) => {
+          entry.aborts.push(ctrl);
+        });
         if (entry.cancelled) {
           // The run finished but was cancelled: drop the temp, keep the old.
           fs.rmSync(temp, { force: true });
@@ -227,10 +218,11 @@ export class ImageGenerationService {
       }
     };
 
-    // Enqueues the run into its generator's chain (the per-generator queue)
-    // and accounts for the chain load (for the least-loaded pick).
+    // Enqueues the run into the chain of its generator's queue (the jobs of
+    // one server are serialized) and accounts for the chain load (for the
+    // least-loaded pick).
     const enqueue = (driver: IImageGeneratorDriver): Promise<ImageJobResult> => {
-      const gk = driver.key;
+      const gk = driver.queueKey;
       this.genLoads.set(gk, (this.genLoads.get(gk) ?? 0) + 1);
       const prev = this.genChains.get(gk) ?? Promise.resolve();
       const runP: Promise<ImageJobResult> = prev
@@ -272,10 +264,10 @@ export class ImageGenerationService {
       result,
       cancel: (): void => {
         entry.cancelled = true;
+        // Aborting the run's controller stops its requests, and the driver
+        // uses the same signal to tell its server to drop the job it was
+        // given (a generation keeps running there without a client waiting).
         for (const a of entry.aborts) a.abort();
-        // Kill the whole process tree (the program + everything it spawned) —
-        // the platform-specific part lives in the MachineService.
-        if (entry.child) this.machine.killTree(entry.child);
       },
     };
     entry.job = job;
@@ -283,18 +275,33 @@ export class ImageGenerationService {
     return job;
   }
 
-  // The least-loaded available generator (config order breaks the ties), or
-  // null when none is available.
+  // The generator to run a job on: the one of the least-loaded queue, config
+  // order breaking the tie between queues. Several generators can share one
+  // queue — the same ComfyUI server with a model each — and those take the
+  // jobs in turn, so every model the user configured on a server gets used
+  // instead of only the first one.
   private pickDriver(): IImageGeneratorDriver | null {
-    let best: IImageGeneratorDriver | null = null;
+    let queue: string | null = null;
     let bestLoad = Infinity;
     for (const d of this.availableDrivers) {
-      const load = this.genLoads.get(d.key) ?? 0;
+      const load = this.genLoads.get(d.queueKey) ?? 0;
       if (load < bestLoad) {
-        best = d;
+        queue = d.queueKey;
         bestLoad = load;
       }
     }
+    if (queue === null) return null;
+    let best: IImageGeneratorDriver | null = null;
+    let bestPicks = Infinity;
+    for (const d of this.availableDrivers) {
+      if (d.queueKey !== queue) continue;
+      const picks = this.driverPicks.get(d) ?? 0;
+      if (picks < bestPicks) {
+        best = d;
+        bestPicks = picks;
+      }
+    }
+    if (best) this.driverPicks.set(best, bestPicks + 1);
     return best;
   }
 

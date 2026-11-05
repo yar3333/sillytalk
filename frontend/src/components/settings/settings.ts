@@ -1,10 +1,10 @@
 import { Component, OnInit, inject, signal } from '@angular/core';
 import {
   AppConfig,
+  ComfyUiSettings,
   ImageGenerator,
-  LocalProgramSettings,
   SdApiSettings,
-  isLocalGenerator,
+  isComfyUiGenerator,
 } from '../../services/api';
 import { ConfigStore } from '../../services/config-store';
 import { UiStore } from '../../services/ui-store';
@@ -29,8 +29,9 @@ import { UiStore } from '../../services/ui-store';
 
         <h3>Image generation</h3>
         <div class="hint">
-          Every enabled and available generator works in parallel — the jobs of one generator are
-          queued (one run at a time).
+          Every enabled and available generator works in parallel — the jobs of one server are
+          queued (one run at a time). A ComfyUI server running two models is two generators, one
+          per model.
         </div>
         @for (g of generators(); track $index; let i = $index) {
           <div class="block">
@@ -42,19 +43,30 @@ import { UiStore } from '../../services/ui-store';
               </label>
               <button class="btn danger" (click)="removeGenerator(i)" style="margin-left: auto">✕</button>
             </div>
-            @if (isLocal(g)) {
-              <input class="full" placeholder="Command (e.g. python)" [value]="g.command" (input)="setGenStr(i, 'command', $event)" />
-              <div class="args">
-                @for (a of g.args; track $index; let k = $index) {
-                  <div class="row">
-                    <input class="grow" [value]="a" (input)="setGenArg(i, k, $event)" />
-                    <button class="btn danger" (click)="removeGenArg(i, k)">✕</button>
-                  </div>
-                }
+            @if (isComfy(g)) {
+              <input class="full" placeholder="ComfyUI URL (http://127.0.0.1:8188)" [value]="g.url" (input)="setGenStr(i, 'url', $event)" />
+              <div class="row">
+                <label class="grow">
+                  <span>model</span>
+                  <!-- [selected] on the option: [value] on the <select> would be set
+                       before the @for options exist and silently fail. -->
+                  <select (change)="setGenStr(i, 'model', $event)">
+                    @for (name of comfyModels(); track name) {
+                      <option [value]="name" [selected]="name === g.model">{{ name }}</option>
+                    }
+                  </select>
+                </label>
+                <label><span>GPU device</span> <input [value]="g.device" (input)="setGenStr(i, 'device', $event)" /></label>
               </div>
-              <button class="btn" (click)="addGenArg(i)">+ argument</button>
-              <label class="row"><span>max. references (0 = unlimited)</span> <input type="number" [value]="g.maxInputImages" (input)="setGenNum(i, 'maxInputImages', $event)" /></label>
-              <div class="hint">Placeholders: {{ '{prompt}' }}, {{ '{absolutePathsToInputImages}' }}, {{ '{absolutePathToOutputImage}' }}</div>
+              <div class="row">
+                <label><span>width</span> <input type="number" [value]="g.width" (input)="setGenNum(i, 'width', $event)" /></label>
+                <label><span>height</span> <input type="number" [value]="g.height" (input)="setGenNum(i, 'height', $event)" /></label>
+              </div>
+              <div class="hint">
+                The workflow of {{ g.model }} runs on that server, so the server needs its models
+                and the "comfyui-workflow-to-api-converter-endpoint" node. The picture size follows
+                width × height here.
+              </div>
             } @else {
               <input class="full" placeholder="URL (http://127.0.0.1:7860)" [value]="g.url" (input)="setGenStr(i, 'url', $event)" />
               <div class="row">
@@ -68,8 +80,8 @@ import { UiStore } from '../../services/ui-store';
           </div>
         }
         <div class="row">
+          <button class="btn" (click)="addComfyUi()">+ ComfyUI</button>
           <button class="btn" (click)="addSdApi()">+ SD API</button>
-          <button class="btn" (click)="addLocal()">+ local program</button>
         </div>
 
         <div class="row actions">
@@ -108,14 +120,21 @@ export class Settings implements OnInit {
   generators(): ImageGenerator[] {
     return this.m()?.imageGenerators ?? [];
   }
+  // The models a ComfyUI generator can be pointed at — from the backend, which
+  // knows the workflows the app ships.
+  comfyModels(): string[] {
+    return this.configStore.comfyUiModels();
+  }
   genKind(g: ImageGenerator): string {
-    return isLocalGenerator(g) ? 'local program' : 'SD API';
+    return isComfyUiGenerator(g) ? `ComfyUI — ${g.model}` : 'SD API';
   }
   // Type guards must be component methods: narrowing imported functions
   // in the template does not work.
-  private isLocal(g: ImageGenerator): g is LocalProgramSettings {
-    return isLocalGenerator(g);
+  private isComfy(g: ImageGenerator): g is ComfyUiSettings {
+    return isComfyUiGenerator(g);
   }
+  // An <input> and a <select> both hand over their value the same way, so one
+  // setter covers the text fields and the model pick.
   private setGenStr(i: number, key: string, e: Event): void {
     const c = this.m()!;
     const gen = c.imageGenerators[i] as unknown as Record<string, unknown>;
@@ -137,52 +156,37 @@ export class Settings implements OnInit {
     gen.enabled = (e.target as HTMLInputElement).checked;
     this.m.set({ ...c });
   }
-  private setGenArg(i: number, k: number, e: Event): void {
-    const c = this.m()!;
-    const gen = c.imageGenerators[i];
-    if (!gen || !isLocalGenerator(gen)) return;
-    gen.args[k] = (e.target as HTMLInputElement).value;
-    this.m.set({ ...c });
-  }
-  private addGenArg(i: number): void {
-    const c = this.m()!;
-    const gen = c.imageGenerators[i];
-    if (!gen || !isLocalGenerator(gen)) return;
-    gen.args = [...gen.args, ''];
-    this.m.set({ ...c });
-  }
-  private removeGenArg(i: number, k: number): void {
-    const c = this.m()!;
-    const gen = c.imageGenerators[i];
-    if (!gen || !isLocalGenerator(gen)) return;
-    gen.args = gen.args.filter((_, idx) => idx !== k);
-    this.m.set({ ...c });
-  }
   private removeGenerator(i: number): void {
     const c = this.m()!;
     const imageGenerators = [...c.imageGenerators];
     imageGenerators.splice(i, 1);
     this.m.set({ ...c, imageGenerators });
   }
+  private addComfyUi(): void {
+    const c = this.m()!;
+    const models = this.comfyModels();
+    const g: ComfyUiSettings = {
+      kind: 'comfyui',
+      url: 'http://127.0.0.1:8188',
+      // the first model the app can draw with; the pick offers the rest
+      model: models[0] ?? 'qwen-image-2.1',
+      device: 'cuda:0',
+      width: 1328,
+      height: 1328,
+      enabled: true,
+    };
+    this.m.set({ ...c, imageGenerators: [...c.imageGenerators, g] });
+  }
   private addSdApi(): void {
     const c = this.m()!;
     const g: SdApiSettings = {
+      kind: 'sdapi',
       url: 'http://127.0.0.1:7860',
       steps: 30,
       width: 768,
       height: 768,
       denoisingStrength: 0.75,
       negativePrompt: '',
-      enabled: true,
-    };
-    this.m.set({ ...c, imageGenerators: [...c.imageGenerators, g] });
-  }
-  private addLocal(): void {
-    const c = this.m()!;
-    const g: LocalProgramSettings = {
-      command: '',
-      args: ['--prompt', '{prompt}', '--input', '{absolutePathsToInputImages}', '--output', '{absolutePathToOutputImage}'],
-      maxInputImages: 0,
       enabled: true,
     };
     this.m.set({ ...c, imageGenerators: [...c.imageGenerators, g] });

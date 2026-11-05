@@ -31,9 +31,10 @@ Stack: **Node.js / Express 5 / TypeScript** (backend) + **Angular 22 / SCSS** (f
   hand edits survive and are read back by the app.
 - Image generation by several backends (all the enabled and available ones are used; the jobs of one
   generator are queued, different generators run in parallel):
-  - **SD API (Stable Diffusion WebUI)** — via the API (`/sdapi/v1/txt2img`, `/sdapi/v1/img2img`);
-  - **a local program** — a command launched with `{prompt}`, `{absolutePathsToInputImages}`,
-    `{absolutePathToOutputImage}` substituted into the arguments.
+  - **ComfyUI** — a generator is a ComfyUI URL plus one of the models the app ships workflows for
+    (`qwen-image-2.1`, `qwen-image-2512`), the GPU device and the picture size, so one ComfyUI
+    server running two models is two generators;
+  - **SD API (Stable Diffusion WebUI)** — via the API (`/sdapi/v1/txt2img`, `/sdapi/v1/img2img`).
   Generation always runs in the background: the chat stays usable, a spinner with Cancel shows
   while it runs and a failed picture keeps a Regenerate button. A click on a picture enlarges it
   and makes it a generation reference.
@@ -121,10 +122,20 @@ Example:
     },
   },
   "imageGenerators": [
-    // A generation method: either an SD API (API) or a local program.
+    // A generation method: "kind" says which one — "comfyui" or "sdapi".
     // Every enabled and available method works in parallel; the jobs of one
-    // method are queued (one at a time). "enabled" defaults to true.
+    // server are queued (one at a time). "enabled" defaults to true.
     {
+      "kind": "comfyui",
+      "url": "http://127.0.0.1:8188", // the ComfyUI server
+      "model": "qwen-image-2.1", // one of the models the app has a workflow for
+      "device": "cuda:0", // the GPU the workflow pins its model loaders to
+      "width": 1328,
+      "height": 1328,
+      "enabled": true,
+    },
+    {
+      "kind": "sdapi",
       "url": "http://127.0.0.1:7860",
       "steps": 30,
       "width": 768,
@@ -132,19 +143,6 @@ Example:
       "denoisingStrength": 0.75,
       "negativePrompt": "",
       "enabled": true, // generator toggle (default true)
-    },
-    {
-      "command": "path/to/generator", // e.g. "python" or a .bat/.cmd/.ps1
-      "args": [
-        "--prompt",
-        "{prompt}",
-        "--input",
-        "{absolutePathsToInputImages}",
-        "--output",
-        "{absolutePathToOutputImage}",
-      ],
-      "maxInputImages": 2, // how many references it supports (0 = unlimited)
-      "enabled": true,
     },
   ],
 }
@@ -174,16 +172,35 @@ resolved by `resolveApiKey()`: `envKey` (an environment variable) takes priority
   its own persona (`Chat.userId`) — in the menu on the name in the header or when creating a chat.
 - Avatars: `users/<id>/avatar.jpg` and `characters/<id>/avatar.jpg` — uploaded in **Settings**,
   shown next to the messages.
-- Image generation: there can be several methods (`imageGenerators`), each with an `enabled`
-  toggle (default `true` — a disabled method is never used). At app startup every method is probed:
-  the SD API availability is checked by the `/sdapi/v1/sd-models` response; a local program is
-  considered available when a command is set (for an absolute path — if the file exists). **Every
-  enabled and available method is used**: images can be generated on several generators at the
-  same time, while the jobs of a single generator are queued (one at a time — a program / the
-  GPU is not hit by several runs concurrently).
-- For the local program: `{prompt}` — the prompt text, `{absolutePathsToInputImages}` — the
-  reference absolute paths, comma joined (empty for txt2img), `{absolutePathToOutputImage}` — the
-  path where the program must save the PNG.
+- Image generation: there can be several methods (`imageGenerators`), each named by its `kind`
+  (`comfyui` or `sdapi`) and carrying an `enabled` toggle (default `true` — a disabled method is
+  never used; an entry whose `kind` the app does not know is dropped). At app startup every method
+  is probed: a ComfyUI server answers `GET /system_stats`, the SD API answers
+  `GET /sdapi/v1/sd-models`, and a workflow file has to define the ComfyUI generator's `model`.
+  **Every enabled and available method is used**: images can be generated on several generators at
+  the same time, while the jobs of one server are queued (one at a time — the GPU is not hit by
+  several runs concurrently; two ComfyUI generators of the same URL share that queue and take the
+  jobs in turn).
+- A ComfyUI generator runs the workflow of its `model` on that server, so the server needs the
+  models of the workflow and the `comfyui-workflow-to-api-converter-endpoint` node (it turns the
+  UI-format workflow into the API format the server executes). `device` is the GPU the workflow pins
+  its model loaders to — on a multi-GPU server, one generator per GPU.
+- **A ComfyUI workflow is an ordinary JSON file, so you can replace it without rebuilding the
+  app.** The app ships `qwen-image-2.1.json` and `qwen-image-2512.json` (in the source tree:
+  `backend/src/image_generation/comfyui/workflows/`, and the build copies them next to the compiled
+  code); put your own `~/.config/sillytalk/comfyui/<model>.json` to replace one of them under the
+  same name — copying the shipped file out and editing it is the usual way — or to add a model the
+  app has never heard of: it appears in the model pick of a ComfyUI generator right away (the file
+  name is the model name). The file holds the ComfyUI graph in the UI format (the
+  format ComfyUI's own "Save" writes) under `text`, `oneImage` and `twoImages` — the workflow to
+  run at 0, 1 and 2 reference images; ship fewer of the three and the model simply takes fewer
+  references. Where the parameters belong, the template carries the placeholders the app fills in
+  before submitting: `PARAM_PROMPT`, `PARAM_SEED`, `PARAM_DEVICE`,
+  `PARAM_INT_OUTPUT_IMAGE_WIDTH` / `_HEIGHT`, `PARAM_STRING_OUTPUT_IMAGE_FILENAME` and
+  `PARAM_STRING_INPUT_IMAGE_FILENAME` (`_1`, `_2` when there are two). Steps, CFG and the sampler
+  are yours to set inside the file — the app changes only those placeholders. The files are read
+  again for every generation, so a save is enough; a file that is not a workflow leaves its model
+  out of the app, and the server log says why.
 
 ## Data storage
 
@@ -193,6 +210,8 @@ resolved by `resolveApiKey()`: `envKey` (an environment variable) takes priority
   `avatar.jpg` — the avatar
 - Users: `~/.config/sillytalk/users/<id>/` — `user.json` (the name and the persona description);
   `avatar.jpg` — the avatar
+- ComfyUI workflows of your own: `~/.config/sillytalk/comfyui/<model>.json` — replaces the workflow
+  the app ships for that model name, or adds a model (empty by default)
 - Chats: `~/.config/sillytalk/chats/chats.db` — a SQLite database (`node:sqlite`) with the chat
   fields and the messages; the pictures stay files in
   `~/.config/sillytalk/chats/<chatId>/files/`, each with a `<name>.png.json` sidecar next to it
@@ -212,8 +231,9 @@ backend/
                      # call (text + the pictures of the cards), the prompts, the
                      # picture plan of the user's turn —
                      # the TextGenerationService class + its DI token
-    image_generation/ # generation: the driver interface, the SD API / local
-                      # program backends, the top-level service class
+    image_generation/ # generation: the driver interface, the ComfyUI / SD API
+                      # backends (comfyui/ — the workflows of the models the app
+                      # can run), the top-level service class
                       # (background jobs); di.ts — the minimal DI container
     chats/         # the chat storage in the chats.db SQLite database: the text
                    # messages and the picture cards, the pictures addressed by

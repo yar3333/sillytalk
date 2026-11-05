@@ -6,7 +6,6 @@ import { createApiRouter } from "./routes";
 import { PathHelper } from "./shared/PathHelper";
 import { DI_CONFIGURATION_SERVICE, ConfigurationService } from "./configuration/ConfigurationService";
 import { Container } from "./di";
-import { createMachineService, DI_MACHINE_SERVICE } from "./machine/IMachineService";
 import { DI_CHATS_SERVICE, ChatsService } from "./chats/ChatsService";
 import { DI_CHARACTERS_SERVICE, CharactersService } from "./characters/CharactersService";
 import { DI_PERSONS_SERVICE, PersonsService } from "./persons/PersonsService";
@@ -19,7 +18,6 @@ import { DI_TEXT_GENERATION_SERVICE, TextGenerationService } from "./text_genera
 // here, once; consumers (e.g. the API router) receive them via constructors
 // and never touch the container themselves.
 const container = new Container();
-container.register(DI_MACHINE_SERVICE, () => createMachineService());
 container.register(DI_CONFIGURATION_SERVICE, () => new ConfigurationService());
 container.register(
   DI_TEXT_GENERATION_SERVICE,
@@ -35,7 +33,6 @@ container.register(
   DI_IMAGE_GENERATION_SERVICE,
   (c) =>
     new ImageGenerationService(
-      c.resolve(DI_MACHINE_SERVICE),
       c.resolve(DI_TEXT_GENERATION_SERVICE),
       c.resolve(DI_CONFIGURATION_SERVICE),
     ),
@@ -120,11 +117,11 @@ app.listen(port, host, () => {
   console.log(`sillytalk backend running on http://${host}:${port}`);
 });
 
-// On stop (systemd stop / Ctrl+C) cancel in-flight image generation so a
-// restart does not leave orphaned generator processes running and holding the
-// GPU. The kills target the generator's whole process group / tree (the
-// platform-specific part — MachineService.killTree) and are in flight when the
-// server exits.
+// On stop (systemd stop / Ctrl+C) cancel in-flight image generation, so a
+// restart does not leave a generation running on a generator server with
+// nobody waiting for its picture. The cancel asks each server over HTTP to
+// drop the job it was given, and that request needs a moment to leave — the
+// exit waits for it instead of cutting it off.
 for (const sig of ["SIGTERM", "SIGINT"] as const) {
   process.on(sig, () => {
     try {
@@ -132,6 +129,6 @@ for (const sig of ["SIGTERM", "SIGINT"] as const) {
     } catch {
       // best effort — still exit
     }
-    process.exit(0);
+    setTimeout(() => process.exit(0), 300);
   });
 }
