@@ -2,12 +2,7 @@ import { Component, OnDestroy, OnInit, inject, signal } from '@angular/core';
 import { ChatSummary } from '../../services/api';
 import { ConfigStore } from '../../services/config-store';
 import { ChatStore } from '../../services/chat-store';
-import {
-  chatLabelOf,
-  chatTimeOf,
-  chatUserLabelOf,
-  messageCountLabel,
-} from '../../services/helpers';
+import { chatHintOf, chatTitleOf, messageCountLabel } from '../../services/helpers';
 
 // The header: character / persona (dropdown menus), the chat title and model,
 // the "⋮" menu.
@@ -190,21 +185,19 @@ import {
             <div class="dropdown-title">Chats</div>
             <div class="chat-list">
               @for (cs of chatStore.chats(); track cs.id) {
+                <!-- The row shows the chat's title (its name, or the creation
+                     date while it has none); who is in the chat and when it
+                     last spoke is the hover hint. -->
                 <button
                   class="opt"
                   [class.active]="chatStore.chat()?.id === cs.id"
+                  [title]="chatHint(cs)"
                   (click)="chatStore.openChat(cs.id)"
                 >
                   <span class="chat-item-name">
-                    <span class="chat-item-char">{{ chatLabel(cs) }}</span>
-                    <span class="who-sep">/</span>
-                    <span class="chat-item-user">{{ chatUserLabel(cs) }}</span>
+                    <span class="chat-item-title">{{ chatTitle(cs) }}</span>
                   </span>
-                  <span class="chat-item-meta"
-                    >{{ chatTime(cs) ? chatTime(cs) + ' · ' : '' }}{{
-                      messageCount(cs.messageCount)
-                    }}</span
-                  >
+                  <span class="chat-item-meta">{{ messageCount(cs.messageCount) }}</span>
                 </button>
               }
             </div>
@@ -403,9 +396,14 @@ export class TopBar implements OnInit, OnDestroy {
     return out;
   }
 
-  // The chat labels in the list — pure functions from helpers.ts.
-  chatLabel(cs: ChatSummary): string {
-    return chatLabelOf(this.configStore.characters(), cs);
+  // The chat rows in the list — pure functions from helpers.ts: the row shows
+  // the title (the name, or the creation date), the hint says who is in it and
+  // when it last spoke.
+  chatTitle(cs: ChatSummary): string {
+    return chatTitleOf(cs);
+  }
+  chatHint(cs: ChatSummary): string {
+    return chatHintOf(this.configStore.characters(), this.configStore.users(), cs);
   }
   inChat(id: string): boolean {
     return this.chatStore.chat()?.characterIds.includes(id) ?? false;
@@ -416,12 +414,6 @@ export class TopBar implements OnInit, OnDestroy {
   isLastParticipant(id: string): boolean {
     const ids = this.chatStore.chat()?.characterIds ?? [];
     return ids.length > 0 && ids[ids.length - 1] === id;
-  }
-  chatUserLabel(cs: ChatSummary): string {
-    return chatUserLabelOf(this.configStore.users(), cs);
-  }
-  chatTime(cs: ChatSummary): string {
-    return chatTimeOf(cs);
   }
   messageCount(n: number): string {
     return messageCountLabel(n);

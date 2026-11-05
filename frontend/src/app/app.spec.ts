@@ -21,6 +21,7 @@ import { ImageStore } from '../services/image-store';
 import {
   DEFAULT_REASONING_LEVELS,
   chatLabelOf,
+  chatHintOf,
   chatTimeOf,
   chatTitleOf,
   chatUserLabelOf,
@@ -1166,6 +1167,34 @@ describe('chatTitleOf (helpers.ts)', () => {
   });
 });
 
+describe('chatHintOf (helpers.ts)', () => {
+  const characters: Character[] = [
+    { id: 'c1', name: 'Alice', description: '' },
+    { id: 'c2', name: 'Bob', description: '' },
+  ];
+  const users: User[] = [{ id: 'u1', name: 'Carol', description: '' }];
+  const base: ChatSummary = {
+    id: 'ch1',
+    createdAt: 0,
+    characterIds: ['c1'],
+    userId: 'u1',
+    modelId: 'm1',
+    messageCount: 3,
+    lastMessageAt: 0,
+  };
+
+  it('the characters, the persona and the last message date', () => {
+    const cs = { ...base, lastMessageAt: new Date(2026, 8, 28, 19, 46).getTime() };
+    expect(chatHintOf(characters, users, cs)).toBe('Alice / Carol · 28/09/2026, 19:46');
+    // several participants — the first + "+N", like the label did
+    expect(chatHintOf(characters, users, { ...cs, characterIds: ['c1', 'c2'] })).toContain('Alice +1 / Carol');
+  });
+
+  it('an empty chat has no date to show', () => {
+    expect(chatHintOf(characters, users, base)).toBe('Alice / Carol');
+  });
+});
+
 describe('The chat title and cloning a chat', () => {
   let cloneCalls: string[];
   let patchBodies: Record<string, unknown>[];
@@ -1281,5 +1310,48 @@ describe('The chat title and cloning a chat', () => {
     await new Promise((r) => setTimeout(r, 0));
 
     expect(patchBodies[0]).toMatchObject({ name: '' });
+  });
+
+  it('the chat list rows show the title and keep the characters, the persona and the last message date in the hint', () => {
+    const characters: Character[] = [
+      { id: 'c1', name: 'Alice', description: '' },
+      { id: 'c2', name: 'Bob', description: '' },
+    ];
+    const users: User[] = [{ id: 'u1', name: 'Carol', description: '' }];
+    TestBed.inject(ConfigStore).characters.set(characters);
+    TestBed.inject(ConfigStore).users.set(users);
+    const lastMessage = new Date(2026, 8, 28, 19, 46).getTime();
+    const named: ChatSummary = {
+      id: 'ch-named',
+      name: 'Road trip',
+      createdAt: CHAT_CREATED_AT,
+      characterIds: ['c1', 'c2'],
+      userId: 'u1',
+      modelId: 'm1',
+      messageCount: 7,
+      lastMessageAt: lastMessage,
+    };
+    const nameless: ChatSummary = { ...named, id: 'ch-nameless', name: undefined };
+
+    const store = TestBed.inject(ChatStore);
+    store.chat.set(turnChat([]));
+    store.chats.set([named, nameless]);
+    const fixture = TestBed.createComponent(TopBar);
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+    // the list renders inside the chat menu
+    (el.querySelector('[data-testid=chat-date]') as HTMLElement).click();
+    fixture.detectChanges();
+
+    const rows = [...el.querySelectorAll('.chat-list .opt')] as HTMLButtonElement[];
+    expect(rows).toHaveLength(2);
+    // a named chat: its name on the row, the rest in the hint
+    expect(rows[0].textContent).toContain('Road trip');
+    expect(rows[0].textContent).not.toContain('Alice');
+    expect(rows[0].textContent).toContain('7 messages');
+    expect(rows[0].getAttribute('title')).toBe('Alice +1 / Carol · 28/09/2026, 19:46');
+    // a nameless chat is titled by its creation date; the hint is the same
+    expect(rows[1].textContent).toContain('03/08/2026');
+    expect(rows[1].getAttribute('title')).toBe('Alice +1 / Carol · 28/09/2026, 19:46');
   });
 });

@@ -194,15 +194,18 @@ frontend/              Angular app
                        images, the lightbox, the background-job polling;
                        depends ONE-WAY on ChatStore
     ui-store.ts        UiStore: cross-cutting UI state (global error banner)
-    helpers.ts         pure helpers: chat labels, times and the chat title
-                       (chatTitleOf), message counts, the
+    helpers.ts         pure helpers: chat labels, times, the chat title
+                       (chatTitleOf) and the chat-row hint (chatHintOf),
+                       message counts, the
                        avatar letter, the narration split, the image hover hint
                        (imageHintFor), the reasoning-levels list parse
   src/components/      UI components, each with its own .scss (encapsulation!);
                        read state/actions via injected stores — no big input lists
     top-bar/           header: character/user menus (edit icons + "New"),
                        the chat title + its chat-actions ⋮ (settings / clone /
-                       delete), model chip (menu + edit icons), ⋮ menu
+                       delete) and its chat menu (the list rows = the chat
+                       title + the count, the hint = who + the last date),
+                       model chip (menu + edit icons), ⋮ menu
     message-list/      history: empty state, messages, typing indicator
     message-row/       one message: avatar, text, or the image CARD (the picture
                        with its caption, prompt and reference count; the
@@ -558,8 +561,11 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   `Chat.createdAt` is the creation date written once by `ChatsService.create` — the **default title**
   of a nameless chat (`normalize` gives a row without one the date of its first message, or the
   moment it is first read when it is empty, and `list()` carries both fields). The header shows the
-  name, falling back to that date; the chat list in the chat menu keeps showing the characters, the
-  persona and the last-message date. "Clone chat" (the chat-actions ⋮) calls
+  name, falling back to that date. The chat list in the chat menu shows the SAME title per row
+  (`.chat-item-title`) with the message count under it; who is in the chat and its last-message date
+  moved to the row's hover hint — `helpers.chatHintOf(characters, users, cs)` →
+  `"<characters> / <persona> · <last message date>"` (the date is dropped for an empty chat), bound
+  as the row's `title` attribute. "Clone chat" (the chat-actions ⋮) calls
   `POST /api/chats/:id/clone` → `{ chat }` (`ChatsService.clone`): a new id, a copy of every message,
   the participants / persona / model / sampling / systemSuffix, the name suffixed " (copy)" (a
   nameless copy stays nameless), and the chat `files/` folder copied into the copy's folder with

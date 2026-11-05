@@ -53,6 +53,15 @@ export function chatTitleOf(chat: {
   return t ? formatTime(t) : '';
 }
 
+// The hover hint of a chat list row: who is in the chat (the character
+// participants + the active persona) and the date of its last message — the row
+// itself shows the chat's title instead.
+export function chatHintOf(characters: Character[], users: User[], cs: ChatSummary): string {
+  const who = `${chatLabelOf(characters, cs)} / ${chatUserLabelOf(users, cs)}`;
+  const time = chatTimeOf(cs);
+  return time ? `${who} · ${time}` : who;
+}
+
 // The message count label: "1 message", "2 messages", "5 messages".
 export function messageCountLabel(n: number): string {
   return `${n} message${n === 1 ? '' : 's'}`;

@@ -298,23 +298,16 @@
   max-height: 40vh;
   overflow-y: auto;
 }
-/* A chat list item: "character / persona" + the meta line (the date, the
-   message count). Like in the header (.who): flex + gap — the spaces around
-   "/" do not depend on the template spaces. */
+/* A chat list item: the chat's title (its name, or the creation date) + the
+   message count; who is in the chat and its last message date live in the
+   hover hint (the row's title attribute). */
 .chat-item-name {
   display: flex;
   align-items: baseline;
   gap: 5px;
   min-width: 0;
 }
-.chat-item-char {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
-}
-.chat-item-user {
-  color: var(--accent);
+.chat-item-title {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
