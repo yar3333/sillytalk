@@ -248,6 +248,63 @@ import { chatHintOf, chatTitleOf, messageCountLabel } from '../../services/helpe
             </div>
           }
         </span>
+
+        <!-- The vision model of the chat: the one that LOOKS at pictures (card
+             captions, "Describe the picture"). Only the 👁 is shown; the name of
+             the model the app will really use is the hover hint, because this is
+             a second model next to the chat's own. -->
+        <span class="vision-wrap">
+          <button
+            class="vision-chip"
+            data-testid="vision-chip"
+            [class.missing]="!chatStore.canDescribePictures()"
+            [title]="chatStore.visionModelTitle()"
+            (click)="$event.stopPropagation(); toggleVisionMenu()"
+          >
+            👁
+          </button>
+          @if (visionMenuOpen()) {
+            <div class="dropdown vision-dropdown">
+              <div class="dropdown-title">Model for pictures</div>
+              <button
+                class="opt"
+                data-testid="vision-option-default"
+                [class.active]="!chatStore.chat()?.visionModelId"
+                (click)="chatStore.selectVisionModel('')"
+              >
+                Default — the chat's model, else the first that can see
+              </button>
+              <div class="sep"></div>
+              @for (m of configStore.models(); track m.name) {
+                <div class="opt-row" data-testid="vision-option-row">
+                  <button
+                    class="opt opt-toggle"
+                    data-testid="vision-option"
+                    [class.active]="chatStore.chat()?.visionModelId === m.name"
+                    (click)="chatStore.selectVisionModel(m.name)"
+                  >
+                    {{ m.name }}
+                    @if (m.supportsImages) {
+                      (👁)
+                    }
+                  </button>
+                  <button
+                    class="opt-edit"
+                    data-testid="vision-edit"
+                    title="Edit the model"
+                    (click)="configStore.openModelDialog(m.name)"
+                  >
+                    ✎
+                  </button>
+                </div>
+              }
+              <div class="dropdown-hint">
+                Writes what is on a picture: the caption of every 📎 you attach and the
+                "Describe the picture" button. A model without 👁 cannot look.
+              </div>
+            </div>
+          }
+        </span>
         <button
           class="dots"
           data-testid="menu"
@@ -279,6 +336,7 @@ export class TopBar implements OnInit, OnDestroy {
   readonly characterMenuOpen = signal(false);
   readonly userMenuOpen = signal(false);
   readonly modelMenuOpen = signal(false);
+  readonly visionMenuOpen = signal(false);
   readonly chatMenuOpen = signal(false);
   readonly chatDotsOpen = signal(false);
   private onDocClick = () => this.closeMenus();
@@ -296,6 +354,7 @@ export class TopBar implements OnInit, OnDestroy {
     this.characterMenuOpen.set(false);
     this.userMenuOpen.set(false);
     this.modelMenuOpen.set(false);
+    this.visionMenuOpen.set(false);
     this.chatMenuOpen.set(false);
     this.chatDotsOpen.set(false);
   }
@@ -308,6 +367,7 @@ export class TopBar implements OnInit, OnDestroy {
       this.characterMenuOpen.set(false);
       this.userMenuOpen.set(false);
       this.modelMenuOpen.set(false);
+      this.visionMenuOpen.set(false);
       this.chatMenuOpen.set(false);
     }
   }
@@ -318,6 +378,7 @@ export class TopBar implements OnInit, OnDestroy {
       this.menuOpen.set(false);
       this.userMenuOpen.set(false);
       this.modelMenuOpen.set(false);
+      this.visionMenuOpen.set(false);
       this.chatMenuOpen.set(false);
     }
   }
@@ -328,6 +389,7 @@ export class TopBar implements OnInit, OnDestroy {
       this.menuOpen.set(false);
       this.characterMenuOpen.set(false);
       this.modelMenuOpen.set(false);
+      this.visionMenuOpen.set(false);
       this.chatMenuOpen.set(false);
     }
   }
@@ -338,7 +400,21 @@ export class TopBar implements OnInit, OnDestroy {
       this.menuOpen.set(false);
       this.characterMenuOpen.set(false);
       this.userMenuOpen.set(false);
+      this.visionMenuOpen.set(false);
       this.chatMenuOpen.set(false);
+    }
+  }
+  // The vision model menu (the 👁 next to the model chip).
+  toggleVisionMenu(): void {
+    const open = !this.visionMenuOpen();
+    this.visionMenuOpen.set(open);
+    if (open) {
+      this.menuOpen.set(false);
+      this.characterMenuOpen.set(false);
+      this.userMenuOpen.set(false);
+      this.modelMenuOpen.set(false);
+      this.chatMenuOpen.set(false);
+      this.chatDotsOpen.set(false);
     }
   }
   // The chat menu (New chat / the chat list) opens on the chat title in the
@@ -351,6 +427,7 @@ export class TopBar implements OnInit, OnDestroy {
       this.characterMenuOpen.set(false);
       this.userMenuOpen.set(false);
       this.modelMenuOpen.set(false);
+      this.visionMenuOpen.set(false);
       this.chatDotsOpen.set(false);
     }
   }
@@ -363,6 +440,7 @@ export class TopBar implements OnInit, OnDestroy {
       this.characterMenuOpen.set(false);
       this.userMenuOpen.set(false);
       this.modelMenuOpen.set(false);
+      this.visionMenuOpen.set(false);
       this.chatMenuOpen.set(false);
     }
   }

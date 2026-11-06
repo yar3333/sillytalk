@@ -124,6 +124,29 @@ export class ChatStore {
     return this.configStore.models().find((m) => m.name === c.modelId) ?? null;
   });
   readonly modelLabel = computed<string>(() => this.currentModel()?.name ?? '—');
+  // The model that looks at pictures for this chat — the backend's rule
+  // (TextGenerationService.resolveVisionModel) mirrored here so the header
+  // names the model that will really look: the chat's own pick, else its chat
+  // model when that can see, else the first vision-capable model of the config.
+  readonly visionModel = computed<Model | null>(() => {
+    const c = this.chat();
+    if (!c) return null;
+    const models = this.configStore.models();
+    const picked = c.visionModelId ? models.find((m) => m.name === c.visionModelId) : undefined;
+    if (picked) return picked;
+    const own = models.find((m) => m.name === c.modelId);
+    if (own?.supportsImages) return own;
+    return models.find((m) => m.supportsImages) ?? null;
+  });
+  // The hover hint of the 👁 chip: the model that describes this chat's
+  // pictures (the one the app will really use), or why there is none.
+  readonly visionModelTitle = computed<string>(() => {
+    const m = this.visionModel();
+    if (!m) return 'No model that can see pictures — add one in Settings';
+    if (!m.supportsImages) return `"${m.name}" cannot see pictures`;
+    return `Pictures are described by: ${m.name}`;
+  });
+  readonly canDescribePictures = computed<boolean>(() => this.visionModel()?.supportsImages ?? false);
   readonly idShort = computed<string>(() => this.chat()?.id ?? '');
   // The title shown in the header: the chat's own name, or the date it was
   // created while it has no name (chatTitleOf).
@@ -256,6 +279,11 @@ export class ChatStore {
           return;
         }
         this.setChat(res.chat);
+        // The attached pictures get a caption from the vision model. It is not
+        // decoration: that sentence is what a chat model without vision reads
+        // about the picture in the history, and what the 📷 planner reads in its
+        // catalogue. Fire-and-forget — the message is already sent.
+        this.captionAttachments(res.chat.id, res.messages);
         // The reply queue starts with the character mentioned by name,
         // otherwise — in turn order.
         return this.runReplyQueue(
@@ -274,6 +302,24 @@ export class ChatStore {
         if (this.generationSeq === seq) this.sending.set(false);
       });
     return true;
+  }
+
+  // Captions the picture cards of a just-sent message: every attached picture
+  // becomes its own card with an empty caption, and the vision model writes one
+  // (the row and the sidecar next to the file). Skipped without a model that can
+  // see, and never in the error banner — a picture that stays unlabelled is a
+  // normal state, and the card's ✎ is there for a manual try.
+  private captionAttachments(chatId: string, messages: ChatMessage[]): void {
+    if (!this.canDescribePictures()) return;
+    const cards = messages.filter((m) => m.kind === 'image' && !m.text.trim() && m.images.length > 0);
+    for (const card of cards) {
+      this.api
+        .captionPicture(chatId, card.id)
+        .then((res) => {
+          if (this.chat()?.id === chatId) this.applyChat(res.chat);
+        })
+        .catch(() => undefined);
+    }
   }
 
   // Saves the edit of the message loaded into the field (the "✓" button): the
@@ -553,6 +599,15 @@ export class ChatStore {
     const c = this.chat();
     if (!c) return;
     this.api.patchChat(c.id, { modelId }).then((ch) => this.setChat(ch));
+  }
+
+  // The model that describes this chat's pictures (the 👁 menu). An empty name
+  // is a real choice: back to the default — the chat's own model when it can
+  // see, else the first vision-capable model of the config.
+  selectVisionModel(name: string): void {
+    const c = this.chat();
+    if (!c) return;
+    this.api.patchChat(c.id, { visionModelId: name }).then((ch) => this.setChat(ch));
   }
 
   refreshChats(): Promise<void> {

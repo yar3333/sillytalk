@@ -158,6 +158,10 @@ export interface Chat {
   // that participated in the chat are derived from message authors (msg.userId).
   userId: string;
   modelId: string; // the llmModels key of the chosen model
+  // The llmModels key of the model that LOOKS at the pictures of this chat
+  // (card captions, the "Describe the picture" button). Absent — the chat's own
+  // model when it can see, else the first vision-capable model of the config.
+  visionModelId?: string;
   // Per-chat sampling overrides for the provider request; a field left
   // undefined is not sent at all (the provider default applies).
   sampling?: {
@@ -416,6 +420,18 @@ export class ApiService {
     return this.req<{ description: string }>('/image/describe', {
       method: 'POST',
       body: JSON.stringify({ chatId, ...body }),
+    });
+  }
+
+  // Writes the caption of a picture card the user attached without one: the
+  // chat's vision model looks at the file and its sentence becomes the card's
+  // caption (the row and the sidecar). A card that already has a caption and a
+  // chat with nothing that can see both come back unchanged — so this is safe to
+  // fire after every attachment.
+  captionPicture(chatId: string, messageId: string): Promise<{ chat: Chat }> {
+    return this.req<{ chat: Chat }>('/image/caption', {
+      method: 'POST',
+      body: JSON.stringify({ chatId, messageId }),
     });
   }
 

@@ -63,6 +63,46 @@ describe("resolveModel", () => {
   });
 });
 
+describe("resolveVisionModel", () => {
+  const blind: Model = { ...model, name: "blind", id: "blind", supportsImages: false };
+  const seer: Model = { ...model, name: "seer", id: "seer", supportsImages: true };
+
+  // A chat whose model cannot see, optionally with its own vision pick.
+  function chatSeeing(visionModelId?: string): Chat {
+    return { ...chatWithModel("blind"), ...(visionModelId ? { visionModelId } : {}) };
+  }
+
+  it("uses the model the chat picked for looking at pictures", () => {
+    expect(textGenerationService.resolveVisionModel(configOf([blind, seer]), chatSeeing("seer"))).toEqual(seer);
+  });
+
+  it("keeps the chat's own model when it can see", () => {
+    const chat = { ...chatWithModel("seer") };
+    expect(textGenerationService.resolveVisionModel(configOf([seer, blind]), chat)).toEqual(seer);
+  });
+
+  it("takes the first model that can see when the chat's own model is blind", () => {
+    // the point of the field: a roleplay model with no vision still gets the
+    // user's pictures described, without the user having to pick anything
+    expect(textGenerationService.resolveVisionModel(configOf([blind, seer]), chatSeeing())).toEqual(seer);
+  });
+
+  it("honours a pick that cannot see — the caller reports it instead of using another model", () => {
+    // silently describing with a different model than the one in the header
+    // would make the chip a liar
+    expect(textGenerationService.resolveVisionModel(configOf([blind, seer]), chatSeeing("blind"))).toEqual(blind);
+  });
+
+  it("falls back to the default when the picked model left the config", () => {
+    // (ChatsService drops such a key on read; the resolver must not hang on it)
+    expect(textGenerationService.resolveVisionModel(configOf([blind, seer]), chatSeeing("gone"))).toEqual(seer);
+  });
+
+  it("returns null when nothing in the config can see", () => {
+    expect(textGenerationService.resolveVisionModel(configOf([blind]), chatSeeing())).toBeNull();
+  });
+});
+
 describe("systemPromptFor", () => {
   it("includes the character name and description", () => {
     const out = textGenerationService.systemPromptFor({ name: "Alice", description: "A kind fairy" });

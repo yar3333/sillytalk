@@ -1682,3 +1682,144 @@ describe('The chat title and cloning a chat', () => {
     expect(rows[1].getAttribute('title')).toBe('Alice +1 / Carol · 28/09/2026, 19:46');
   });
 });
+
+describe('ChatStore — the vision model of the chat', () => {
+  // The chat runs on the blind model; the config also has one that can see.
+  const blind = { id: 'b', baseUrl: 'http://x', contextSize: 100, supportsImages: false };
+  const seer = { id: 's', baseUrl: 'http://x', contextSize: 100, supportsImages: true };
+  const chat: Chat = {
+    id: 'chat-1',
+    createdAt: 0,
+    characterIds: ['char-1'],
+    userId: 'user-1',
+    modelId: 'blind',
+    messages: [{ id: 'msg-1', role: 'user', text: 'hello', images: [], timestamp: 1 }],
+  };
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+
+  async function setup(extra: Record<string, unknown> = {}) {
+    const api = {
+      getConfig: () =>
+        Promise.resolve({ listen: '127.0.0.1:3210', llmModels: { blind, seer }, imageGenerators: [] }),
+      getChats: () => Promise.resolve([]),
+      getCharacters: () => Promise.resolve([{ id: 'char-1', name: 'Alice', description: '' }]),
+      getUsers: () => Promise.resolve([{ id: 'user-1', name: 'Me', description: '' }]),
+      imageStatus: () => Promise.resolve({ available: false }),
+      patchChat: (_id: string, patch: Record<string, unknown>) =>
+        Promise.resolve({ ...chat, ...patch } as Chat),
+      ...extra,
+    };
+    await TestBed.resetTestingModule();
+    await TestBed.configureTestingModule({
+      providers: [{ provide: ApiService, useValue: api }],
+    }).compileComponents();
+    const configStore = TestBed.inject(ConfigStore);
+    await configStore.loadAll();
+    const store = TestBed.inject(ChatStore);
+    store.chat.set(chat);
+    return { store, api };
+  }
+
+  it('names the chat model when it can see pictures', async () => {
+    const { store } = await setup();
+    store.chat.set({ ...chat, modelId: 'seer' });
+    expect(store.visionModel()?.name).toBe('seer');
+    expect(store.canDescribePictures()).toBe(true);
+    expect(store.visionModelTitle()).toContain('seer');
+  });
+
+  it('falls back to the first model that can see when the chat model is blind', async () => {
+    const { store } = await setup();
+    expect(store.visionModel()?.name).toBe('seer');
+    expect(store.canDescribePictures()).toBe(true);
+  });
+
+  it('honours the chat pick, and its hint says that model cannot see', async () => {
+    const { store } = await setup();
+    store.chat.set({ ...chat, visionModelId: 'blind' });
+    expect(store.visionModel()?.name).toBe('blind');
+    expect(store.canDescribePictures()).toBe(false);
+    expect(store.visionModelTitle()).toContain('cannot see pictures');
+  });
+
+  it('selectVisionModel patches the chat (an empty name is the default)', async () => {
+    const patches: Record<string, unknown>[] = [];
+    const { store } = await setup({
+      patchChat: (_id: string, patch: Record<string, unknown>) => {
+        patches.push(patch);
+        return Promise.resolve({ ...chat, ...patch } as Chat);
+      },
+    });
+    store.selectVisionModel('seer');
+    await tick();
+    expect(patches[0]).toEqual({ visionModelId: 'seer' });
+    store.selectVisionModel('');
+    await tick();
+    expect(patches[1]).toEqual({ visionModelId: '' });
+  });
+
+  it('captions an attached picture the user gave no text to', async () => {
+    const card: ChatMessage = {
+      id: 'msg-2',
+      role: 'user',
+      kind: 'image',
+      text: '',
+      images: ['chats/chat-1/files/a.png'],
+      timestamp: 2,
+    };
+    const captioned: Chat = {
+      ...chat,
+      messages: [...chat.messages, { ...card, text: 'a red boat on a calm lake' }],
+    };
+    const captionCalls: string[] = [];
+    const { store } = await setup({
+      postMessage: (_id: string, text: string) =>
+        Promise.resolve({
+          chat: { ...chat, messages: [...chat.messages, card] },
+          messages: [{ ...chat.messages[0], id: 'msg-1b', text }, card],
+        }),
+      captionPicture: (_chatId: string, messageId: string) => {
+        captionCalls.push(messageId);
+        return Promise.resolve({ chat: captioned });
+      },
+      nextReply: () => Promise.resolve({ chat: captioned, reply: null }),
+    });
+    store.pendingImages.set(['data:image/png;base64,aGVsbG8=']);
+    expect(store.send('look')).toBe(true);
+    await tick();
+    await tick();
+    expect(captionCalls).toEqual(['msg-2']);
+    expect(store.chat()?.messages[1].text).toBe('a red boat on a calm lake');
+  });
+
+  it('does not caption anything when no model of the config can see', async () => {
+    const card: ChatMessage = {
+      id: 'msg-2',
+      role: 'user',
+      kind: 'image',
+      text: '',
+      images: ['chats/chat-1/files/a.png'],
+      timestamp: 2,
+    };
+    const captionCalls: string[] = [];
+    const { store } = await setup({
+      getConfig: () =>
+        Promise.resolve({ listen: '127.0.0.1:3210', llmModels: { blind }, imageGenerators: [] }),
+      postMessage: () =>
+        Promise.resolve({
+          chat: { ...chat, messages: [...chat.messages, card] },
+          messages: [card],
+        }),
+      captionPicture: (_chatId: string, messageId: string) => {
+        captionCalls.push(messageId);
+        return Promise.resolve({ chat });
+      },
+      nextReply: () => Promise.resolve({ chat, reply: null }),
+    });
+    store.pendingImages.set(['data:image/png;base64,aGVsbG8=']);
+    store.send('look');
+    await tick();
+    await tick();
+    expect(captionCalls).toEqual([]);
+  });
+});

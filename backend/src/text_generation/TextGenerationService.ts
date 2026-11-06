@@ -110,6 +110,28 @@ export class TextGenerationService {
     return models.find((m) => m.name === chat.modelId) ?? models[0] ?? null;
   }
 
+  // The model that looks at pictures for this chat (the one that writes card
+  // captions). Three cases, in order:
+  //  - the chat picked one (the header's vision menu) — that pick is honoured
+  //    even when the model cannot see, so the caller's guard can say plainly
+  //    "this model cannot see pictures" instead of quietly using another;
+  //  - the chat's own model can see — nothing to add, it does both jobs;
+  //  - otherwise the first vision-capable model of the config, which is the
+  //    user's own ranking: a roleplay model with no vision still gets the
+  //    user's pictures described, and the caption is what such a model reads
+  //    about them in the history.
+  // Null when no model of the config can see at all.
+  resolveVisionModel(config: Config, chat: Chat): Model | null {
+    const models = this.configuration.listModels(config);
+    if (chat.visionModelId) {
+      const picked = models.find((m) => m.name === chat.visionModelId);
+      if (picked) return picked;
+    }
+    const own = models.find((m) => m.name === chat.modelId);
+    if (own?.supportsImages) return own;
+    return models.find((m) => m.supportsImages) ?? null;
+  }
+
   // ---- prompts and history ----
 
   // person — the active persona (users/<id>/user.json); if it has a persona

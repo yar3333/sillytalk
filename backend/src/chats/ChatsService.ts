@@ -149,6 +149,7 @@ export class ChatsService {
       characterIds: chat.characterIds,
       userId: chat.userId,
       modelId: chat.modelId,
+      visionModelId: chat.visionModelId,
       sampling: chat.sampling,
       systemSuffix: chat.systemSuffix,
       stylePrompt: chat.stylePrompt,
@@ -206,8 +207,13 @@ export class ChatsService {
       .all(chatId) as MessageRow[];
     chat.messages = rows.map((m) => JSON.parse(m.data) as ChatMessage);
     // Called as methods (not as a bare-function array) — ensureModelId
-    // needs the instance (the injected config loader).
-    const dirty = this.normalize(chat) || this.ensureModelId(chat);
+    // needs the instance (the injected config loader). All three run before
+    // they are OR-ed, so a chat that needed a normalize fix still loses a
+    // vision pick whose model is gone.
+    const normalized = this.normalize(chat);
+    const remapped = this.ensureModelId(chat);
+    const vision = this.ensureVisionModelId(chat);
+    const dirty = normalized || remapped || vision;
     if (dirty) this.save(chat);
     // The sidecars are not persisted back into the database (they are the
     // portable copy the user may edit at any time), so this runs on every read
@@ -286,6 +292,7 @@ export class ChatsService {
       characterIds: [...source.characterIds],
       userId: source.userId,
       modelId: source.modelId,
+      ...(source.visionModelId ? { visionModelId: source.visionModelId } : {}),
       ...(source.sampling ? { sampling: { ...source.sampling } } : {}),
       ...(source.systemSuffix ? { systemSuffix: source.systemSuffix } : {}),
       ...(source.stylePrompt ? { stylePrompt: source.stylePrompt } : {}),
@@ -910,6 +917,18 @@ export class ChatsService {
       chat.userId = "";
       dirty = true;
     }
+    // visionModelId: the same rule as the name — a trimmed non-empty string or
+    // nothing at all (nothing means "describe with the chat's own model, or
+    // with the first model that can see"). An empty pick is a real edit: the
+    // chat goes back to that default, so the cleanup is flagged dirty.
+    if (chat.visionModelId !== undefined) {
+      const t = typeof chat.visionModelId === "string" ? chat.visionModelId.trim() : "";
+      if (t) chat.visionModelId = t;
+      else {
+        delete chat.visionModelId;
+        dirty = true;
+      }
+    }
     // sampling: keep only the valid numeric fields (an all-empty object is
     // dropped entirely so the blob stays small).
     if (chat.sampling !== undefined) {
@@ -958,6 +977,19 @@ export class ChatsService {
     const models = this.configuration.listModels(this.configuration.loadConfig());
     if (models.length === 0 || models.some((m) => m.name === chat.modelId)) return false;
     chat.modelId = models[0].name;
+    return true;
+  }
+
+  // The vision pick of a chat may name a model that was renamed or deleted —
+  // unlike the chat's own model it has no replacement to be re-attached to, so
+  // the field is simply dropped and the chat goes back to the default
+  // (its own model, else the first one that can see). Keeping a dead key would
+  // leave the header chip naming a model that no longer exists.
+  private ensureVisionModelId(chat: Chat): boolean {
+    if (!chat.visionModelId) return false;
+    const models = this.configuration.listModels(this.configuration.loadConfig());
+    if (models.some((m) => m.name === chat.visionModelId)) return false;
+    delete chat.visionModelId;
     return true;
   }
 

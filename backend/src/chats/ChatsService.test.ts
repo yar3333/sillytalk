@@ -322,6 +322,48 @@ describe("the chat name and its creation date", () => {
   });
 });
 
+describe("visionModelId (the model that looks at pictures)", () => {
+  it("survives save → read, and the clone carries it", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    const configured = chats.get(chat.id)!;
+    configured.visionModelId = "m2";
+    chats.save(configured);
+    expect(peek(chat.id)?.visionModelId).toBe("m2");
+    expect(chats.clone(chat.id)?.visionModelId).toBe("m2");
+  });
+
+  it("keeps a pick the config knows, even a model that cannot see", () => {
+    // both stub models are blind: the pick is the user's explicit choice and
+    // survives — the describe call is what reports the model cannot look
+    const chat = chats.create(["a"], "m1", "me");
+    const configured = chats.get(chat.id)!;
+    configured.visionModelId = "m2";
+    chats.save(configured);
+    expect(chats.get(chat.id)?.visionModelId).toBe("m2");
+  });
+
+  it("is dropped when its model left the config — the chat goes back to the default", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    const configured = chats.get(chat.id)!;
+    configured.visionModelId = "renamed-away";
+    chats.save(configured);
+    expect(chats.get(chat.id)?.visionModelId).toBeUndefined();
+    expect(peek(chat.id)?.visionModelId).toBeUndefined();
+  });
+
+  it("is removed by an empty pick", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    const configured = chats.get(chat.id)!;
+    configured.visionModelId = "m2";
+    chats.save(configured);
+    const cleared = chats.get(chat.id)!;
+    cleared.visionModelId = "";
+    chats.save(cleared);
+    expect(peek(chat.id)?.visionModelId).toBeUndefined();
+    expect(peek(chat.id)).not.toHaveProperty("visionModelId");
+  });
+});
+
 describe("clone", () => {
   const PNG = "data:image/png;base64,aGVsbG8=";
 

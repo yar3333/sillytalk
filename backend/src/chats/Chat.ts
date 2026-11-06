@@ -25,6 +25,11 @@ export type Chat = {
   // message authors (ChatMessage.userId).
   userId: string;
   modelId: string; // llmModels key of the chosen model
+  // The llmModels key of the model that LOOKS at pictures in this chat (the
+  // card captions). Absent — the chat's own model when it can see, else the
+  // first vision-capable model of the config: a roleplay model without vision
+  // still gets its pictures described.
+  visionModelId?: string;
   sampling?: ChatSampling; // per-chat sampling overrides (absent fields = provider default)
   // A free-text addition appended to the system prompt of every reply in
   // this chat (the user's extra instructions — style, quirks, etc.).

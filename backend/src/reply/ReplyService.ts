@@ -52,6 +52,13 @@ export class ReplyService {
     return this.textGeneration.resolveModel(this.configuration.loadConfig(), chat);
   }
 
+  // The model that describes pictures for this chat: its own pick (the header's
+  // vision menu), else the chat's model when it can see, else the first model of
+  // the config that can. Null when nothing in the config has vision.
+  resolveVisionModel(chat: Chat): Model | null {
+    return this.textGeneration.resolveVisionModel(this.configuration.loadConfig(), chat);
+  }
+
   // The in-flight reply per chat: the controller is registered here so the
   // cancel route can abort the model call, while the /reply handler keeps it
   // to detect the cancellation.
@@ -838,7 +845,7 @@ export class ReplyService {
     return (await this.textGeneration.tunePrompt(model, prompt, chat.sampling)).trim();
   }
 
-  // Describes a picture with the chat's model (vision) — the "Describe the
+  // Describes a picture with the chat's vision model — the "Describe the
   // picture" button: an existing picture of the data folder or a data URL of a
   // file the user just picked. Null when the chat is gone (a model error — no
   // vision, no model — propagates to the route).
@@ -848,12 +855,57 @@ export class ReplyService {
   ): Promise<string | null> {
     const chat = this.chats.get(chatId);
     if (!chat) return null;
-    const model = this.resolveChatModel(chat);
-    if (!model) throw new Error("No model configured for the chat");
-    if (!model.supportsImages) {
-      throw new Error("The chat's model cannot see pictures — choose a model that supports images");
-    }
+    const model = this.resolveVisionModel(chat);
+    if (!model || !model.supportsImages) throw new Error(ReplyService.noVisionMessage(model));
     return (await this.textGeneration.describePicture(model, input, chat.sampling)).trim();
+  }
+
+  // The wording of "this chat has nothing to look at pictures with" — shared by
+  // the service's own check and the guard of the /describe route so the banner
+  // and the 400 cannot drift apart.
+  static noVisionMessage(model: Model | null): string {
+    return model
+      ? `"${model.name}" cannot see pictures — pick a model that can in the header's vision menu`
+      : "No model that can see pictures is configured — pick one in the header's vision menu";
+  }
+
+  // Writes the caption of an attached picture the user gave no description to
+  // (the 📎 flow): the chat's vision model looks at the file and its sentence
+  // becomes the card's caption. That caption is not decoration — it is what a
+  // chat model without vision is told about the picture in the history, and
+  // what the picture planner of the 📷 flow reads in its catalogue — so an
+  // unlabelled photo is a lost one for the rest of the conversation.
+  //
+  // Only an empty caption is filled: what the user wrote in the editor (or in
+  // the sidecar by hand) is theirs. Nothing is invented when the chat has no
+  // vision model or the model fails — a picture with no caption is a normal
+  // state, not an error, and the card keeps its Describe button for a manual
+  // try. Returns the fresh chat, or null when it disappeared.
+  async captionPicture(chatId: string, messageId: string): Promise<Chat | null> {
+    const chat = this.chats.get(chatId);
+    if (!chat) return null;
+    const card = chat.messages.find((m) => m.id === messageId);
+    const image = card?.images[0];
+    if (!card || !isImageMessage(card) || !image || card.text.trim()) {
+      return this.chats.get(chatId);
+    }
+    const model = this.resolveVisionModel(chat);
+    if (!model || !model.supportsImages) return this.chats.get(chatId);
+    let description = "";
+    try {
+      description = (await this.textGeneration.describePicture(model, { imageId: image }, chat.sampling)).trim();
+    } catch {
+      return this.chats.get(chatId);
+    }
+    if (!description) return this.chats.get(chatId);
+    // The caption is written into the row as it is NOW: the user may have typed
+    // one, or deleted the card, while the model was looking.
+    const fresh = this.chats.get(chatId);
+    const live = fresh?.messages.find((m) => m.id === messageId);
+    if (!fresh || !live || !isImageMessage(live)) return null;
+    if (live.text.trim()) return fresh;
+    this.chats.setMessageText(chatId, messageId, description);
+    return this.chats.get(chatId) ?? fresh;
   }
 
   // ---- the look of a person ----

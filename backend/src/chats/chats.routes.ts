@@ -77,7 +77,8 @@ export function createChatsRouter(
       res.status(404).json({ error: "Chat not found" });
       return;
     }
-    const { characterIds, modelId, userId, sampling, systemSuffix, name, stylePrompt } = req.body ?? {};
+    const { characterIds, modelId, visionModelId, userId, sampling, systemSuffix, name, stylePrompt } =
+      req.body ?? {};
     // The chat's own name — the title in the header. An empty name is stored as
     // "no name", which is what makes the header fall back to the creation date.
     if (name !== undefined) {
@@ -96,6 +97,16 @@ export function createChatsRouter(
       chat.characterIds = ids;
     }
     if (modelId !== undefined) chat.modelId = modelId;
+    // The vision model of this chat (the one that describes pictures). An empty
+    // pick is a real choice: it means "no own vision model — use the chat's
+    // model, or the first one that can see". A key the config does not know is
+    // dropped on the next read (ensureVisionModelId), so a hand-written body
+    // cannot leave the chat pointing at a model that is not there.
+    if (visionModelId !== undefined) {
+      const t = typeof visionModelId === "string" ? visionModelId.trim() : "";
+      if (t) chat.visionModelId = t;
+      else delete chat.visionModelId;
+    }
     // Switching the active persona: old messages stay under their former
     // authors — the author is stored on every message.
     if (userId !== undefined) chat.userId = userId;

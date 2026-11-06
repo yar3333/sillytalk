@@ -411,6 +411,12 @@ test('UX 09: attachments — preview, remove, send as a picture card', async ({ 
   await expect(page.locator('.msg.user').first()).toContainText('Look at this picture');
   const card = page.locator('.msg.user').filter({ has: page.getByTestId('image-card') });
   await expect(card.locator('img').first()).toBeVisible({ timeout: 15000 });
+  // The vision model captions the picture by itself: the card's line is what a
+  // chat model that cannot see is told about it in the history.
+  await expect(card.first().getByTestId('card-caption')).toContainText(
+    'described by the mock model',
+    { timeout: 15000 },
+  );
   await page.screenshot({ path: `${SHOTS}/ux-09b-image-sent.png` });
   await expect(assistantMsgs(page).first()).toBeVisible({ timeout: 15000 });
   await expect(page.getByTestId('typing')).toBeHidden({ timeout: 15000 });
@@ -823,6 +829,61 @@ test('UX 18: the picture style of the chat is drawn into every picture', async (
   expect(drawn).toHaveLength(1);
   expect(drawn[0].split('Style:').length - 1).toBe(1);
   await page.screenshot({ path: `${SHOTS}/ux-18b-regenerated-once.png` });
+});
+
+// The vision model: the chat talks with one model and lets another one look at
+// pictures. The 👁 next to the model chip names the model that will really look
+// (a hover hint, it has no room for a name) and its menu picks one.
+test('UX 19: the vision model of the chat (the 👁 chip)', async ({ page }) => {
+  // A second model that cannot see, next to the vision-capable chat model.
+  const cfg = (await api('/config')) as Record<string, unknown> & {
+    llmModels: Record<string, unknown>;
+  };
+  await api('/config', 'PUT', {
+    ...cfg,
+    llmModels: {
+      ...cfg.llmModels,
+      'blind model': {
+        id: 'blind',
+        baseUrl: llm?.baseUrl ?? 'http://127.0.0.1:0/v1',
+        contextSize: 8192,
+        supportsImages: false,
+      },
+    },
+  });
+  await setDelay(100);
+  await openApp(page);
+
+  // Nothing is picked: the chat model can see, so it does both jobs.
+  const chip = page.getByTestId('vision-chip');
+  await expect(chip).toBeVisible();
+  await expect(chip).toHaveAttribute('title', /Pictures are described by: mock model/);
+
+  // The menu lists every llm model plus the default row.
+  await chip.click();
+  await expect(page.getByTestId('vision-option-default')).toBeVisible();
+  const options = page.getByTestId('vision-option');
+  await expect(options).toHaveText([/mock model/, /blind model/]);
+  await page.screenshot({ path: `${SHOTS}/ux-19a-vision-menu.png` });
+
+  // A model that cannot see is an explicit choice — the hint says so instead of
+  // pretending the pictures will be described.
+  await options.filter({ hasText: 'blind model' }).click();
+  await expect(chip).toHaveAttribute('title', /blind model" cannot see pictures/);
+  await expect(chip).toHaveClass(/missing/);
+  await page.screenshot({ path: `${SHOTS}/ux-19b-blind-pick.png` });
+
+  // Back to the default: the chat model looks again.
+  await chip.click();
+  await page.getByTestId('vision-option-default').click();
+  await expect(chip).not.toHaveClass(/missing/);
+  await expect(chip).toHaveAttribute('title', /mock model/);
+
+  // The pick is stored on the chat, not in the browser.
+  const chatId = ((await api('/chats')) as Array<{ id: string }>)[0]?.id;
+  expect(chatId).toBeTruthy();
+  const chat = (await api(`/chats/${chatId}`)) as Record<string, unknown>;
+  expect(chat.visionModelId).toBeUndefined();
 });
 
 // The collected issues are attached to every test run as a JSON artifact.

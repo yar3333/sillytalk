@@ -7,6 +7,7 @@ import { ChatMessage } from "../chats/ChatMessage";
 import { ChatsService } from "../chats/ChatsService";
 import { Config } from "../configuration/Config";
 import { ConfigurationService } from "../configuration/ConfigurationService";
+import { LlmModel } from "../configuration/LlmModel";
 import { Model } from "../configuration/Model";
 import { ImageGenerationService } from "../image_generation/ImageGenerationService";
 import { ImageJob } from "../image_generation/ImageJob";
@@ -33,15 +34,32 @@ function model(): Model {
   };
 }
 
-// The config is stubbed: the reply flow reads it only for the model
-// resolution (resolveChatModel) — no real config.json is involved. `vision`
-// turns the one model into one that can see pictures (the describe tests).
+// An llmModels entry beside m1, for the tests that need a second model — a
+// vision model next to the blind chat model of the vision tests.
+function llmModel(name: string, supportsImages: boolean): LlmModel {
+  const base = model();
+  return {
+    id: name,
+    baseUrl: base.baseUrl,
+    contextSize: base.contextSize,
+    supportsImages,
+    reasoning: base.reasoning,
+    reasoningLevels: base.reasoningLevels,
+  };
+}
+
+// The config is stubbed: the reply flow reads it only for the model resolution
+// (resolveChatModel / resolveVisionModel) — no real config.json is involved.
+// `vision` turns the one model into one that can see pictures (the describe
+// tests); `extra` adds entries next to m1 (a chat model that is blind plus a
+// model that is not, which is what the vision pick is for).
 class StubConfigurationService extends ConfigurationService {
   vision = false;
+  extra: Record<string, LlmModel> = {};
   loadConfig(): Config {
     return {
       listen: "127.0.0.1:3210",
-      llmModels: { m1: { ...model(), supportsImages: this.vision } },
+      llmModels: { m1: { ...model(), supportsImages: this.vision }, ...this.extra },
       imageGenerators: [],
     };
   }
@@ -101,14 +119,22 @@ class StubTextGeneration extends TextGenerationService {
   tuneInput: string | null = null;
   description = "a small red boat on a calm lake";
   describeInput: { imageId?: string; dataUrl?: string } | null = null;
+  // The model that was handed to the last describe call: the vision tests check
+  // that the chat's pick, not its chat model, is what looked at the picture.
+  describeModel: string | null = null;
+  describeFails = false;
+  describeGate: Promise<void> = Promise.resolve();
 
   async tunePrompt(_model: Model, text: string): Promise<string> {
     this.tuneInput = text;
     return this.tunedPrompt;
   }
 
-  async describePicture(_model: Model, input: { imageId?: string; dataUrl?: string }): Promise<string> {
+  async describePicture(model: Model, input: { imageId?: string; dataUrl?: string }): Promise<string> {
     this.describeInput = input;
+    this.describeModel = model.name;
+    await this.describeGate;
+    if (this.describeFails) throw new Error("the vision model did not answer");
     return this.description;
   }
 }
@@ -257,6 +283,16 @@ function chatWithCard(opts: { prompt?: string; refs?: string[]; status?: "pendin
   });
   const fresh = chats.get(chat.id)!;
   return { chat: fresh, message: fresh.messages[1], image };
+}
+
+// A chat with an attached picture the user gave no description to (the 📎
+// flow): the card has an empty caption and no prompt — nothing to redraw from.
+function chatWithUpload(): { chat: Chat; message: ChatMessage } {
+  const chat = newChat();
+  const image = chats.reservedImageId(chat.id, "a photo");
+  chats.addImageMessage(chat, image, { generation: { source: "upload" } });
+  const fresh = chats.get(chat.id)!;
+  return { chat: fresh, message: fresh.messages[1] };
 }
 
 describe("appendAssistantReply", () => {
@@ -1007,8 +1043,112 @@ describe("the picture editor's LLM helpers", () => {
     expect(textGeneration.describeInput).toEqual({ dataUrl: "data:image/png;base64,aGVsbG8=" });
 
     configuration.vision = false;
-    await expect(reply.describePicture(chat.id, { imageId: "a.png" })).rejects.toThrow(/cannot see pictures/);
+    await expect(reply.describePicture(chat.id, { imageId: "a.png" })).rejects.toThrow(
+      /No model that can see pictures/,
+    );
     expect(await reply.describePicture("nope", { imageId: "a.png" })).toBeNull();
+  });
+});
+
+// Which model looks at pictures: the chat's own pick, else its chat model when
+// that can see, else the first model of the config that can.
+describe("the vision model of the chat", () => {
+  it("describes pictures with the chat's own model when it can see", async () => {
+    configuration.vision = true;
+    const { chat } = chatWithCard();
+    await reply.describePicture(chat.id, { imageId: "a.png" });
+    expect(textGeneration.describeModel).toBe("m1");
+  });
+
+  it("describes pictures with a model that can see when the chat model cannot", async () => {
+    // no pick yet: the first vision-capable model of the config takes the job,
+    // so a roleplay model without vision still gets its cards described
+    configuration.extra = { seer: llmModel("seer", true) };
+    const { chat } = chatWithCard();
+    expect(await reply.describePicture(chat.id, { imageId: "a.png" })).toBe("a small red boat on a calm lake");
+    expect(textGeneration.describeModel).toBe("seer");
+  });
+
+  it("describes pictures with the model the chat picked", async () => {
+    configuration.extra = { seer: llmModel("seer", true), other: llmModel("other", true) };
+    const { chat } = chatWithCard();
+    const picked = chats.get(chat.id)!;
+    picked.visionModelId = "other";
+    chats.save(picked);
+    await reply.describePicture(chat.id, { imageId: "a.png" });
+    expect(textGeneration.describeModel).toBe("other");
+  });
+
+  it("says plainly that a picked model cannot see, instead of silently using another", async () => {
+    configuration.extra = { seer: llmModel("seer", true) };
+    const { chat } = chatWithCard();
+    const picked = chats.get(chat.id)!;
+    picked.visionModelId = "m1";
+    chats.save(picked);
+    await expect(reply.describePicture(chat.id, { imageId: "a.png" })).rejects.toThrow(/"m1" cannot see pictures/);
+    expect(textGeneration.describeModel).toBeNull();
+  });
+});
+
+// The caption of an attached picture: written by the vision model, never over
+// the user's own words, and never an error when it cannot happen.
+describe("captionPicture", () => {
+  it("writes the caption of an attached picture that has none", async () => {
+    configuration.extra = { seer: llmModel("seer", true) };
+    const { chat, message } = chatWithUpload();
+    const out = await reply.captionPicture(chat.id, message.id);
+    expect(out?.messages[1].text).toBe("a small red boat on a calm lake");
+    expect(textGeneration.describeModel).toBe("seer");
+    // the file next to the picture is the portable copy — it carries the
+    // caption too, so a hand edit and the app read the same thing
+    expect(ImageMetaFile.read(PathHelper.resolveImageId(out!.messages[1].images[0])!)).toMatchObject({
+      description: "a small red boat on a calm lake",
+    });
+    // and it survives a re-read: the sidecar is what wins there
+    expect(chats.get(chat.id)!.messages[1].text).toBe("a small red boat on a calm lake");
+  });
+
+  it("never overwrites a caption the user gave — the model is not even asked", async () => {
+    configuration.extra = { seer: llmModel("seer", true) };
+    const { chat, message } = chatWithCard();
+    const out = await reply.captionPicture(chat.id, message.id);
+    expect(out?.messages[1].text).toBe("a red fox in the snow");
+    expect(textGeneration.describeModel).toBeNull();
+  });
+
+  it("leaves the card alone when nothing in the config can see", async () => {
+    const { chat, message } = chatWithUpload();
+    const out = await reply.captionPicture(chat.id, message.id);
+    expect(out?.messages[1].text).toBe("");
+    expect(textGeneration.describeModel).toBeNull();
+  });
+
+  it("leaves the card alone when the vision model fails — an unlabelled picture is not an error", async () => {
+    configuration.extra = { seer: llmModel("seer", true) };
+    textGeneration.describeFails = true;
+    const { chat, message } = chatWithUpload();
+    const out = await reply.captionPicture(chat.id, message.id);
+    expect(out?.messages[1].text).toBe("");
+  });
+
+  it("keeps the caption the user typed while the model was looking", async () => {
+    configuration.extra = { seer: llmModel("seer", true) };
+    const { chat, message } = chatWithUpload();
+    const g = gate();
+    textGeneration.describeGate = g.promise;
+    const run = reply.captionPicture(chat.id, message.id);
+    await tick();
+    chats.setMessageText(chat.id, message.id, "my own words");
+    g.release();
+    const out = await run;
+    expect(out?.messages[1].text).toBe("my own words");
+  });
+
+  it("returns null when the chat is gone", async () => {
+    configuration.extra = { seer: llmModel("seer", true) };
+    const { chat, message } = chatWithUpload();
+    chats.delete(chat.id);
+    expect(await reply.captionPicture(chat.id, message.id)).toBeNull();
   });
 });
 

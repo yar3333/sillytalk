@@ -164,6 +164,51 @@
   text-overflow: ellipsis;
 }
 
+/* The vision model of the chat (the 👁 right of the model chip). A compact
+   round pill like the model chip, so it reads as a control; its name lives in
+   the hover hint (title) — the chip has no room for it, and the header is
+   about the chat's own model. */
+.vision-wrap {
+  position: relative;
+  display: flex;
+  flex: none;
+}
+.vision-wrap .dropdown {
+  right: 0;
+}
+.vision-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border-2);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.vision-chip:hover {
+  border-color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+}
+/* nothing in the config can look at pictures: the button stays (it is how a
+   model is picked) but does not look like it would work right now */
+.vision-chip.missing {
+  opacity: 0.45;
+}
+.vision-dropdown {
+  width: 280px;
+}
+.vision-dropdown .opt-toggle {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .dots {
   background: transparent;
   border: none;
@@ -332,15 +377,34 @@
 /* The "Chat: <date>" label is the chat-menu trigger, so it stays visible on
    every screen size (the names and the model ellipsize instead). */
 
-/* Narrow screens: the participant / persona names must NOT collapse to zero
-   width — their menus are the only way to manage the chat on a phone. Give
-   each name a minimum width (with ellipsis) and let the chat date yield room
-   (it still opens the chat menu, just with a shorter label). */
+/* Narrow screens: the space is counted in pixels here — the names, the chat
+   date, the model chip and the 👁 all have to stay reachable. Every zone keeps
+   its own dropdown, so the rule is: the names and the model chip ellipsize, the
+   chat date keeps its ⋮, nothing shrinks below a tappable width and nothing
+   paints over its neighbour. */
 @media (max-width: 640px) {
+  .topbar {
+    padding: 12px 10px;
+    gap: 8px;
+  }
   .char-name,
   .user-name {
-    max-width: 30vw;
+    max-width: 26vw;
     min-width: 44px;
+  }
+  /* a name wrapper must not shrink below its name, or the two names overlap
+     each other ("AliCarol") */
+  .name-wrap {
+    min-width: 44px;
+  }
+  /* a last-resort guard: if the zone still cannot fit, the names are clipped
+     rather than painted over the date */
+  .who {
+    overflow: hidden;
+  }
+  .ident {
+    flex: 1 1 auto;
+    min-width: 0;
   }
   .chat-date {
     min-width: 0;
@@ -348,7 +412,25 @@
     text-overflow: ellipsis;
     max-width: 34vw;
   }
-  .ident {
-    flex: 1 1 auto;
+  .chat-date-label {
+    max-width: 18vw;
+  }
+  .chat-dots-wrap {
+    margin-left: 6px;
+  }
+  .model-chip {
+    max-width: 18vw;
+  }
+  .vision-chip {
+    width: 24px;
+  }
+  .top-right {
+    gap: 4px;
+  }
+  /* the two ⋮ buttons lose 8px each — the room the 👁 needs;
+     still a comfortable target */
+  .dots {
+    padding: 0 5px;
+    font-size: 22px;
   }
 }

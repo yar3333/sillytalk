@@ -40,7 +40,9 @@ backend/               Express API; also serves the built frontend
                        user's turn, reused as the editor's "From the chat") —
                        all on the one requestCompletion;
                        resolveModel (the chat's model by llmModels key with
-                       the first-model fallback); the system prompt (which now
+                       the first-model fallback) and resolveVisionModel (the
+                       model that looks at pictures: the chat's pick, else its
+                       own model when it can see, else the first that can); the system prompt (which now
                        says the model itself cannot attach or draw pictures),
                        the [SILENT] marker, author labels, the text description
                        of a card in a history line, history trimming;
@@ -74,7 +76,9 @@ backend/               Express API; also serves the built frontend
                        image.routes.ts — the /image routes (the availability
                        flag + the ComfyUI model list + the manual generation +
                        the picture editor's catalog and LLM helpers:
-                       /pictures, /prompt, /tune-prompt, /describe);
+                       /pictures, /prompt, /tune-prompt, /describe, and
+                       /caption — the caption the vision model writes into an
+                       attached card that has none);
                        ImageGenerationService.test.ts —
                        jest unit tests (an in-file mock ComfyUI server:
                        the PARAM_* substitution, the workflow per reference
@@ -106,7 +110,9 @@ backend/               Express API; also serves the built frontend
                        files/ folder copied, every image id and sidecar ref
                        repointed at the copy's folder),
                        the format guards, the model
-                       fallback, the chat files (saveImage with an English
+                       fallback (and the vision pick — Chat.visionModelId is
+                       dropped when the model it names leaves the config),
+                       the chat files (saveImage with an English
                        name hint, reservedImageId, importImage,
                        importCharacterPhoto, normalizeImages — every picture is
                        addressed by its data-root-relative ID, never by an
@@ -177,8 +183,9 @@ backend/               Express API; also serves the built frontend
                        kind "generated"|"file", replaceImage, cancelImage) and
                        the editor's LLM helpers (planPicturePrompt — the prompt
                        from the dialogue, tunePicturePrompt — English + shaped
-                       for the generator, describePicture — a vision caption);
-                       DI token
+                       for the generator, describePicture — a vision caption,
+                       captionPicture — the caption of an attached card, written
+                       by the chat's vision model); DI token
                        DI_REPLY_SERVICE, the six domain services injected) and
                        ReplyService.test.ts — jest unit tests
     shared/            small cross-domain helpers as stateless classes with
@@ -220,8 +227,11 @@ frontend/              Angular app
                        image-gen availability, settings dialog, the entity edit
                        dialogs (entityDialog + model/character/user CRUD), loadAll()
     chat-store.ts      ChatStore: current chat + chat list — messages, send
-                       (send/saveEdit), the 📎 attachments (pendingImages), the
-                       isUserTurn flag (when the 📷 button belongs), edit,
+                       (send/saveEdit), the 📎 attachments (pendingImages) and
+                       their auto-caption (captionAttachments →
+                       POST /image/caption), the isUserTurn flag (when the 📷
+                       button belongs), the vision model (visionModel /
+                       selectVisionModel — the header's 👁), edit,
                        chat mgmt (incl. the chatTitle and the clone),
                        new-chat dialog
     image-store.ts     ImageStore: image GENERATION — genMode/genRefs/generating,
@@ -479,6 +489,23 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   generator per GPU; the ComfyUI server needs the models of the workflow installed (the
   `picgen-install-comfyui` script of the `d:\MyDocs\AiPic\generators` folder the workflows were
   ported from sets such a server up — it is not part of this app).
+- **One model talks, another one looks (`Chat.visionModelId`).** The model that runs the replies
+  does not have to be the one that sees: a chat can name a second llmModels entry that describes its
+  pictures. `TextGenerationService.resolveVisionModel` is the rule, and it is mirrored on the
+  frontend (`ChatStore.visionModel`): the chat's pick wins — even when it cannot see, so the banner
+  can say "«x» cannot see pictures" instead of silently using another model — else the chat's own
+  model when it `supportsImages`, else the first vision-capable model of the config (a roleplay
+  model with no vision still gets its cards described). Nothing configured that can see → the
+  `"Describe the picture"` call answers a 400 with that sentence. The pick is set by the 👁 chip of
+  the header (`PATCH /api/chats/:id`, body `{ visionModelId }`; an empty value is a real choice and
+  goes back to the default) and a key whose model is gone is dropped by `ChatsService` on read.
+  What uses it: the editor's `POST /api/image/describe`, and the caption of an attached picture —
+  `ChatStore.send` calls `POST /api/image/caption` `{ chatId, messageId }` for every 📎 card that
+  has no caption (`ReplyService.captionPicture`), which writes the vision model's sentence into the
+  card's `text` AND its sidecar; an empty caption, a chat with nothing that can see and a model that
+  failed all leave the card as it is (no error banner — an unlabelled picture is a normal state).
+  That caption is what a chat model without vision reads about the picture in the history and what
+  the 📷 planner reads in its catalogue, so it is not decoration.
 - **Pictures belong to the user; the model is text-only.** There is no `[IMG:…]` /
   `[PHOTO:…]` protocol and no `accessAllImages` flag anymore: `systemPromptFor` states plainly that
   the character cannot send or create images. A picture enters a chat in exactly three ways, and all
@@ -723,7 +750,12 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   "+ New character" button), active persona (opens the persona menu — click switches the active
   persona, ✎ edit icon per item, "+ New persona"), model chip (opens the **model menu** — the model
   pick, ✎ edit icon per item, "+ New model"; the chip is the ONLY model picker — the "⋮" menu has no
-  model submenu), the **chat title** label (the chat's own `name`, or the date it was created while
+  model submenu), then the **vision chip** — a small round 👁 right of the model chip (opens the
+  **vision menu**: a "Default" row plus every llm model, each marked `(👁)` when it can see, ✎ per
+  row; single-select — the active row is highlighted). The chip carries no name of its own: the
+  model that will really look is its hover hint (`ChatStore.visionModelTitle`, e.g. "Pictures are
+  described by: qwen-vl"; a pick that cannot see says so, and the chip is dimmed —
+  `.vision-chip.missing`). The **chat title** label (the chat's own `name`, or the date it was created while
   it has no name — `ChatStore.chatTitle` / `helpers.chatTitleOf`; clickable — opens the **chat menu**:
   new chat + the chat list; wider than the usual dropdown, centered under the label, always visible;
   a long name gets an ellipsis) with a
@@ -833,7 +865,13 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   with the 🎨 prompt box, the edit mode, or a turn that already has the user's message in it. One
   click adds the placeholder card and the button steps back (the card is the user's message now, so
   it is the characters' turn); the planning and the drawing happen behind the placeholder.
-- Responsive for both desktop and phone.
+- Responsive for both desktop and phone. The header is the tight spot (names + date + model + 👁 +
+  two ⋮) and its narrow-screen rules in `top-bar.scss` are a measured budget, not a guess: the names
+  keep 44px each (`.name-wrap` must not shrink below its name, or the two names paint over each
+  other), the chat-date label and the model chip ellipsize to 18vw, the 👁 is 24px, the ⋮ buttons
+  drop to 22px/5px padding and the side padding is 10px — that is what makes the row fit a 390px
+  phone. Adding another header control means measuring again (a headless Chromium + getBoundingClientRect
+  of the zones); the e2e UX 15 test fails loudly if the names stop being clickable.
 
 ## Architecture notes
 
@@ -1050,7 +1088,10 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
 - `beforeEach` also creates the catalog via the API (`PUT /persons`: Carol + Dave;
   `PUT /characters`: Alice + Bob) and clears all chats so each test opens a fresh empty chat.
 - Selectors are `data-testid` attributes: `char-name` (joined participant names; click opens the
-  participants menu), `model-chip` (click opens the model menu), `menu`,
+  participants menu), `model-chip` (click opens the model menu), `vision-chip` (the 👁 — its title
+  names the vision model, `class="missing"` when that model cannot see; click opens the vision menu:
+  `vision-option-default` "Default", `vision-option` per model, `vision-option-row` the row,
+  `vision-edit` its ✎), `menu`,
   `char-option` (a participants-menu row: `.opt-toggle` toggles membership, `.opt-mark` shows
   ● in-chat / ○ out), `model-option` (a model-menu row opened by the chip),
   `char-edit`/`user-edit`/`model-edit` (the ✎ row icons), `new-character`/`new-persona`/`new-model`

@@ -150,13 +150,9 @@ export function createImageRouter(
         res.status(400).json({ error: "Expected a picture data URL" });
         return;
       }
-      const model = reply.resolveChatModel(chat);
-      if (!model) {
-        res.status(400).json({ error: "No model configured for the chat" });
-        return;
-      }
-      if (!model.supportsImages) {
-        res.status(400).json({ error: "The chat's model cannot see pictures — choose a model that supports images" });
+      const model = reply.resolveVisionModel(chat);
+      if (!model || !model.supportsImages) {
+        res.status(400).json({ error: ReplyService.noVisionMessage(model) });
         return;
       }
       const description = await reply.describePicture(chat.id, {
@@ -168,6 +164,31 @@ export function createImageRouter(
         return;
       }
       res.json({ description });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Writes the caption of a picture card the user attached without one (the 📎
+  // flow calls this right after saving the message, so the picture gets a line
+  // the chat model can read even when it cannot see). A card that already has a
+  // caption, a chat with nothing to look with and a model that could not answer
+  // all leave the card as it is — and the answer is the current chat either way,
+  // so the client just applies it. An unlabelled picture is a normal state, not
+  // a failed request, so this route has no error path of its own.
+  router.post("/caption", async (req, res) => {
+    try {
+      const { chatId, messageId } = req.body ?? {};
+      if (typeof chatId !== "string" || typeof messageId !== "string") {
+        res.status(400).json({ error: "chatId and messageId are required" });
+        return;
+      }
+      const chat = await reply.captionPicture(chatId, messageId);
+      if (!chat) {
+        res.status(404).json({ error: "Chat not found" });
+        return;
+      }
+      res.json({ chat });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }
