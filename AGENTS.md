@@ -605,14 +605,15 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   `finishPlan`).** The generator has never heard of Alice or Carol, so a name in a prompt buys
   nothing and a person the model has to guess gets a new face every time. The cast layer fixes both:
   - **Who is offered:** `pictureMaterial` builds the cast from the chat's characters, its active
-    persona and every persona that ever spoke here. Each member carries a **look** — `Character.look`
-    / `Person.look` (English, written for the generator; the card dialog's *Appearance* field, and
-    `POST /api/characters/:id/look` / `POST /api/persons/:id/look` write it from the person's own
-    pictures with `TextGenerationService.describeLook`, or from the card text with `extractLook` when
-    there is nothing to look at) and, as **anchors**, up to two of their actual pictures: newest first
-    a card of THIS chat that depicts them, else `characters/<id>/photos/*` and the avatar. The planner
-    is told `char:alice — Alice: <look> (shown on picture 2)` and answers with the cast ids the
-    picture shows plus the 2–4 word noun phrase it used for each (`subjects`).
+    persona and every persona that ever spoke here. Each member carries a **look** — the card's
+    `description`, which is where the user writes the appearance ("tall, short red hair, always in a
+    green coat") together with the personality, capped at 400 characters by
+    `ReplyService.visualLine` so one long card cannot eat the planning prompt — and, as **anchors**,
+    up to two of their actual pictures: newest first a card of THIS chat that depicts them, else
+    `characters/<id>/photos/*` and the avatar. The planner is told `char:alice — Alice: <look>
+    (shown on picture 2)` and answers with the cast ids the picture shows plus the 2–4 word noun
+    phrase it used for each (`subjects`). The anchors are what really carries a face; the look line
+    is all the generator gets of a person who has no picture anywhere.
   - **What reaches the generator:** `finishPlan` assembles the references itself — the cast anchors
     first (a face beats a place), then the pictures the model picked, deduped and cut to
     `ImageGenerationService.maxReferenceCount()` — appends the binding sentence `Reference images:
@@ -623,9 +624,9 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
     (`ComfyUiDriver` keeps it — `PARAM_STRING_INPUT_IMAGE_FILENAME_1`/`_2`).
   - **What is remembered:** the people on a picture are stored in its row of the
     images table as `depicts: ["char:alice", "user:carol"]` (`ChatsService.setMessageDepicts` /
-    `editImageCard`, read back by `applyImageMeta`), and the picture's own description doubles as
-    the look of the person it depicts when they have no `look` of their own. That record is what
-    lets the next picture of the same chat draw the same woman instead of a stranger.
+    `editImageCard`, read back by `applyImageMeta`). That record is what offers the card as the
+    person's anchor in the next plan, so the next picture of the same chat draws the same woman
+    instead of a stranger.
 - **One look per conversation (`Chat.stylePrompt`).** The chat-settings dialog's *Picture style*
   field is appended to every generation prompt of that chat as `Style: …` — the auto plan, a gen-mode
   draw and a regeneration alike (`ReplyService.withChatStyle`, which skips a prompt that already
@@ -748,11 +749,9 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   `generation.prompt`), so the caption line and the hover hint show it.
 - **Characters are NOT in the config.** Each character is a folder
   `~/.config/sillytalk/characters/<id>/`: the folder name IS the character id, `character.json` holds
-  `{ name, description, look? }` (`look` = the 1–2 English sentences the picture planner puts in
-  every prompt that shows her; the character dialog's *Appearance* field, and
-  `POST /api/characters/:id/look` → `{ look }` writes it from `photos/` + the avatar with a vision
-  model, or from the card text when there are no pictures — the answer lands in the field and the
-  user saves it),
+  `{ name, description }` — the **one** description is the whole card, the appearance included
+  (English, since the picture planner reads the visual line out of it for every prompt that shows
+  her; a card has no appearance field of its own),
   `photos/` is the fixed "starter" photo set (computed by
   `characterPhotosDir(id)`), and `avatar.jpg` is the character avatar shown next to its messages.
   The photos and the avatar are ordinary pictures of a character folder, so they can be addressed by
@@ -765,12 +764,11 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   folders at startup (`index.ts`) and stripped by `PUT /api/config` — do not reintroduce a
   `characters` array in the config.
 - **Users are NOT in the config either.** Each person (persona card) is a folder
-  `~/.config/sillytalk/users/<id>/` with `user.json` holding `{ name, description, look? }` and
-  `avatar.jpg`
-  (persona avatar, shown next to user messages; `look` and the persona dialog's *Appearance* field
-  work exactly as for a character, `POST /api/persons/:id/look` → `{ look }` writing it from the
-  avatar — the persona appears in the picture cast of the chat too, so a persona with no look and no
-  avatar is the one case the model has to invent a face from). CRUD lives in `persons/PersonsService.ts` (the
+  `~/.config/sillytalk/users/<id>/` with `user.json` holding `{ name, description }` (the description
+  is the whole card, the appearance included, exactly as for a character) and `avatar.jpg`
+  (persona avatar, shown next to user messages — the persona appears in the picture cast of the chat
+  too, so a persona whose card says nothing visual and whose avatar is missing is the one case the
+  model has to invent a face from). CRUD lives in `persons/PersonsService.ts` (the
   domain concept in the code is `person`/`persons`, type `Person`); `GET/PUT /api/persons` mirror the
   character endpoints — the `users` JSON body/response fields, the `userId` fields and the on-disk
   layout (`users/`, `user.json`) stay "user"-named. There is **no selected/current user** in the
@@ -934,12 +932,11 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   points at — it never draws: redrawing stays the card's ↻ (shown only when there is a prompt). The
   dialog is destroyed/re-initialized per card, so it always reads the card from the store, and it
   closes itself when the card is gone.
-- **The character/persona dialogs carry the look.** Below the description sits *Appearance*
-  (`char-look-input` / `user-look-input`, English) with a **Fill from photos** button
-  (`char-look-fill` / `user-look-fill`) that calls `POST /api/{characters,persons}/:id/look` and puts
-  the answer in the field — the user saves it (and may fix it). A new card with no folder yet has no
-  button: there is nothing on disk to look at. The hint under the field says why: the generator has
-  never heard the name, it draws this text and the reference pictures.
+- **A character/persona card has no appearance field.** The dialogs carry name, description, the
+  avatar and Delete/Clone only — the description is the single text the picture planner reads for the
+  look (see the cast bullet), so a user who wants the same face in every picture writes it into the
+  description, in English. The hint under the field says why: the generator has never heard the name,
+  it draws this text and the reference pictures.
 - **The picture browser (the ⋮ menu → "Pictures")** is the chat-independent view of every picture of
   the data folder (`PictureLibraryStore` + `picture-library` component, a wide two-pane modal). The
   left pane is a filterable thumbnail list of all pictures (`GET /api/pictures`, newest file first; a
@@ -1237,8 +1234,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   chip) and `picture-ref-add` (the `<select>` of catalog ids), the `picture-id-input` with
   `picture-rename` (disabled until the id differs) / `picture-reset` / `picture-save`. The entity dialogs: `character-dialog`/`user-dialog`/
   `model-dialog` + `char-name-input`/`user-name-input`/`model-name-input`/`model-id-input` and
-  `char-save`/`char-clone`/`char-delete` (the `user-*`/`model-*` analogues); the character/persona
-  dialogs have `char-look-input` + `char-look-fill` (`user-look-input` + `user-look-fill`) and the
+  `char-save`/`char-clone`/`char-delete` (the `user-*`/`model-*` analogues); the
   model dialog also
   has `model-reasoning-select` + `model-reasoning-levels-input`. The per-chat dialog:
   `chat-settings-dialog` + `chat-name-input` +

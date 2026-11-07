@@ -41,36 +41,13 @@ import { UiStore } from '../../services/ui-store';
       </label>
       <textarea
         rows="4"
-        placeholder="Description / system prompt"
+        placeholder="Description / system prompt — the appearance of the character included, in English: the picture planner reads it out of this text"
         [value]="description()"
         (input)="setDescription($event)"
       ></textarea>
-      <label class="field col">
-        <span>Appearance</span>
-        <textarea
-          rows="3"
-          data-testid="char-look-input"
-          placeholder="How they look, in English — hair, eyes, build, usual clothes. Written into every picture prompt, so the drawings keep one face."
-          [value]="look()"
-          (input)="setLook($event)"
-        ></textarea>
-      </label>
-      @if (!isNew()) {
-        <div class="row-actions">
-          <button
-            class="btn"
-            data-testid="char-look-fill"
-            [disabled]="lookFilling()"
-            (click)="fillLookFromPhotos()"
-            title="Read the appearance from this character's photos and avatar"
-          >
-            {{ lookFilling() ? 'Looking at the photos…' : 'Fill from photos' }}
-          </button>
-        </div>
-      }
       <div class="dialog-hint">
         The image generator has never heard this character's name — it draws what this text and the
-        reference pictures say.
+        reference pictures (photos and the avatar) say.
       </div>
       <div class="dialog-actions">
         @if (!isNew()) {
@@ -94,9 +71,6 @@ export class CharacterDialog implements OnInit {
 
   readonly name = signal('');
   readonly description = signal('');
-  readonly look = signal('');
-  // The "Fill from photos" request is in flight (the button says what it does).
-  readonly lookFilling = signal(false);
   readonly isNew = signal(true);
   readonly hasAvatar = signal(false);
   // A cache buster for the avatar preview after upload/removal.
@@ -112,7 +86,6 @@ export class CharacterDialog implements OnInit {
       if (c) {
         this.name.set(c.name);
         this.description.set(c.description);
-        this.look.set(c.look ?? '');
         this.hasAvatar.set(!!c.hasAvatar);
       }
     }
@@ -131,22 +104,6 @@ export class CharacterDialog implements OnInit {
   setDescription(e: Event): void {
     this.description.set((e.target as HTMLTextAreaElement).value);
   }
-  setLook(e: Event): void {
-    this.look.set((e.target as HTMLTextAreaElement).value);
-  }
-
-  // "Fill from photos": the model looks at this character's photo set and
-  // avatar and writes the appearance note. It lands in the field — the user
-  // saves it (and can fix it) themselves.
-  fillLookFromPhotos(): void {
-    if (this.isNew() || this.lookFilling()) return;
-    this.lookFilling.set(true);
-    this.api
-      .fillLook('character', this.id)
-      .then((res) => this.look.set(res.look))
-      .catch((e) => this.ui.error.set(String((e as Error).message)))
-      .finally(() => this.lookFilling.set(false));
-  }
 
   save(): void {
     const nm = this.name().trim();
@@ -154,7 +111,7 @@ export class CharacterDialog implements OnInit {
       this.ui.error.set('The name cannot be empty');
       return;
     }
-    this.configStore.saveCharacter(this.isNew() ? null : this.id, nm, this.description().trim(), this.look().trim());
+    this.configStore.saveCharacter(this.isNew() ? null : this.id, nm, this.description().trim());
     this.configStore.closeEntityDialog();
   }
 

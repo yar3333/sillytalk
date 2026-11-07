@@ -760,8 +760,7 @@ describe("requestUserTurnImage (the picture of the user's turn)", () => {
     characters.save({
       id: "alice",
       name: "Alice",
-      description: "A test character.",
-      look: "a tall woman with short red hair and a green coat",
+      description: "A tall woman with short red hair, always in a green coat.",
     });
     const photo = path.join(PathHelper.characterPhotosDir("alice"), "photo1.jpg");
     fs.writeFileSync(photo, "x");
@@ -778,11 +777,12 @@ describe("requestUserTurnImage (the picture of the user's turn)", () => {
     reply.requestUserTurnImage(chat.id);
     await flushJobs();
 
-    // the planner was told what she looks like and which picture shows her
+    // the planner was told what she looks like (the card text is the visual
+    // line of her cast entry) and which picture shows her
     expect(textGeneration.planInput?.cast.find((c) => c.ref === "char:alice")).toEqual({
       ref: "char:alice",
       name: "Alice",
-      look: "a tall woman with short red hair and a green coat",
+      look: "A tall woman with short red hair, always in a green coat.",
       anchors: [1],
     });
     const job = fake.started[0];

@@ -26,10 +26,6 @@ export interface Character {
   id: string;
   name: string;
   description: string;
-  // How the character looks, in English, written for the image generator (the
-  // generator has never heard their name). "Fill from photos" writes it from
-  // the character's photo set; the picture planner puts it into every prompt.
-  look?: string;
   photos?: string[]; // the character's "starter" photo set (🎨 reference picker)
   hasAvatar?: boolean; // is there a characters/<id>/avatar.*
 }
@@ -39,8 +35,6 @@ export interface User {
   id: string;
   name: string;
   description: string;
-  // The persona's appearance, as in Character.look.
-  look?: string;
   hasAvatar?: boolean; // is there a users/<id>/avatar.*
 }
 
@@ -286,14 +280,6 @@ export class ApiService {
   // the updated user list.
   cloneUser(id: string): Promise<{ id: string; users: User[] }> {
     return this.req<{ id: string; users: User[] }>(`/persons/${id}/clone`, { method: 'POST' });
-  }
-
-  // Writes the appearance note of a character / persona from their pictures
-  // (their photo set and avatar, or, with none to look at, from the card text).
-  // The answer goes into the dialog's Look field — the user saves it themselves.
-  fillLook(kind: 'character' | 'user', id: string): Promise<{ look: string }> {
-    const base = kind === 'user' ? '/persons' : '/characters';
-    return this.req<{ look: string }>(base + '/' + id + '/look', { method: 'POST' });
   }
 
   getChats(): Promise<ChatSummary[]> {

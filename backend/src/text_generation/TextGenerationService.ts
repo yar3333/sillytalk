@@ -468,57 +468,6 @@ export class TextGenerationService {
     };
   }
 
-  // ---- the look of a person ----
-
-  // Says what one person looks like, from their pictures (the character's
-  // photo set, an avatar): 1-2 English sentences a generator can draw from —
-  // face, hair, build, clothing. The app stores it as the person's "look" and
-  // puts it in every picture plan, so a person without a reference image still
-  // gets the same description twice in a row.
-  async describeLook(model: Model, files: string[], sampling?: ChatSampling): Promise<string> {
-    if (!model.supportsImages) {
-      throw new Error("No model that can see pictures is configured — describe the look in the card yourself");
-    }
-    const usable = files.filter((f) => fs.existsSync(f)).slice(0, 4);
-    if (usable.length === 0) throw new Error("No picture of this person to look at");
-    const parts: ContentPart[] = [
-      {
-        type: "text",
-        text:
-          "These pictures show the same person. Describe how this person looks, in 1-2 sentences of " +
-          "english: face, hair, build, clothing, anything that makes them recognisable. " +
-          "No name, no story, no preamble — an image generator reads this.",
-      },
-      ...usable.map((f) => ({ type: "image_url" as const, image_url: { url: TextGenerationService.imageDataUrl(f) } })),
-    ];
-    return (await this.requestCompletion(model, [{ role: "user", content: parts }], undefined, sampling)).trim();
-  }
-
-  // Pulls the appearance out of a character's or persona's text card when they
-  // have no picture to look at: the same 1-2 sentences, from the description
-  // alone. What the card does not say, the model may invent — it is a starting
-  // point the user edits in the dialog.
-  async extractLook(model: Model, name: string, description: string, sampling?: ChatSampling): Promise<string> {
-    return (
-      await this.requestCompletion(
-        model,
-        [
-          {
-            role: "system",
-            content:
-              "You write the appearance notes of a roleplay character for an image generator. " +
-              "Answer with 1-2 english sentences: face, hair, build, clothing, distinguishing details. " +
-              "Take what the card says, invent only what it leaves open, keep it consistent with it. " +
-              "No name, no personality, no preamble.",
-          },
-          { role: "user", content: `${name}\n${description}` },
-        ],
-        undefined,
-        sampling,
-      )
-    ).trim();
-  }
-
   // Pulls the JSON object out of a model answer (bare, in a ``` fence, or
   // wrapped in a sentence). Null when there is nothing readable in it.
   private static parseJsonPlan(text: string): Record<string, unknown> | null {

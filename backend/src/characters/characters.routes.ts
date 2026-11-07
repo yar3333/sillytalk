@@ -4,15 +4,12 @@ import { PathHelper } from "../shared/PathHelper";
 import { HttpHelper } from "../shared/HttpHelper";
 import { Character } from "./Character";
 import { CharactersService } from "./CharactersService";
-import { ReplyService } from "../reply/ReplyService";
 
 // The /characters routes: the catalog CRUD (the full-list sync), the clone,
 // the photo serving and the avatar. The domain logic lives in
 // CharactersService; this file is the thin HTTP layer (validation, status
-// codes, streaming). The reply service is here for one route: the appearance
-// note of a card is a model call, and the model calls live above the domain
-// services, not inside the catalog.
-export function createCharactersRouter(characters: CharactersService, reply: ReplyService): express.Router {
+// codes, streaming).
+export function createCharactersRouter(characters: CharactersService): express.Router {
   const router = express.Router();
 
   router.get("/", (_req, res) => {
@@ -43,7 +40,6 @@ export function createCharactersRouter(characters: CharactersService, reply: Rep
         id: c.id,
         name: typeof c.name === "string" ? c.name : c.id,
         description: typeof c.description === "string" ? c.description : "",
-        ...(typeof c.look === "string" && c.look.trim() ? { look: c.look.trim() } : {}),
       });
     }
     characters.sync(list);
@@ -69,27 +65,6 @@ export function createCharactersRouter(characters: CharactersService, reply: Rep
       return;
     }
     HttpHelper.sendImage(res, path.join(PathHelper.characterPhotosDir(character.id), path.basename(req.params.name)));
-  });
-
-  // ---- the look of the character ----
-
-  // Writes the appearance note from the character's photos (or, with no photos
-  // to look at, from their description). The answer is the text only: the
-  // dialog shows it in the field and the user saves it themselves — a face the
-  // model invented should not be written into a card behind their back.
-  router.post("/:id/look", async (req, res) => {
-    const id = String(req.params.id);
-    if (!characters.isValidId(id)) {
-      res.status(400).json({ error: "Invalid ID" });
-      return;
-    }
-    try {
-      res.json({ look: await reply.fillLook("character", id) });
-    } catch (err) {
-      const message = (err as Error).message;
-      const status = /not found/i.test(message) ? 404 : /model/i.test(message) ? 400 : 500;
-      res.status(status).json({ error: message });
-    }
   });
 
   // ---- avatar ----

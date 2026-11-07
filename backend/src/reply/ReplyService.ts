@@ -435,34 +435,38 @@ export class ReplyService {
       .reverse();
   }
 
+  // ---- the picture cast ----
+
   // The people a picture of this chat can show: the characters in it, the
   // active persona, and every persona that ever spoke here (a former one still
   // turns up in the story). Each carries the cast ref the plan answers with and
-  // the visual description the generator has to work from — the `look` field
-  // when the user wrote one, otherwise the card text, which the planner reads
-  // for the appearance in it.
+  // the visual description the generator has to work from — the card text,
+  // which the planner reads for the appearance in it.
   private pictureCast(chat: Chat): Array<{ ref: string; name: string; look?: string; id: string; kind: "char" | "user" }> {
     const ids = [...chat.characterIds];
     const personas = [...new Set([chat.userId, ...chat.messages.map((m) => m.userId)].filter((id): id is string => !!id))];
     const out: Array<{ ref: string; name: string; look?: string; id: string; kind: "char" | "user" }> = [];
     for (const id of ids) {
       const c = this.characters.get(id);
-      if (c) out.push({ ref: `char:${id}`, name: c.name, id, kind: "char", ...(this.lookText(c) ? { look: this.lookText(c)! } : {}) });
+      if (!c) continue;
+      const look = this.visualLine(c.description);
+      out.push({ ref: `char:${id}`, name: c.name, id, kind: "char", ...(look ? { look } : {}) });
     }
     for (const id of personas) {
       const p = this.persons.get(id);
-      if (p) out.push({ ref: `user:${id}`, name: p.name, id, kind: "user", ...(this.lookText(p) ? { look: this.lookText(p)! } : {}) });
+      if (!p) continue;
+      const look = this.visualLine(p.description);
+      out.push({ ref: `user:${id}`, name: p.name, id, kind: "user", ...(look ? { look } : {}) });
     }
     return out;
   }
 
-  // The visual line of a card: the dedicated look field first (it is written
-  // for a generator), otherwise the description, capped so one long card cannot
-  // eat the whole planning prompt.
-  private lookText(card: { look?: string; description: string }): string | undefined {
-    const look = card.look?.trim();
-    if (look) return look;
-    const text = card.description.trim();
+  // The visual line of a cast entry: the card text, capped so one long card
+  // cannot eat the whole planning prompt. A roleplay card mixes a personality
+  // with an appearance and the generator can only use the second half, so this
+  // line is a hint beside the reference pictures, not a description of a face.
+  private visualLine(description: string): string | undefined {
+    const text = description.trim();
     if (!text) return undefined;
     return text.length > 400 ? `${text.slice(0, 400)}…` : text;
   }
@@ -906,66 +910,6 @@ export class ReplyService {
     if (live.text.trim()) return fresh;
     this.chats.setMessageText(chatId, messageId, description);
     return this.chats.get(chatId) ?? fresh;
-  }
-
-  // ---- the look of a person ----
-
-  // Writes the appearance note of a character or a persona (the "Fill from
-  // photos" button of their dialog). The generator does not know these people
-  // by name, so this sentence is what a picture of them is drawn from when
-  // there is no reference image to copy — and it is the description the planner
-  // reuses in every scene they appear in.
-  //
-  // Their own pictures come first (a photo answers "what do they look like"
-  // better than any text); with nothing to look at, the appearance is pulled out
-  // of the card's description. The route answers the text, the user edits it in
-  // the dialog and saves — an invented face should not be written behind their
-  // back.
-  async fillLook(kind: "character" | "person", id: string): Promise<string> {
-    const card = kind === "character" ? this.characters.get(id) : this.persons.get(id);
-    if (!card) throw new Error(kind === "character" ? "Character not found" : "Persona not found");
-    const pictures: string[] = [];
-    if (kind === "character") {
-      const photos = PathHelper.characterPhotosDir(id);
-      try {
-        pictures.push(
-          ...fs
-            .readdirSync(photos)
-            .filter((f) => HttpHelper.isImage(f))
-            .sort()
-            .map((f) => path.join(photos, f)),
-        );
-      } catch {
-        // no photo set
-      }
-    }
-    const avatar = kind === "character" ? this.characters.findAvatar(id) : this.persons.findAvatar(id);
-    if (avatar) pictures.push(avatar);
-
-    if (pictures.length > 0) {
-      const seeing = this.visionModel();
-      if (!seeing) throw new Error("No model that can see pictures is configured");
-      return this.textGeneration.describeLook(seeing, pictures);
-    }
-    const description = card.description.trim();
-    if (!description) {
-      throw new Error(
-        kind === "character"
-          ? "This character has no photos and no description to take the appearance from — describe the look yourself"
-          : "This persona has no avatar and no description to take the appearance from — describe the look yourself",
-      );
-    }
-    const anyModel = this.configuration.listModels(this.configuration.loadConfig())[0];
-    if (!anyModel) throw new Error("No model configured");
-    return this.textGeneration.extractLook(anyModel, card.name, description);
-  }
-
-  // The first configured model that can see pictures — the one an appearance
-  // note is written from a photo with. A card belongs to no chat, so there is no
-  // per-chat model to ask; the config order is the user's own ranking.
-  private visionModel(): Model | null {
-    const config = this.configuration.loadConfig();
-    return this.configuration.listModels(config).find((m) => m.supportsImages) ?? null;
   }
 
   // The visible error line of a failed model call: appended as an assistant

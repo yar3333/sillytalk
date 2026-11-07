@@ -3,9 +3,7 @@
 export type Person = {
   id: string;
   name: string;
+  // The whole card, the appearance included: the picture planner reads the
+  // visual line out of it, because the generator has never heard the name.
   description: string;
-  // How this persona looks, in English, written for an image generator (the
-  // picture planner puts it in every prompt — the generator has never heard the
-  // name). Absent — the planner has only the description and the avatar.
-  look?: string;
 };

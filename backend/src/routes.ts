@@ -60,8 +60,8 @@ export function createApiRouter(
   });
 
   apiRouter.use("/config", createConfigRouter(configuration, characters, imageGeneration));
-  apiRouter.use("/characters", createCharactersRouter(characters, reply));
-  apiRouter.use("/persons", createPersonsRouter(persons, reply));
+  apiRouter.use("/characters", createCharactersRouter(characters));
+  apiRouter.use("/persons", createPersonsRouter(persons));
   apiRouter.use("/chats", createChatsRouter(chats, reply, characters, imageGeneration));
   apiRouter.use("/image", createImageRouter(imageGeneration, reply, chats));
   // The picture browser: every picture of the data folder with its row of the
