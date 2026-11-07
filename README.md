@@ -27,8 +27,11 @@ Stack: **Node.js / Express 5 / TypeScript** (backend) + **Angular 22 / SCSS** (f
   card appears in the chat immediately and turns into the picture when it is ready, so nothing is
   blocked while it is planned and drawn.
 - Every picture is addressed by its path relative to the data folder and keeps its description and
-  generation data in a `.json` **sidecar next to the file** — merge-on-write, so your own fields and
-  hand edits survive and are read back by the app.
+  generation data in **one global images table** (`images.db` at the data root, one row per picture,
+  keyed by that path) — the single source the chat cards, the planner and the browser all read.
+- **Pictures library** (the ⋮ menu — "Pictures") — every picture of the data folder in one chat-
+  independent browser: edit any picture's description and prompt, change its references, and rename
+  it (the file moves and the cards and the stored references follow the new path).
 - Image generation by several backends (all the enabled and available ones are used; the jobs of one
   generator are queued, different generators run in parallel):
   - **ComfyUI** — a generator is a ComfyUI URL plus one of the models the app ships workflows for
@@ -213,11 +216,15 @@ resolved by `resolveApiKey()`: `envKey` (an environment variable) takes priority
 - ComfyUI workflows of your own: `~/.config/sillytalk/comfyui/<model>.json` — replaces the workflow
   the app ships for that model name, or adds a model (empty by default)
 - Chats: `~/.config/sillytalk/chats/chats.db` — a SQLite database (`node:sqlite`) with the chat
-  fields and the messages; the pictures stay files in
-  `~/.config/sillytalk/chats/<chatId>/files/`, each with a `<name>.png.json` sidecar next to it
-  (what the picture shows, the prompt it was drawn from, its references and where it came from —
-  hand-editable, and the app reads it back) (the old per-chat `chat.json` files are imported
+  fields and the messages; the pictures stay plain files in
+  `~/.config/sillytalk/chats/<chatId>/files/` (the old per-chat `chat.json` files are imported
   into the database once and renamed to `chat.json.migrated`)
+- What is known about a picture: `~/.config/sillytalk/images.db` — one SQLite table with one row per
+  picture of the data folder, keyed by its path relative to that folder: what the picture shows, the
+  prompt it was drawn from, its references and the people on it. The single source the chat cards
+  read, and what the Pictures browser edits. The old `<image>.png.json` files next to a picture are
+  the previous format: they are not read, not merged and not deleted — clear them yourself if you
+  have any
 
 The server has **no login** — anyone who can reach the listen address can read the chats and generate
 with your models, so keep `listen` on `127.0.0.1` unless you put it behind something that
@@ -233,7 +240,7 @@ backend/
   src/
     index.ts       # the express server: the API + the frontend statics
     routes.ts      # the REST API assembler (config, characters, persons, chats,
-                   # image, media) over the per-domain <domain>.routes.ts
+                   # image, pictures, media) over the per-domain <domain>.routes.ts
     text_generation/ # the LLM domain: the OpenAI-compatible chat/completions
                      # call (text + the pictures of the cards), the prompts, the
                      # picture plan of the user's turn —
@@ -242,12 +249,16 @@ backend/
                       # backends (comfyui/ — the workflows of the models the app
                       # can run), the top-level service class
                       # (background jobs); di.ts — the minimal DI container
+    images/        # what is known about a picture: the global images.db table
+                   # (ImageMetaService) and the picture browser's service
+                   # (browse / edit / rename) — the classes + their DI tokens
     chats/         # the chat storage in the chats.db SQLite database: the text
                    # messages and the picture cards, the pictures addressed by
-                   # their data-root-relative ids + the sidecars —
+                   # their data-root-relative ids, the cards filled from the
+                   # images table —
                    # the ChatsService class + its DI token
     shared/         # cross-domain helpers: the image id <-> path mapping, the
-                    # <image>.json sidecar, avatars, file streaming
+                    # row shape of the images table, avatars, file streaming
     characters/    # the character storage in the characters/<id>/ folders —
                    # the CharactersService class + its DI token
     users.ts       # the user storage in the users/<id>/ folders
@@ -268,7 +279,15 @@ frontend/
 npm run build           # the backend (tsc) + the frontend (ng build) build
 cd backend && npm test  # the backend tests (jest)
 cd frontend && npm test # the frontend tests
+cd e2e && npx playwright test  # the browser suite (mocked model and ComfyUI)
+npm run test:e2e        # the same, then drop the screenshots that did not change
+npm run shots:clean     # drop the re-taken screenshots whose pixels are identical
 ```
+
+A test run rewrites every screenshot it touches and most of those rewrites are noise (the encoder
+and a clock that moved), so `npm run shots:clean` compares the DECODED PIXELS with the committed
+ones and restores what only looks modified. It reports the numbers for every picture and writes a
+picture of the difference next to each one it is not sure about.
 
 ## License
 

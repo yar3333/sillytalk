@@ -329,10 +329,10 @@ export class ReplyService {
         model: chat.modelId,
         createdAt: new Date().toISOString(),
       };
-      // Who is on the picture goes in before the caption: both writes refresh
-      // the same sidecar from the row, and the row must already know the cast.
+      // Who is on the picture goes in before the caption: both writes go to the
+      // same row of the images table, and the row must already know the cast.
       if (done.depicts.length > 0) this.chats.setMessageDepicts(chatId, messageId, done.depicts);
-      this.chats.writeSidecar(id, done.description, generation, done.depicts);
+      this.chats.writeImageMeta(id, done.description, generation, done.depicts);
       if (done.description) this.chats.setMessageText(chatId, messageId, done.description);
       this.startChatImageJob(id, done.prompt, done.refs, chatId, {
         prompt: done.prompt,
@@ -669,9 +669,9 @@ export class ReplyService {
   // again, writing to the SAME id — nothing that points at the picture needs
   // repointing. A regeneration already in flight for it is cancelled first (one
   // job per picture). The status and the (possibly re-translated) prompt are
-  // marked "pending" in a single re-read+save and mirrored into the sidecar. If
-  // an older file exists at the id and the run fails or is cancelled, the old
-  // one is kept (the card stays ready).
+  // marked "pending" in a single re-read+save and written into the picture's
+  // row. If an older file exists at the id and the run fails or is cancelled,
+  // the old one is kept (the card stays ready).
   //
   // `promptOverride` — a new prompt typed by the user (the "edit prompt then
   // regenerate" flow): when given, it replaces the stored one (after the usual
@@ -698,7 +698,7 @@ export class ReplyService {
       if (Object.keys(fmsg.imageErrors).length === 0) delete fmsg.imageErrors;
     }
     this.chats.save(fresh);
-    this.chats.writeSidecar(image, fmsg.text, fmsg.generation);
+    this.chats.writeImageMeta(image, fmsg.text, fmsg.generation);
     this.startChatImageJob(image, prompt, refs, chat.id, {
       prompt,
       refs,
@@ -746,8 +746,8 @@ export class ReplyService {
   //                 generation block (source "manual" when it had none), "file"
   //                 drops it (a plain file has nothing to be redrawn from). An
   //                 omitted kind leaves the block alone.
-  // The message and the sidecar next to its file are both updated. Returns the
-  // saved chat (null — the card is gone).
+  // The message and the picture's row of the images table are both updated.
+  // Returns the saved chat (null — the card is gone).
   editPicture(
     chat: Chat,
     message: ChatMessage,
@@ -776,10 +776,10 @@ export class ReplyService {
     const refs = patch.refs?.filter((id) => typeof id === "string" && id);
     let generation: ImageGenerationData | null | undefined;
     if (patch.kind === "file") {
-      // The card keeps its picture but stops claiming a generation. The
-      // sidecar's generation keys go too, or the prompt would come back on
+      // The card keeps its picture but stops claiming a generation. The row's
+      // generation keys go too, or the prompt would come back on
       // read. A re-pointed card needs nothing: the swap already dropped the
-      // block, and the new file's sidecar (which another card may share) is
+      // block, and the new file's row (which another card may share) is
       // not ours to rewrite.
       generation = repointed ? undefined : null;
     } else if (patch.kind === "generated" || prompt !== undefined || refs !== undefined) {
@@ -877,7 +877,7 @@ export class ReplyService {
   // unlabelled photo is a lost one for the rest of the conversation.
   //
   // Only an empty caption is filled: what the user wrote in the editor (or in
-  // the sidecar by hand) is theirs. Nothing is invented when the chat has no
+  // the picture browser) is theirs. Nothing is invented when the chat has no
   // vision model or the model fails — a picture with no caption is a normal
   // state, not an error, and the card keeps its Describe button for a manual
   // try. Returns the fresh chat, or null when it disappeared.
@@ -1006,7 +1006,16 @@ export class ReplyService {
     chatId: string,
     meta: ImageGenerationRecord,
   ): void {
-    const job: ImageJob = this.imageGeneration.startImageJob({ id, prompt, refs, chatId, meta });
+    const job: ImageJob = this.imageGeneration.startImageJob({
+      id,
+      prompt,
+      refs,
+      // The chat may be deleted while the job waits in the queue. The check is
+      // the chat store's — the folder on disk is not the evidence anymore (the
+      // chat lives in the database, its folder exists only once it owns a file).
+      gone: () => !this.chats.exists(chatId),
+      meta,
+    });
     void job.result.then((res) => {
       // A regeneration started a newer job for the same picture — it owns the
       // status now, so this (replaced) job stays silent.

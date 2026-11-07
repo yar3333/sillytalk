@@ -71,8 +71,8 @@ describe("HttpHelper.sendImage", () => {
   });
 
   it("refuses a name that is not a picture format, even when the file exists", async () => {
-    // The sidecar sits next to the picture and the chat files hold the whole
-    // dialogue — a picture route must not hand them out.
+    // A leftover sidecar of the old format sits next to the picture and the chat
+    // files hold the whole dialogue — a picture route must not hand them out.
     const sidecar = writePicture("chats/c1/files/a-boat-1a2b3c.png.json", [123]);
     const res = await send(sidecar);
     expect(res.code).toBe(404);

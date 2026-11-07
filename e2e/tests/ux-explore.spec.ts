@@ -886,6 +886,74 @@ test('UX 19: the vision model of the chat (the 👁 chip)', async ({ page }) => 
   expect(chat.visionModelId).toBeUndefined();
 });
 
+// The picture browser: the whole data folder in one dialog, where the caption
+// and the name of a picture are edited OUTSIDE any chat. What proves the data
+// has one source: a caption written here is the caption the chat card shows,
+// and a rename — an id is a path — moves the file and the chat card follows it.
+test('UX 20: the picture browser edits the picture, not a message', async ({ page }) => {
+  await setDelay(100);
+  await openApp(page);
+  await page.getByTestId('input').fill('Hello Alice');
+  await page.getByTestId('send').click();
+  await expect(assistantMsgs(page).first()).toBeVisible({ timeout: 15000 });
+  const chatId = ((await api('/chats')) as Array<{ id: string }>)[0].id;
+
+  // One picture, drawn for the user's turn, ready in the chat.
+  await page.getByTestId('auto-image').click();
+  await expect(cardImages(page).first()).toBeVisible({ timeout: 30000 });
+  await page.screenshot({ path: `${SHOTS}/ux-20a-chat-card.png` });
+
+  // Open the browser from the ⋮ menu.
+  await page.getByTestId('menu').click();
+  await page.getByTestId('picture-library').click();
+  const library = page.getByTestId('picture-library').last();
+  await expect(library).toBeVisible();
+  await expect(page.getByTestId('picture-row').first()).toBeVisible();
+
+  // The chat's picture is listed; its path is the id field.
+  const before = (await api('/pictures')) as { pictures: Array<{ id: string; exists: boolean }> };
+  const id = before.pictures.find((p) => p.exists && p.id.includes('/files/'))!.id;
+  await expect(page.getByTestId('picture-id-input')).toHaveValue(id);
+  await page.screenshot({ path: `${SHOTS}/ux-20b-library.png` });
+
+  // Edit the description and Save: it lands on the PICTURE row, and the chat
+  // card of that picture is the same row, so it re-reads the new caption.
+  const caption = 'the circle the user retitled';
+  await page.getByTestId('picture-description').fill(caption);
+  await page.getByTestId('picture-save').click();
+  await expect(async () => {
+    const reloaded = (await api(`/chats/${chatId}`)) as {
+      messages: Array<{ kind: string; text: string }>;
+    };
+    const card = reloaded.messages.find((m) => m.kind === 'image');
+    expect(card?.text).toBe(caption);
+  }).toPass({ timeout: 10000 });
+
+  // Rename the picture: the file moves and the chat card follows the new path.
+  const newId = id.slice(0, id.lastIndexOf('/') + 1) + 'a-renamed-circle-1a2b3c.png';
+  await page.getByTestId('picture-id-input').fill(newId);
+  await expect(page.getByTestId('picture-rename')).toBeEnabled();
+  await page.getByTestId('picture-rename').click();
+  await expect(async () => {
+    const after = (await api('/pictures')) as { pictures: Array<{ id: string }> };
+    expect(after.pictures.some((p) => p.id === newId)).toBe(true);
+    expect(after.pictures.some((p) => p.id === id)).toBe(false);
+  }).toPass({ timeout: 10000 });
+
+  const repointed = (await api(`/chats/${chatId}`)) as {
+    messages: Array<{ kind: string; images?: string[] }>;
+  };
+  expect(repointed.messages.find((m) => m.kind === 'image')?.images).toEqual([newId]);
+  await page.screenshot({ path: `${SHOTS}/ux-20c-renamed.png` });
+
+  // A name that is not a picture path is refused, and changes nothing.
+  await page.getByTestId('picture-id-input').fill('config.json');
+  await page.getByTestId('picture-rename').click();
+  await expect(page.getByTestId('error-banner')).toBeVisible({ timeout: 10000 });
+  const still = (await api('/pictures')) as { pictures: Array<{ id: string }> };
+  expect(still.pictures.some((p) => p.id === newId)).toBe(true);
+});
+
 // The collected issues are attached to every test run as a JSON artifact.
 test.afterEach(async ({ page }, testInfo) => {
   if (issues.length > 0) {

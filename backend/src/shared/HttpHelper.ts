@@ -20,7 +20,7 @@ export class HttpHelper {
   // Whether the file name ends in a format the app serves as a picture. Every
   // file response goes through sendImage, which refuses anything else: a
   // picture route must not turn into a reader of whatever else sits next to the
-  // pictures (a chat.json, a *.png.json sidecar, a character.json).
+  // pictures (a chat.json, a character.json, any leftover *.json).
   static isImage(file: string): boolean {
     return Object.hasOwn(HttpHelper.IMAGE_CONTENT_TYPE, path.extname(file).toLowerCase());
   }

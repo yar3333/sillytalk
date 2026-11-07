@@ -768,10 +768,10 @@ test('the model chip on mobile', async ({ page }) => {
 // The media route serves pictures and nothing else. A picture is addressed by a
 // path relative to the data folder, so "it stays inside the data folder" is not
 // enough of a guard: the config (a literal provider key), the user's ComfyUI
-// workflow files and the chats database all live in that folder too, and a
-// sidecar sits next to every picture. Two rules answer for it — the id must
-// point inside a folder pictures live in, and the name must be a picture
-// format — so the refusals come as 400 and as 404 respectively.
+// workflow files and the chats database all live in that folder too. Two rules
+// answer for it — the id must point inside a folder pictures live in, and the
+// name must be a picture format (any JSON beside a picture stays unserved too) —
+// so the refusals come as 400 and as 404 respectively.
 test('GET /api/media serves a picture of a chat and nothing else', async () => {
   const created = (await (
     await fetch(`${API}/chats`, {

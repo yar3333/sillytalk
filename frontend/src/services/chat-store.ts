@@ -306,7 +306,7 @@ export class ChatStore {
 
   // Captions the picture cards of a just-sent message: every attached picture
   // becomes its own card with an empty caption, and the vision model writes one
-  // (the row and the sidecar next to the file). Skipped without a model that can
+  // (the picture's row of the images table). Skipped without a model that can
   // see, and never in the error banner — a picture that stays unlabelled is a
   // normal state, and the card's ✎ is there for a manual try.
   private captionAttachments(chatId: string, messages: ChatMessage[]): void {

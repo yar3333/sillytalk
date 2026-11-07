@@ -4,9 +4,9 @@
 // changes.
 
 export interface IImageGeneratorDriver {
-  // Stable identity of this generator entry: recorded in the sidecar next to
-  // the picture and used by the hover hint (the backend kind + its address +
-  // the model it runs).
+  // Stable identity of this generator entry: recorded in the picture's row of
+  // the images table and used by the hover hint (the backend kind + its address
+  // + the model it runs).
   readonly key: string;
   // The identity of the queue this generator's jobs are serialized in. Two
   // entries that share one resource — the same ComfyUI server, the same SD

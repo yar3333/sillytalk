@@ -1,0 +1,354 @@
+/* The picture browser: a scrollable list of pictures on the left, the editor of
+   the selected one on the right. The field/button styles are this component's own
+   small copies — emulated encapsulation keeps them from crossing components, and
+   every dialog here carries its own. */
+.library {
+  display: flex;
+  gap: 14px;
+  padding: 14px 16px 16px;
+  min-height: 0;
+  flex: 1;
+}
+
+/* ---- the list ---- */
+.lib-side {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 260px;
+  flex: 0 0 260px;
+  min-height: 0;
+}
+
+.lib-filter {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 10px;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+
+  &:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+}
+
+.lib-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+  min-height: 120px;
+  // the list scrolls inside the dialog; the dialog itself does not grow past
+  // the modal's max-height
+  max-height: 62vh;
+  padding-right: 2px;
+}
+
+.lib-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+
+  &:hover {
+    background: var(--panel-2);
+  }
+
+  &.on {
+    border-color: var(--accent);
+    background: var(--panel-2);
+  }
+
+  &.gone {
+    opacity: 0.55;
+  }
+}
+
+.lib-thumb {
+  width: 44px;
+  height: 44px;
+  object-fit: cover;
+  border-radius: 6px;
+  background: var(--panel-2);
+  flex: 0 0 44px;
+}
+
+.lib-thumb-gone {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--border);
+  color: var(--fg-dim, #888);
+}
+
+.lib-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.lib-name {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lib-desc {
+  font-size: 11px;
+  color: var(--fg-dim, #999);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lib-empty,
+.lib-none,
+.lib-count {
+  color: var(--fg-dim, #888);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.lib-none {
+  align-self: center;
+}
+
+/* ---- the editor of the selected picture ---- */
+.lib-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.lib-preview {
+  width: 100%;
+  // the preview shares the column with three fields, so it is capped and the
+  // fields stay reachable without scrolling the whole dialog
+  max-height: 30vh;
+  object-fit: contain;
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+
+.lib-preview-gone {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 80px;
+  max-height: none;
+  border: 1px dashed var(--border);
+  color: var(--fg-dim, #888);
+  font-size: 13px;
+}
+
+input,
+textarea,
+select {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: inherit;
+
+  &:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+}
+
+.btn {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+
+  &:hover:not(:disabled) {
+    border-color: var(--accent);
+  }
+
+  &:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+
+  &.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+}
+
+.field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+
+  > span {
+    width: 150px;
+    flex: 0 0 150px;
+    color: var(--fg-dim, #aaa);
+    font-size: 13px;
+  }
+
+  input.grow,
+  textarea.grow {
+    flex: 1;
+    min-width: 0;
+  }
+
+  &.col {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+
+    > span {
+      width: auto;
+      flex: none;
+    }
+
+    textarea.grow {
+      width: 100%;
+      resize: vertical;
+      font: inherit;
+    }
+
+    input.grow {
+      width: 100%;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 12px;
+    }
+  }
+}
+
+/* the reference set the saved prompt names, in the order the prompt counts them
+   (the same read of "the first reference image…" the chat card shows) */
+.refs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  font-size: 11px;
+  max-width: 100%;
+}
+
+.ref-thumb {
+  width: 28px;
+  height: 28px;
+  object-fit: cover;
+  border-radius: 4px;
+}
+
+.ref-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 160px;
+}
+
+.ref-x {
+  background: transparent;
+  border: none;
+  color: var(--fg-dim, #999);
+  cursor: pointer;
+  padding: 0 2px;
+
+  &:hover {
+    color: var(--danger, #e55);
+  }
+}
+
+.refs-none {
+  color: var(--fg-dim, #888);
+  font-size: 12px;
+}
+
+.ref-add {
+  align-self: flex-start;
+  max-width: 100%;
+  font-size: 12px;
+}
+
+.dialog-hint {
+  color: var(--fg-dim, #888);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  padding-top: 2px;
+
+  .spacer {
+    flex: 1;
+  }
+}
+
+/* On a phone the two panes stack: the list becomes a horizontal strip of
+   thumbnails above the editor, so both stay usable without a squeeze. */
+@media (max-width: 720px) {
+  .library {
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .lib-side {
+    width: 100%;
+    flex: none;
+  }
+
+  .lib-list {
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+    max-height: none;
+    min-height: 0;
+  }
+
+  .lib-row {
+    flex: 0 0 auto;
+    max-width: 150px;
+  }
+
+  .lib-meta {
+    min-width: 0;
+  }
+
+  .lib-preview {
+    max-height: 26vh;
+  }
+
+  .field > span {
+    width: auto;
+    flex: none;
+  }
+}

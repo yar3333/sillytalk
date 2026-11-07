@@ -89,6 +89,13 @@ export class PathHelper {
     return path.join(root, "chats.db");
   }
 
+  // The image metadata database (node:sqlite): one global table keyed by the
+  // image id (the path relative to the data root). The description and the
+  // generation prompt of a picture live here, never in a sidecar file.
+  static imagesDatabaseFile(root: string = PathHelper.configDir()): string {
+    return path.join(root, "images.db");
+  }
+
   static chatFilesDir(chatId: string, root: string = PathHelper.chatsDir()): string {
     return path.join(PathHelper.chatDir(chatId, root), "files");
   }
@@ -97,9 +104,9 @@ export class PathHelper {
   //
   // An image is identified by its path RELATIVE TO THE DATA ROOT, with "/" as
   // the separator — "chats/<chatId>/files/a-sunset-over-the-sea-3f2a1c.png".
-  // The id is what the chat messages store, what the API carries and what a
-  // sidecar *.json lists as a generation reference, so a chat folder stays
-  // portable and a hand-edited sidecar can point at any image of the data
+  // The id is what the chat messages store, what the API carries and what an
+  // images-table row lists as a generation reference, so a chat folder stays
+  // portable and a hand-edited row can point at any image of the data
   // folder. A domain folder that was moved out of the root
   // (SILLYTALK_CHATS_DIR pointing elsewhere) still works: its id simply
   // starts with "..", and resolveImageId accepts anything that resolves back
@@ -111,11 +118,11 @@ export class PathHelper {
   }
 
   // Id -> absolute path, or null when it escapes every data folder (a
-  // hand-edited chat or sidecar must not turn the image route into an
+  // hand-edited chat or row must not turn the image route into an
   // arbitrary file reader).
   //
   // This is the STORAGE-side rule — what an id stored by the app or written by
-  // hand in a sidecar may point at. Serving a file over HTTP is stricter, see
+  // hand in a row may point at. Serving a file over HTTP is stricter, see
   // resolvePictureId.
   static resolveImageId(id: string): string | null {
     if (!id || id.includes("\0")) return null;
@@ -167,9 +174,9 @@ export class PathHelper {
   // It walks ONLY the folders pictures live in and keeps only the names
   // HttpHelper.isImage accepts, so every id it hands out can be loaded through
   // the media route — the catalog never offers a file the browser would get a
-  // 400/404 for. Sidecars (*.png.json), the chats database and the workflow
-  // files are not pictures and stay out. `limit` caps the walk of an unusually
-  // large data folder.
+  // 400/404 for. A leftover sidecar (*.png.json) of the old format, the chats
+  // database and the workflow files are not pictures and stay out. `limit`
+  // caps the walk of an unusually large data folder.
   static listPictureIds(limit = 1000): string[] {
     const found: Array<{ id: string; mtime: number }> = [];
     const walk = (dir: string, depth: number): void => {

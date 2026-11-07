@@ -12,6 +12,8 @@ import { DI_PERSONS_SERVICE, PersonsService } from "./persons/PersonsService";
 import { DI_IMAGE_GENERATION_SERVICE, ImageGenerationService } from "./image_generation/ImageGenerationService";
 import { DI_REPLY_SERVICE, ReplyService } from "./reply/ReplyService";
 import { DI_TEXT_GENERATION_SERVICE, TextGenerationService } from "./text_generation/TextGenerationService";
+import { DI_IMAGE_META_SERVICE, ImageMetaService } from "./images/ImageMetaService";
+import { DI_PICTURE_LIBRARY_SERVICE, PictureLibraryService } from "./images/PictureLibraryService";
 
 // ---- DI: the composition root of the backend ----
 // Services are registered as lazy singletons on the container and resolved
@@ -25,9 +27,18 @@ container.register(
 );
 container.register(DI_CHARACTERS_SERVICE, () => new CharactersService(() => PathHelper.charactersDir()));
 container.register(DI_PERSONS_SERVICE, () => new PersonsService(() => PathHelper.personsDir()));
+// The images table comes first among the consumers of the data layout: the chat
+// store and the generator both write through it, so it is the one place a
+// picture's description and prompt are kept.
+container.register(DI_IMAGE_META_SERVICE, () => new ImageMetaService(() => PathHelper.configDir()));
 container.register(
   DI_CHATS_SERVICE,
-  (c) => new ChatsService(() => PathHelper.chatsDir(), c.resolve(DI_CONFIGURATION_SERVICE)),
+  (c) =>
+    new ChatsService(
+      () => PathHelper.chatsDir(),
+      c.resolve(DI_CONFIGURATION_SERVICE),
+      c.resolve(DI_IMAGE_META_SERVICE),
+    ),
 );
 container.register(
   DI_IMAGE_GENERATION_SERVICE,
@@ -35,6 +46,7 @@ container.register(
     new ImageGenerationService(
       c.resolve(DI_TEXT_GENERATION_SERVICE),
       c.resolve(DI_CONFIGURATION_SERVICE),
+      c.resolve(DI_IMAGE_META_SERVICE),
     ),
 );
 container.register(
@@ -48,6 +60,12 @@ container.register(
       c.resolve(DI_IMAGE_GENERATION_SERVICE),
       c.resolve(DI_CONFIGURATION_SERVICE),
     ),
+);
+// The picture browser sits above the table and the chat store: renaming a file
+// is nothing a picture of one chat can do on its own.
+container.register(
+  DI_PICTURE_LIBRARY_SERVICE,
+  (c) => new PictureLibraryService(c.resolve(DI_IMAGE_META_SERVICE), c.resolve(DI_CHATS_SERVICE)),
 );
 const configuration = container.resolve(DI_CONFIGURATION_SERVICE);
 const characters = container.resolve(DI_CHARACTERS_SERVICE);
@@ -93,7 +111,18 @@ if (persons.list().length === 0) {
 
 const app = express();
 app.use(cors());
-app.use("/api", createApiRouter(images, characters, persons, chats, configuration, reply));
+app.use(
+  "/api",
+  createApiRouter(
+    images,
+    characters,
+    persons,
+    chats,
+    configuration,
+    reply,
+    container.resolve(DI_PICTURE_LIBRARY_SERVICE),
+  ),
+);
 
 // Static built frontend (Angular) + SPA fallback
 const candidates = [

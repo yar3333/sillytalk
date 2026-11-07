@@ -75,7 +75,8 @@
 .modal > app-settings,
 .modal > app-character-dialog,
 .modal > app-user-dialog,
-.modal > app-model-dialog {
+.modal > app-model-dialog,
+.modal > app-picture-library {
   display: flex;
   flex-direction: column;
   flex: 1;
@@ -97,6 +98,12 @@
    textarea wants the room. */
 .modal-chat-settings {
   max-width: 540px;
+}
+
+/* The picture browser: a list of thumbnails beside the editor of one picture,
+   so it needs the whole width the shell can give it. */
+.modal-library {
+  max-width: 980px;
 }
 
 /* The close button in the modal headers (the same class as in input-panel —

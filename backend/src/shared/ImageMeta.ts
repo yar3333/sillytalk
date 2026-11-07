@@ -1,11 +1,20 @@
-// What a sidecar *.json next to an image says about it: a human-readable
-// description of what is on the image plus everything needed to reproduce it
-// (the generation prompt and the reference images it was drawn from).
+// What the app knows about a picture: a human-readable description of what is
+// on it plus everything needed to reproduce it (the generation prompt and the
+// reference images it was drawn from).
 //
-// The file is meant to be hand-editable, so every field is optional and the
-// unknown keys a user adds are kept on write (see ImageMetaFile.write). The
-// refs are image identifiers — paths relative to the data folder, exactly as
-// the chat messages store them.
+// One of these is one ROW of the global images table (images/ImageMetaService.ts),
+// keyed by the image id — the path of the picture relative to the data folder.
+// The table is the one source of this data: an image card of a chat reads its
+// caption, its prompt and its cast from there, so a card and its picture cannot
+// drift apart. (The *.json sidecar files this used to live in are the old
+// format: not supported, not read and not migrated.)
+//
+// The type is also the patch shape the writers hand to the service, which is
+// why it stays open at the bottom: a field given as `undefined` removes that
+// field from the row, and a merge never has to know the fields in advance.
+//
+// The refs are image identifiers — paths relative to the data folder, exactly
+// as the chat messages store them.
 export type ImageMeta = {
   // The human-readable English name the generated image was saved under
   // ("a sunset over the sea"); the file name is derived from it.
@@ -25,12 +34,11 @@ export type ImageMeta = {
   source?: "upload" | "manual" | "auto";
   // Who is visible on the picture: cast refs ("char:alice", "user:carol") of
   // the people in it. The picture planner offers such a picture as the look
-  // reference of those people, so the next one keeps the same face. The ids are
-  // the user's own — hand-edit this to say who is in a photo the app did not
-  // plan.
+  // reference of those people, so the next one keeps the same face.
   depicts?: string[];
-  // The generator that produced it (the driver key: a local program command or
-  // an SD API URL) and the model that wrote the prompt (an llmModels key).
+  // The generator that produced it (the driver key: an SD API URL or a
+  // ComfyUI server + model) and the model that wrote the prompt (an llmModels
+  // key).
   generator?: string;
   model?: string;
   width?: number;
@@ -39,13 +47,13 @@ export type ImageMeta = {
   // ISO timestamps of the first write and the last change.
   createdAt?: string;
   updatedAt?: string;
-  // Anything a user adds by hand survives the read/write round trip.
+  // The patch semantics above: a key set to undefined is dropped from the row.
   [key: string]: unknown;
 };
 
-// The sidecar keys that describe how the picture was made. The picture editor
-// removes exactly these when the user says the card is just a file — the
-// description and the timestamps are not part of the generation data.
+// The fields that describe how the picture was made. The picture editor clears
+// exactly these when the user says the card is just a file — the description
+// and the timestamps are not part of the generation data.
 export const IMAGE_GENERATION_KEYS = [
   "prompt",
   "negativePrompt",
@@ -58,8 +66,8 @@ export const IMAGE_GENERATION_KEYS = [
   "steps",
 ] as const;
 
-// The generator settings worth remembering about a run (stored into the
-// sidecar when the generator reports them).
+// The generator settings worth remembering about a run (written into the row of
+// the picture when the generator reports them).
 export type ImageGenerationRecord = {
   prompt: string;
   refs?: string[];

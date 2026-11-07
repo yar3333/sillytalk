@@ -12,9 +12,8 @@ import { comfyUiModelNames } from "./comfyui/ComfyUiWorkflows";
 // generation (the card with the "pending" image is saved right away; the file
 // appears when the job finishes — the domain part, including the
 // English-prompt translation, is in ReplyService.manualImage) and the helpers
-// of the picture-editor dialog: the catalog of the data folder's pictures and
-// the three LLM calls ("From the chat", "Make it English", "Describe the
-// picture").
+// of the picture-editor dialog: the three LLM calls ("From the chat",
+// "Make it English", "Describe the picture").
 export function createImageRouter(
   imageGeneration: ImageGenerationService,
   reply: ReplyService,
@@ -61,13 +60,10 @@ export function createImageRouter(
   });
 
   // ---- the picture-editor dialog ----
-
-  // The picture catalog: every picture of the data folder as an image id,
-  // newest first — the "from a file" pick. PathHelper.listPictureIds walks only
-  // the folders pictures live in, so each id it offers loads through /media.
-  router.get("/pictures", (_req, res) => {
-    res.json({ images: PathHelper.listPictureIds() });
-  });
+  //
+  // (the catalog of the pictures the dialog can point a card at is the picture
+  // browser's own route: GET /api/pictures — one list of the data folder, with
+  // the row of the images table that belongs to each picture)
 
   // The prompt for a card, planned by the model from the dialogue (the "From
   // the chat" button). The answer is the finished prompt, the description the

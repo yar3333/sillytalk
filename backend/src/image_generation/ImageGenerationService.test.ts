@@ -3,7 +3,7 @@ import http from "http";
 import os from "os";
 import path from "path";
 import { PathHelper } from "../shared/PathHelper";
-import { ImageMetaFile } from "../shared/ImageMetaFile";
+import { ImageMetaService } from "../images/ImageMetaService";
 import { ImageGenerationRecord } from "../shared/ImageMeta";
 import { TextGenerationService } from "../text_generation/TextGenerationService";
 import { ImageGenerationService } from "./ImageGenerationService";
@@ -32,7 +32,10 @@ class EmptyConfigurationService extends ConfigurationService {
 // the availability via refreshAvailableGenerators as needed. The service is
 // chat-agnostic: a job is given an image id and settles a result.
 const configuration = new EmptyConfigurationService();
-const images = new ImageGenerationService(new TextGenerationService(configuration), configuration);
+// The images table the finished job writes its story to — the one place a
+// picture's prompt and description are kept.
+const imageMeta = new ImageMetaService(() => dataRoot);
+const images = new ImageGenerationService(new TextGenerationService(configuration), configuration, imageMeta);
 
 // The id of a picture of a chat — the way a message and the API address it: a
 // path relative to the data folder, with "/" separators.
@@ -280,7 +283,7 @@ async function oneShot(
   chatId = chatIdDefault,
 ): Promise<ImageJobResult> {
   await images.refreshAvailableGenerators([gen]);
-  return images.startImageJob({ id: imageId(chatId, name), prompt, refs, chatId }).result;
+  return images.startImageJob({ id: imageId(chatId, name), prompt, refs }).result;
 }
 
 let comfy: MockComfy;
@@ -289,15 +292,17 @@ let comfy2: MockComfy;
 beforeAll(async () => {
   comfy = await startMockComfy();
   comfy2 = await startMockComfy();
-  // The job refuses to run for a deleted chat — the chat dir must exist.
+  // start each test run from an empty picture folder of the default chat
   fs.rmSync(PathHelper.chatDir(chatIdDefault), { recursive: true, force: true });
-  fs.mkdirSync(PathHelper.chatDir(chatIdDefault), { recursive: true });
 });
 
 afterAll(async () => {
   await images.refreshAvailableGenerators([]);
   await comfy.close();
   await comfy2.close();
+  // The database file must be closed before its folder goes (Windows keeps an
+  // open file locked and the delete would fail).
+  imageMeta.close();
   fs.rmSync(PathHelper.chatDir(chatIdDefault), { recursive: true, force: true });
   fs.rmSync(dataRoot, { recursive: true, force: true });
 });
@@ -355,9 +360,9 @@ describe("ComfyUI generator", () => {
     // template, not to a run.
     const gen = comfyGen(comfy);
     await images.refreshAvailableGenerators([gen]);
-    await images.startImageJob({ id: imageId(chatIdDefault, "conv-1.png"), prompt: "p", refs: [], chatId: chatIdDefault })
+    await images.startImageJob({ id: imageId(chatIdDefault, "conv-1.png"), prompt: "p", refs: [] })
       .result;
-    await images.startImageJob({ id: imageId(chatIdDefault, "conv-2.png"), prompt: "p", refs: [], chatId: chatIdDefault })
+    await images.startImageJob({ id: imageId(chatIdDefault, "conv-2.png"), prompt: "p", refs: [] })
       .result;
     expect(comfy.jobs).toHaveLength(2);
     expect(comfy.converted).toEqual(["text"]);
@@ -383,7 +388,7 @@ describe("ComfyUI generator", () => {
   it("is not available for a model the app has no workflow for", async () => {
     await images.refreshAvailableGenerators([comfyGen(comfy, { model: "flux-dev" })]);
     expect(images.hasAvailableGenerator()).toBe(false);
-    const job = images.startImageJob({ id: imageId(chatIdDefault, "no-wf.png"), prompt: "p", refs: [], chatId: chatIdDefault });
+    const job = images.startImageJob({ id: imageId(chatIdDefault, "no-wf.png"), prompt: "p", refs: [] });
     const r = await job.result;
     expect(r.status).toBe("failed");
     if (r.status === "failed") expect(r.error).toMatch(/not configured/);
@@ -417,7 +422,7 @@ describe("ComfyUI generator", () => {
   it("tells the server to drop a picture the user cancelled", async () => {
     await images.refreshAvailableGenerators([comfyGen(comfy)]);
     const id = imageId(chatIdDefault, "cancel-server.png");
-    const job = images.startImageJob({ id, prompt: "a picture that hangs forever", refs: [], chatId: chatIdDefault });
+    const job = images.startImageJob({ id, prompt: "a picture that hangs forever", refs: [] });
     await new Promise((resolve) => setTimeout(resolve, 400));
     job.cancel();
     const r = await job.result;
@@ -489,17 +494,17 @@ describe("the ComfyUI workflow files", () => {
     const gen = comfyGen(comfy);
     // one refresh — so one driver instance and one convert cache
     await images.refreshAvailableGenerators([gen]);
-    await images.startImageJob({ id: imageId(chatIdDefault, "edit-1.png"), prompt: "p", refs: [], chatId: chatIdDefault })
+    await images.startImageJob({ id: imageId(chatIdDefault, "edit-1.png"), prompt: "p", refs: [] })
       .result;
     expect(comfy.converted).toEqual(["text"]);
 
     // the same file, unchanged: the cached API copy is still the right one
-    await images.startImageJob({ id: imageId(chatIdDefault, "edit-2.png"), prompt: "p", refs: [], chatId: chatIdDefault })
+    await images.startImageJob({ id: imageId(chatIdDefault, "edit-2.png"), prompt: "p", refs: [] })
       .result;
     expect(comfy.converted).toEqual(["text"]);
 
     writeWorkflow("qwen-image-2.1", { text: templateOf("second") });
-    await images.startImageJob({ id: imageId(chatIdDefault, "edit-3.png"), prompt: "p", refs: [], chatId: chatIdDefault })
+    await images.startImageJob({ id: imageId(chatIdDefault, "edit-3.png"), prompt: "p", refs: [] })
       .result;
     // the new template went through the converter again — the picture was not
     // drawn from the API copy of the graph that was there before
@@ -561,7 +566,6 @@ describe("the ComfyUI workflow files", () => {
       id: imageId(chatIdDefault, "escaping-model.png"),
       prompt: "p",
       refs: [],
-      chatId: chatIdDefault,
     });
     expect((await job.result).status).toBe("failed");
   });
@@ -579,7 +583,6 @@ describe("background image jobs", () => {
       id: imageId(jobChatId, name),
       prompt: opts.prompt ?? "p",
       refs: opts.refs ?? [],
-      chatId: jobChatId,
       meta: opts.meta,
     });
     return job.result;
@@ -587,7 +590,6 @@ describe("background image jobs", () => {
 
   beforeAll(() => {
     fs.rmSync(PathHelper.chatDir(jobChatId), { recursive: true, force: true });
-    fs.mkdirSync(PathHelper.chatDir(jobChatId), { recursive: true });
   });
 
   afterAll(async () => {
@@ -595,14 +597,13 @@ describe("background image jobs", () => {
     fs.rmSync(PathHelper.chatDir(jobChatId), { recursive: true, force: true });
   });
 
-  it("writes the picture to the reserved name and records its story in the sidecar", async () => {
+  it("writes the picture to the reserved name and records its story in its row", async () => {
     await images.refreshAvailableGenerators([comfyGen(comfy)]);
     const id = imageId(jobChatId, "job-ready.png");
     const job = images.startImageJob({
       id,
       prompt: "a red boat at dusk",
       refs: [],
-      chatId: jobChatId,
       meta: { prompt: "a red boat at dusk", source: "auto", model: "m1", width: 512, height: 512, steps: 20 },
     });
     const r = await job.result;
@@ -610,10 +611,10 @@ describe("background image jobs", () => {
     const file = imageFile(jobChatId, "job-ready.png");
     // the bytes the server sent, and nothing else
     expect(fs.readFileSync(file)).toEqual(PICTURE);
-    // the picture carries its own generation data next to itself, ready to be
-    // read by hand or reused; the file is the canonical "<image>.png.json"
-    const sidecar = ImageMetaFile.read(file);
-    expect(sidecar).toMatchObject({
+    // the row of the picture in the images table carries its generation data —
+    // keyed by exactly the id a card and the API use
+    const stored = imageMeta.get(id);
+    expect(stored).toMatchObject({
       prompt: "a red boat at dusk",
       source: "auto",
       model: "m1",
@@ -622,19 +623,22 @@ describe("background image jobs", () => {
       steps: 20,
     });
     // which generator made it — the server and the model of it
-    expect(sidecar?.generator).toBe(`comfyui:${comfy.url}#qwen-image-2.1`);
+    expect(stored?.generator).toBe(`comfyui:${comfy.url}#qwen-image-2.1`);
     // the job is off the registry once it settled
     expect(images.getCurrentJob(id)).toBeUndefined();
   }, 30000);
 
-  it("a description the user wrote while the job ran survives the sidecar write", async () => {
+  it("a description written while the job ran survives the row write", async () => {
     await images.refreshAvailableGenerators([comfyGen(comfy)]);
+    const id = imageId(jobChatId, "job-caption.png");
     const file = imageFile(jobChatId, "job-caption.png");
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    ImageMetaFile.write(file, { description: "what the user says it shows" });
+    imageMeta.set(id, { description: "what the user says it shows" });
     const r = await runJob("job-caption.png", { prompt: "a red boat", meta: { prompt: "a red boat", source: "manual" } });
     expect(r.status).toBe("ok");
-    expect(ImageMetaFile.read(file)).toMatchObject({
+    // the job merges: it adds how the picture was made, it does not replace what
+    // the picture is
+    expect(imageMeta.get(id)).toMatchObject({
       description: "what the user says it shows",
       prompt: "a red boat",
     });
@@ -666,17 +670,18 @@ describe("background image jobs", () => {
     expect(fs.existsSync(path.join(PathHelper.configDir(), "..", "escaped.png"))).toBe(false);
   });
 
-  it("a failed generation leaves the sidecar of the old picture alone", async () => {
+  it("a failed generation leaves the row of the old picture alone", async () => {
     await images.refreshAvailableGenerators([comfyGen(comfy)]);
-    const name = "job-fail-sidecar.png";
+    const name = "job-fail-old-picture.png";
+    const id = imageId(jobChatId, name);
     const file = imageFile(jobChatId, name);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, "old image");
-    ImageMetaFile.write(file, { description: "the old scene", prompt: "the old prompt" });
+    imageMeta.set(id, { description: "the old scene", prompt: "the old prompt" });
     const r = await runJob(name, { prompt: "this one will fail" });
     expect(r.status).toBe("failed");
     expect(fs.readFileSync(file, "utf-8")).toBe("old image");
-    expect(ImageMetaFile.read(file)).toMatchObject({ description: "the old scene", prompt: "the old prompt" });
+    expect(imageMeta.get(id)).toMatchObject({ description: "the old scene", prompt: "the old prompt" });
   }, 30000);
 
   it("a failed regeneration keeps the older image (hadOld)", async () => {
@@ -699,7 +704,6 @@ describe("background image jobs", () => {
       id,
       prompt: "hang until cancelled",
       refs: [],
-      chatId: jobChatId,
     });
     expect(images.getCurrentJob(id)).toBe(job);
     setTimeout(() => job.cancel(), 500);
@@ -712,7 +716,7 @@ describe("background image jobs", () => {
   it("cancelJob stops the job of an image by its id", async () => {
     await images.refreshAvailableGenerators([comfyGen(comfy)]);
     const id = imageId(jobChatId, "job-cancel-by-id.png");
-    images.startImageJob({ id, prompt: "hang forever", refs: [], chatId: jobChatId });
+    images.startImageJob({ id, prompt: "hang forever", refs: [] });
     setTimeout(() => images.cancelJob(id), 500);
     // the same job is found again by the id alone — the registry is keyed by it
     expect(images.getCurrentJob(id)).toBeDefined();
@@ -724,24 +728,29 @@ describe("background image jobs", () => {
   it("cancelAllJobs cancels a running job (the server-shutdown path)", async () => {
     await images.refreshAvailableGenerators([comfyGen(comfy)]);
     const name = "job-shutdown.png";
-    const job = images.startImageJob({ id: imageId(jobChatId, name), prompt: "hang on shutdown", refs: [], chatId: jobChatId });
+    const job = images.startImageJob({ id: imageId(jobChatId, name), prompt: "hang on shutdown", refs: [] });
     setTimeout(() => images.cancelAllJobs(), 500);
     const r = await job.result;
     expect(r.status).toBe("cancelled");
     expect(fs.existsSync(imageFile(jobChatId, name))).toBe(false);
   }, 30000);
 
-  it("a job whose chat was deleted while it waited does not recreate it", async () => {
+  it("a job whose owner was deleted while it waited does not write anything", async () => {
     await images.refreshAvailableGenerators([comfyGen(comfy)]);
     const goneChat = "jest-image-gone-chat";
-    fs.mkdirSync(PathHelper.chatDir(goneChat), { recursive: true });
     const id = imageId(goneChat, "orphan.png");
-    const job = images.startImageJob({ id, prompt: "p", refs: [], chatId: goneChat });
-    fs.rmSync(PathHelper.chatDir(goneChat), { recursive: true, force: true });
+    // the guard is consulted when the job STARTS, not when it is queued: the
+    // deletion happens in the window between the two, exactly as a chat deleted
+    // while the job waited in the queue would
+    let deleted = false;
+    const job = images.startImageJob({ id, prompt: "p", refs: [], gone: () => deleted });
+    deleted = true;
     const r = await job.result;
     expect(r.status).toBe("failed");
     if (r.status === "failed") expect(r.error).toMatch(/chat was deleted/);
+    // nothing was recreated: not the chat's folder, not the picture
     expect(fs.existsSync(PathHelper.chatDir(goneChat))).toBe(false);
+    expect(fs.existsSync(imageFile(goneChat, "orphan.png"))).toBe(false);
   }, 30000);
 
   it("enabled defaults to true: a generator without the field is available", async () => {
@@ -759,7 +768,6 @@ describe("background image jobs", () => {
       id: imageId(jobChatId, "job-disabled.png"),
       prompt: "p",
       refs: [],
-      chatId: jobChatId,
     }).result;
     expect(r.status).toBe("failed");
     if (r.status === "failed") expect(r.error).toMatch(/not configured/);
@@ -776,9 +784,9 @@ describe("background image jobs", () => {
   it("runs the jobs in parallel on different generators", async () => {
     await images.refreshAvailableGenerators([comfyGen(comfy), comfyGen(comfy2)]);
     const t0 = Date.now();
-    const p1 = images.startImageJob({ id: imageId(jobChatId, "par-1.png"), prompt: "one", refs: [], chatId: jobChatId })
+    const p1 = images.startImageJob({ id: imageId(jobChatId, "par-1.png"), prompt: "one", refs: [] })
       .result;
-    const p2 = images.startImageJob({ id: imageId(jobChatId, "par-2.png"), prompt: "two", refs: [], chatId: jobChatId })
+    const p2 = images.startImageJob({ id: imageId(jobChatId, "par-2.png"), prompt: "two", refs: [] })
       .result;
     const r1 = await p1;
     const r2 = await p2;
@@ -797,8 +805,8 @@ describe("background image jobs", () => {
     const gen = comfyGen(comfy);
     await images.refreshAvailableGenerators([gen]);
     const [r1, r2] = await Promise.all([
-      images.startImageJob({ id: imageId(jobChatId, "q-1.png"), prompt: "first", refs: [], chatId: jobChatId }).result,
-      images.startImageJob({ id: imageId(jobChatId, "q-2.png"), prompt: "second", refs: [], chatId: jobChatId }).result,
+      images.startImageJob({ id: imageId(jobChatId, "q-1.png"), prompt: "first", refs: [] }).result,
+      images.startImageJob({ id: imageId(jobChatId, "q-2.png"), prompt: "second", refs: [] }).result,
     ]);
     expect(r1.status).toBe("ok");
     expect(r2.status).toBe("ok");
@@ -816,8 +824,8 @@ describe("background image jobs", () => {
       comfyGen(comfy, { model: "qwen-image-2512" }),
     ]);
     const [r1, r2] = await Promise.all([
-      images.startImageJob({ id: imageId(jobChatId, "same-1.png"), prompt: "first", refs: [], chatId: jobChatId }).result,
-      images.startImageJob({ id: imageId(jobChatId, "same-2.png"), prompt: "second", refs: [], chatId: jobChatId }).result,
+      images.startImageJob({ id: imageId(jobChatId, "same-1.png"), prompt: "first", refs: [] }).result,
+      images.startImageJob({ id: imageId(jobChatId, "same-2.png"), prompt: "second", refs: [] }).result,
     ]);
     expect(r1.status).toBe("ok");
     expect(r2.status).toBe("ok");

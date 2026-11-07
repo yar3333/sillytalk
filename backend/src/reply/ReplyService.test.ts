@@ -14,7 +14,8 @@ import { ImageJob } from "../image_generation/ImageJob";
 import { ImageJobResult } from "../image_generation/ImageJobResult";
 import { PersonsService } from "../persons/PersonsService";
 import { PathHelper } from "../shared/PathHelper";
-import { ImageMetaFile } from "../shared/ImageMetaFile";
+import { ImageMeta, ImageGenerationRecord } from "../shared/ImageMeta";
+import { ImageMetaService } from "../images/ImageMetaService";
 import { ImageBrief, ImageCastMember, ImagePromptPlan, TextGenerationService } from "../text_generation/TextGenerationService";
 import { ReplyService } from "./ReplyService";
 
@@ -149,8 +150,16 @@ function gate(): { promise: Promise<void>; release: () => void } {
 // Yields to the event loop so the parked call is surely on the gate.
 const tick = (ms = 20): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-// What a job was started with (the ids the service handed down).
-type StartedJob = { id: string; prompt: string; refs: string[]; chatId?: string };
+// The started jobs as plain data for a deep compare: `gone` is a function and
+// its BEHAVIOUR is what deserves its own assertion (see the "notices a deleted
+// chat" test), not a structural one.
+const jobShapes = (jobs: StartedJob[]): Array<{ id: string; prompt: string; refs: string[] }> =>
+  jobs.map(({ gone: _gone, ...rest }) => rest);
+
+// What a job was started with (the ids the service handed down). `gone` is the
+// liveness guard the job was given: a test can ask it directly whether the
+// chat that owns the job still exists.
+type StartedJob = { id: string; prompt: string; refs: string[]; gone: () => boolean };
 
 // A fake of the image generation service: no real generator is spawned — the
 // jobs settle through the configured outcome (setImmediate later) and the test
@@ -172,8 +181,14 @@ function makeFakeImageGeneration() {
   const fake = {
     hasAvailableGenerator: (): boolean => available,
     maxReferenceCount: (): number => maxRefs,
-    startImageJob: (opts: { id: string; prompt: string; refs: string[]; chatId?: string }): ImageJob => {
-      started.push({ id: opts.id, prompt: opts.prompt, refs: opts.refs, chatId: opts.chatId });
+    startImageJob: (opts: {
+      id: string;
+      prompt: string;
+      refs: string[];
+      gone?: () => boolean;
+      meta?: ImageGenerationRecord;
+    }): ImageJob => {
+      started.push({ id: opts.id, prompt: opts.prompt, refs: opts.refs, gone: opts.gone ?? (() => false) });
       let cancelledFlag = false;
       const result = new Promise<ImageJobResult>((resolve) => {
         setImmediate(() => {
@@ -217,6 +232,7 @@ function makeFakeImageGeneration() {
 }
 
 let root: string;
+let imageMeta: ImageMetaService;
 let chats: ChatsService;
 let characters: CharactersService;
 let persons: PersonsService;
@@ -230,7 +246,8 @@ beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "sillytalk-reply-"));
   process.env.SILLYTALK_DATA_DIR = root;
   configuration = new StubConfigurationService();
-  chats = new ChatsService(() => path.join(root, "chats"), configuration);
+  imageMeta = new ImageMetaService(() => root);
+  chats = new ChatsService(() => path.join(root, "chats"), configuration, imageMeta);
   characters = new CharactersService(() => path.join(root, "characters"));
   persons = new PersonsService(() => path.join(root, "users"));
   characters.save({ id: "alice", name: "Alice", description: "A test character." });
@@ -241,12 +258,23 @@ beforeEach(() => {
   reply = new ReplyService(characters, persons, chats, textGeneration, imageGeneration, configuration);
 });
 
+// The images-table row of a picture, for the assertions about what the picture
+// itself says: the card a chat shows and this row are the same data, so a test
+// that wants to prove the write reached the store reads it here rather than
+// through a card.
+function rowOf(imageId: string): ImageMeta {
+  const row = imageMeta.get(imageId);
+  expect(row).not.toBeNull();
+  return row as ImageMeta;
+}
+
 afterEach(async () => {
   // Let the fire-and-forget job.result.then(...) callbacks of the tests that
   // did not flush settle while the database is still open (close() is final:
   // a callback landing after it would hit the closed database).
   await new Promise((resolve) => setImmediate(resolve));
   chats.close();
+  imageMeta.close();
   delete process.env.SILLYTALK_DATA_DIR;
   fs.rmSync(root, { recursive: true, force: true });
 });
@@ -511,14 +539,27 @@ describe("manualImage", () => {
     expect(id).toMatch(/\/a-red-fox-in-the-[0-9a-f]{6}\.png$/);
     expect(message.imageStatus).toEqual({ [id]: "pending" });
     expect(message.generation).toMatchObject({ prompt: "a red fox in the snow", source: "manual", model: "m1" });
-    expect(fake.started).toEqual([{ id, prompt: "a red fox in the snow", refs: [], chatId: chat.id }]);
+    expect(jobShapes(fake.started)).toEqual([{ id, prompt: "a red fox in the snow", refs: [] }]);
     expect(chats.get(chat.id)!.messages).toHaveLength(2);
     expect(saved.id).toBe(chat.id);
     // nothing was written to the reserved name yet — the card is the placeholder
     expect(fs.existsSync(PathHelper.resolveImageId(id)!)).toBe(false);
   });
 
-  it("carries the reference ids into the job and into the sidecar", async () => {
+  it("the job is given a guard that notices the chat's deletion", async () => {
+    // the guard replaces the old "does the chat's folder exist" check: the chat
+    // lives in the database now and its folder only once it owns a file — so
+    // the folder said the wrong thing for exactly the chats that start with a
+    // generated picture
+    const chat = newChat();
+    await reply.manualImage(chat, "a red fox in the snow", []);
+    const job = fake.started[0];
+    expect(job.gone()).toBe(false);
+    chats.delete(chat.id);
+    expect(job.gone()).toBe(true);
+  });
+
+  it("carries the reference ids into the job and into the picture row", async () => {
     const chat = newChat();
     const ref = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=", { nameHint: "a harbour" });
     await reply.manualImage(chat, "the same harbour at night", [ref]);
@@ -526,7 +567,7 @@ describe("manualImage", () => {
     expect(job.refs).toEqual([ref]);
     // the picture itself is still ahead (the job writes it), but its story is
     // already next to the name it will appear under
-    expect(ImageMetaFile.read(PathHelper.resolveImageId(job.id)!)).toMatchObject({
+    expect(rowOf(job.id)).toMatchObject({
       prompt: "the same harbour at night",
       refs: [ref],
       source: "manual",
@@ -634,12 +675,11 @@ describe("requestUserTurnImage (the picture of the user's turn)", () => {
       source: "auto",
     });
     expect(started.imageStatus).toEqual({ [started.images[0]]: "pending" });
-    expect(fake.started).toEqual([
+    expect(jobShapes(fake.started)).toEqual([
       {
         id: started.images[0],
         prompt: "a red boat on a calm lake, the sky orange, low evening light",
         refs: [],
-        chatId: chat.id,
       },
     ]);
 
@@ -689,7 +729,7 @@ describe("requestUserTurnImage (the picture of the user's turn)", () => {
     // and the card knows what it was drawn from, with its reference
     const card = chats.get(chat.id)!.messages[2];
     expect(card.generation?.refs).toEqual([photo]);
-    expect(ImageMetaFile.read(PathHelper.resolveImageId(card.images[0]) as string)).toMatchObject({
+    expect(rowOf(card.images[0])).toMatchObject({
       description: "the harbour under the moon",
       prompt: fake.started[0].prompt,
       refs: [photo],
@@ -753,11 +793,11 @@ describe("requestUserTurnImage (the picture of the user's turn)", () => {
     expect(job.prompt).toContain(
       "the first reference image shows the red-haired woman — draw them with exactly the same face, hair and outfit",
     );
-    // the card says who is on it, in the row and in the sidecar, so the next
+    // the card says who is on it, in its picture row, so the next
     // picture of her can be drawn from this one
     const card = chats.get(chat.id)!.messages[1];
     expect(card.depicts).toEqual(["char:alice"]);
-    expect(ImageMetaFile.read(PathHelper.resolveImageId(card.images[0]) as string)).toMatchObject({
+    expect(rowOf(card.images[0])).toMatchObject({
       depicts: ["char:alice"],
     });
   });
@@ -882,7 +922,7 @@ describe("regenerateImage", () => {
     const { chat, message, image } = chatWithCard();
     const fresh = await reply.regenerateImage(chat, message, image);
     expect(fake.cancelled).toEqual([image]);
-    expect(fake.started).toEqual([{ id: image, prompt: "a red fox", refs: [], chatId: chat.id }]);
+    expect(jobShapes(fake.started)).toEqual([{ id: image, prompt: "a red fox", refs: [] }]);
     const msg = fresh!.messages.find((m) => m.id === message.id)!;
     expect(msg.imageStatus).toEqual({ [image]: "pending" });
     expect(msg.generation).toMatchObject({ prompt: "a red fox", source: "manual" });
@@ -914,12 +954,12 @@ describe("regenerateImage", () => {
   it("regenerates with a user-typed prompt override and stores it everywhere", async () => {
     const { chat, message, image } = chatWithCard();
     const fresh = await reply.regenerateImage(chat, message, image, "a blue fox");
-    expect(fake.started).toEqual([{ id: image, prompt: "a blue fox", refs: [], chatId: chat.id }]);
+    expect(jobShapes(fake.started)).toEqual([{ id: image, prompt: "a blue fox", refs: [] }]);
     const msg = fresh!.messages.find((m) => m.id === message.id)!;
     expect(msg.generation).toMatchObject({ prompt: "a blue fox" });
     expect(msg.imageStatus).toEqual({ [image]: "pending" });
-    // the sidecar next to the picture keeps pace with the card
-    expect(ImageMetaFile.read(PathHelper.resolveImageId(image) as string)).toMatchObject({
+    // the row of the picture keeps pace with the card
+    expect(rowOf(image)).toMatchObject({
       description: "a red fox in the snow",
       prompt: "a blue fox",
     });
@@ -932,18 +972,18 @@ describe("regenerateImage", () => {
     const fresh = chats.get(chat.id)!;
     const card = fresh.messages[1];
     await reply.regenerateImage(fresh, card, photo);
-    expect(fake.started).toEqual([{ id: photo, prompt: "a red boat", refs: [], chatId: chat.id }]);
+    expect(jobShapes(fake.started)).toEqual([{ id: photo, prompt: "a red boat", refs: [] }]);
   });
 });
 
 describe("editPicture", () => {
-  it("edits the description and the prompt of a card, in the row and in the sidecar", async () => {
+  it("edits the description and the prompt of a card, in the row and in the picture row", async () => {
     const { chat, message, image } = chatWithCard();
     const fresh = reply.editPicture(chat, message, { description: "a fox at dawn", prompt: "a red fox at dawn" });
     const msg = fresh!.messages.find((m) => m.id === message.id)!;
     expect(msg.text).toBe("a fox at dawn");
     expect(msg.generation).toMatchObject({ prompt: "a red fox at dawn" });
-    expect(ImageMetaFile.read(PathHelper.resolveImageId(image) as string)).toMatchObject({
+    expect(rowOf(image)).toMatchObject({
       description: "a fox at dawn",
       prompt: "a red fox at dawn",
     });
@@ -978,12 +1018,12 @@ describe("editPicture", () => {
     expect(fs.existsSync(PathHelper.resolveImageId(image)!)).toBe(true); // the old file stays
   });
 
-  it('kind "file" clears the prompt from the row and the sidecar, kind "generated" keeps it', () => {
+  it('kind "file" clears the prompt from the card and its picture row, "generated" keeps it', () => {
     const { chat, message, image } = chatWithCard({ prompt: "a red fox" });
     const asFile = reply.editPicture(chat, message, { kind: "file" })!;
     const cleared = asFile.messages.find((m) => m.id === message.id)!;
     expect(cleared.generation).toBeUndefined();
-    expect(ImageMetaFile.read(PathHelper.resolveImageId(image) as string)?.prompt).toBeUndefined();
+    expect(imageMeta.get(image)?.prompt).toBeUndefined();
     // persist the cleared state before reading it back (the row is what the
     // service keeps in memory here)
     chats.save(asFile);
@@ -994,11 +1034,16 @@ describe("editPicture", () => {
     expect(made.generation).toMatchObject({ prompt: "a red fox at dawn", source: "manual" });
   });
 
-  it("an empty prompt is stored as a real edit (the card has nothing to redraw from)", () => {
+  it("an empty prompt is a real edit: the card is left with nothing to redraw from", () => {
     const { chat, message } = chatWithCard({ prompt: "a red fox" });
     const fresh = reply.editPicture(chat, message, { kind: "generated", prompt: "   " });
     const msg = fresh!.messages.find((m) => m.id === message.id)!;
-    expect(msg.generation?.prompt).toBe("");
+    // an empty prompt is no value, so the row does not keep one: the ↻ of the
+    // card is what absence means to the UI, exactly as the empty string was
+    expect(msg.generation?.prompt).toBeUndefined();
+    expect(rowOf(msg.images[0])).not.toHaveProperty("prompt");
+    // the rest of the card survives the edit — only the prompt went
+    expect(rowOf(msg.images[0]).description).toBeDefined();
   });
 });
 
@@ -1101,10 +1146,10 @@ describe("captionPicture", () => {
     expect(textGeneration.describeModel).toBe("seer");
     // the file next to the picture is the portable copy — it carries the
     // caption too, so a hand edit and the app read the same thing
-    expect(ImageMetaFile.read(PathHelper.resolveImageId(out!.messages[1].images[0])!)).toMatchObject({
+    expect(rowOf(out!.messages[1].images[0])).toMatchObject({
       description: "a small red boat on a calm lake",
     });
-    // and it survives a re-read: the sidecar is what wins there
+    // and it survives a re-read: the table is what wins there
     expect(chats.get(chat.id)!.messages[1].text).toBe("a small red boat on a calm lake");
   });
 

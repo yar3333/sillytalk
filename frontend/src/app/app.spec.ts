@@ -9,6 +9,7 @@ import {
   ChatMessage,
   Character,
   ChatSummary,
+  Picture,
   User,
 } from '../services/api';
 import { InputPanel } from '../components/input-panel/input-panel';
@@ -16,9 +17,11 @@ import { MessageRow } from '../components/message-row/message-row';
 import { TopBar } from '../components/top-bar/top-bar';
 import { ChatSettingsDialog } from '../components/chat-settings-dialog/chat-settings-dialog';
 import { PictureDialog } from '../components/picture-dialog/picture-dialog';
+import { PictureLibraryComponent } from '../components/picture-library/picture-library';
 import { ChatStore } from '../services/chat-store';
 import { ConfigStore } from '../services/config-store';
 import { ImageStore } from '../services/image-store';
+import { PictureLibraryStore } from '../services/picture-library-store';
 import {
   DEFAULT_REASONING_LEVELS,
   chatLabelOf,
@@ -1152,7 +1155,15 @@ describe('PictureDialog — the picture editor', () => {
   function fakeApiForPicture() {
     return {
       mediaUrl,
-      pictureCatalog: () => Promise.resolve({ images: [cardImage, otherImage] }),
+      // The one catalog: ids with their row (the browser and the card editor read
+      // the same list).
+      listPictures: () =>
+        Promise.resolve({
+          pictures: [
+            { id: cardImage, description: 'a fox in the snow', exists: true },
+            { id: otherImage, exists: true },
+          ],
+        }),
       composePicturePrompt: (chatId: string, messageId?: string) => {
         planned.push({ chatId, messageId });
         return Promise.resolve({
@@ -1394,6 +1405,245 @@ describe('PictureDialog — the picture editor', () => {
     expect(patched).toEqual([
       { chatId: 'chat-1', messageId: 'card-1', patch: { description: 'my photo', kind: 'file' } },
     ]);
+  });
+});
+
+// The picture browser: the whole data folder in one list, each picture with the
+// row that describes it, edited here rather than through a card. What matters is
+// that the edit goes to the picture (the table) and not to a message, and that a
+// rename — a file move — is its own action with the server's refusal shown.
+describe('PictureLibrary — the picture browser', () => {
+  const boat = 'chat-1/files/a-red-boat-1a2b3c.png';
+  const anchor = 'characters/alice/photos/photo1.jpg';
+  let chat: Chat;
+  let listed: Picture[];
+  let edited: { id: string; patch: Record<string, unknown> }[];
+  let renamed: { id: string; newId: string }[];
+  let renameFails: string | null;
+  let reloadedChats: number;
+  // How long the answer of a save takes to come back — the test of the form
+  // racing its own request needs a reply that arrives late.
+  let editDelayMs = 0;
+
+  function fakeApi(): any {
+    return {
+      mediaUrl: (id: string) => '/api/media?path=' + encodeURIComponent(id),
+      listPictures: () => Promise.resolve({ pictures: listed }),
+      editPicture: (id: string, patch: Record<string, unknown>) => {
+        edited.push({ id, patch });
+        const row = listed.find((p) => p.id === id);
+        const next = { ...(row ?? { id, exists: true }), ...patch };
+        return new Promise((r) => setTimeout(() => r({ picture: next as Picture }), editDelayMs));
+      },
+      renamePicture: (id: string, newId: string) => {
+        renamed.push({ id, newId });
+        if (renameFails) return Promise.reject(new Error(renameFails));
+        const row = listed.find((p) => p.id === id)!;
+        listed = listed.map((p) => (p.id === id ? { ...p, id: newId } : p));
+        return Promise.resolve({ picture: { ...row, id: newId } });
+      },
+      getChat: () => {
+        reloadedChats += 1;
+        return Promise.resolve(chat);
+      },
+      getCharacters: () => Promise.resolve([]),
+      getUsers: () => Promise.resolve([]),
+      getChats: () => Promise.resolve([]),
+    };
+  }
+
+  async function render(): Promise<{ fixture: ComponentFixture<PictureLibraryComponent>; el: HTMLElement }> {
+    await TestBed.resetTestingModule();
+    TestBed.configureTestingModule({
+      imports: [PictureLibraryComponent],
+      providers: [{ provide: ApiService, useValue: fakeApi() }],
+    });
+    const store = TestBed.inject(PictureLibraryStore);
+    store.openLibrary();
+    await new Promise((r) => setTimeout(r, 0));
+    const fixture = TestBed.createComponent(PictureLibraryComponent);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    return { fixture, el: fixture.nativeElement as HTMLElement };
+  }
+
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+
+  beforeEach(() => {
+    chat = {
+      id: 'chat-1',
+      createdAt: 0,
+      characterIds: ['c1'],
+      userId: 'u1',
+      modelId: 'm1',
+      messages: [],
+    };
+    listed = [
+      { id: boat, description: 'a red boat on a calm lake', prompt: 'a red boat at dusk', refs: [anchor], exists: true },
+      { id: anchor, exists: true },
+      { id: 'chat-9/files/gone-1a2b3c.png', description: 'a picture with no file', exists: false },
+    ];
+    edited = [];
+    renamed = [];
+    renameFails = null;
+    reloadedChats = 0;
+    editDelayMs = 0;
+  });
+
+  it('lists every picture with its description, and the missing file is marked', async () => {
+    const { el } = await render();
+    const rows = [...el.querySelectorAll('[data-testid=picture-row]')];
+    expect(rows).toHaveLength(3);
+    expect(rows[0].textContent).toContain('a-red-boat-1a2b3c.png');
+    expect(rows[0].textContent).toContain('a red boat on a calm lake');
+    // a row whose file is gone is shown as gone, not hidden: it is a record the
+    // user should be able to see and clear
+    expect(rows[2].classList.contains('gone')).toBe(true);
+    expect(rows[2].querySelector('.lib-thumb-gone')).not.toBeNull();
+    // the first picture is selected, and its fields are filled from its row
+    const description = el.querySelector('[data-testid=picture-description]') as HTMLTextAreaElement;
+    expect(description.value).toBe('a red boat on a calm lake');
+    expect((el.querySelector('[data-testid=picture-prompt]') as HTMLTextAreaElement).value).toBe(
+      'a red boat at dusk',
+    );
+    expect(el.querySelectorAll('[data-testid=picture-ref-remove]')).toHaveLength(1);
+    expect((el.querySelector('[data-testid=picture-id-input]') as HTMLInputElement).value).toBe(boat);
+  });
+
+  it('saving writes the picture row, not a message, and re-reads the chat that shows it', async () => {
+    const { el } = await render();
+    // the browser re-reads the CURRENT chat after a save — so there has to be
+    // one open (a card of it may be the picture being edited)
+    TestBed.inject(ChatStore).applyChat(chat);
+    const description = el.querySelector('[data-testid=picture-description]') as HTMLTextAreaElement;
+    description.value = 'corrected by hand';
+    description.dispatchEvent(new Event('input'));
+    (el.querySelector('[data-testid=picture-save]') as HTMLButtonElement).click();
+    await tick();
+
+    expect(edited).toEqual([
+      { id: boat, patch: { description: 'corrected by hand', prompt: 'a red boat at dusk', refs: [anchor] } },
+    ]);
+    // the card of a chat reads the same row, so the conversation is re-read: the
+    // caption changes there without a reload
+    expect(reloadedChats).toBe(1);
+    // the list shows the new words right away
+    expect(TestBed.inject(PictureLibraryStore).pictures()[0].description).toBe('corrected by hand');
+  });
+
+  it('a reference can be dropped and added back; the pick never offers the picture itself', async () => {
+    const { fixture, el } = await render();
+    const optionsOf = () =>
+      [...el.querySelectorAll('[data-testid=picture-ref-add] option')].map((o) => (o as HTMLOptionElement).value).filter(Boolean);
+    // the picture being edited is never its own reference and a row whose file is
+    // gone is not a reference a job could read; the one picture it does use is
+    // already chosen, so it is not offered either
+    expect(optionsOf()).toEqual([]);
+    expect(el.querySelectorAll('[data-testid=picture-ref-remove]')).toHaveLength(1);
+
+    (el.querySelector('[data-testid=picture-ref-remove]') as HTMLButtonElement).click();
+    fixture.detectChanges();
+    expect(el.querySelectorAll('[data-testid=picture-ref-remove]')).toHaveLength(0);
+    expect(el.querySelector('.refs-none')).not.toBeNull();
+    // with the slot free, the catalog offers the picture again
+    expect(optionsOf()).toEqual([anchor]);
+
+    const add = el.querySelector('[data-testid=picture-ref-add]') as HTMLSelectElement;
+    add.value = anchor;
+    add.dispatchEvent(new Event('change'));
+    fixture.detectChanges();
+    expect(el.querySelectorAll('[data-testid=picture-ref-remove]')).toHaveLength(1);
+    expect(optionsOf()).toEqual([]);
+
+    // and the restored list is what Save would send
+    (el.querySelector('[data-testid=picture-save]') as HTMLButtonElement).click();
+    await tick();
+    expect(edited[0].patch['refs']).toEqual([anchor]);
+  });
+
+  it('renaming is its own action: disabled until the id is edited, it sends the new path', async () => {
+    const { fixture, el } = await render();
+    const rename = el.querySelector('[data-testid=picture-rename]') as HTMLButtonElement;
+    expect(rename.disabled).toBe(true);
+
+    const idInput = el.querySelector('[data-testid=picture-id-input]') as HTMLInputElement;
+    idInput.value = 'chat-1/files/a-boat-at-sunset-9z8y7x.png';
+    idInput.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+    expect((el.querySelector('[data-testid=picture-rename]') as HTMLButtonElement).disabled).toBe(false);
+
+    (el.querySelector('[data-testid=picture-rename]') as HTMLButtonElement).click();
+    await tick();
+    await tick();
+
+    expect(renamed).toEqual([{ id: boat, newId: 'chat-1/files/a-boat-at-sunset-9z8y7x.png' }]);
+    // the selection follows the picture to its new path
+    expect(TestBed.inject(PictureLibraryStore).selectedId()).toBe('chat-1/files/a-boat-at-sunset-9z8y7x.png');
+  });
+
+  it('a save that answers late does not wipe the new id being typed', async () => {
+    // The user saves a caption and, without waiting for the answer, starts
+    // retyping the id. The answer brings the row back and the store replaces its
+    // object — refilling the form from it then would erase what is being typed
+    // and leave Rename disabled forever.
+    editDelayMs = 20;
+    const { fixture, el } = await render();
+    const description = el.querySelector('[data-testid=picture-description]') as HTMLTextAreaElement;
+    description.value = 'retitled while the save is on its way';
+    description.dispatchEvent(new Event('input'));
+    (el.querySelector('[data-testid=picture-save]') as HTMLButtonElement).click();
+
+    const idInput = el.querySelector('[data-testid=picture-id-input]') as HTMLInputElement;
+    idInput.value = 'chat-1/files/a-boat-at-sunset-9z8y7x.png';
+    idInput.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+    expect((el.querySelector('[data-testid=picture-rename]') as HTMLButtonElement).disabled).toBe(false);
+
+    // the answer lands and the store has a new object for the row
+    await new Promise((r) => setTimeout(r, 40));
+    expect(TestBed.inject(PictureLibraryStore).pictures()[0].description).toBe('retitled while the save is on its way');
+    fixture.detectChanges();
+
+    expect((el.querySelector('[data-testid=picture-id-input]') as HTMLInputElement).value).toBe(
+      'chat-1/files/a-boat-at-sunset-9z8y7x.png',
+    );
+    expect((el.querySelector('[data-testid=picture-rename]') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('a refused name lands in the error banner and keeps the picture where it was', async () => {
+    renameFails = 'There is already a file at "chat-1/files/x.png"';
+    const { el } = await render();
+    const idInput = el.querySelector('[data-testid=picture-id-input]') as HTMLInputElement;
+    idInput.value = 'chat-1/files/x.png';
+    idInput.dispatchEvent(new Event('input'));
+    await tick();
+    (el.querySelector('[data-testid=picture-rename]') as HTMLButtonElement).click();
+    await tick();
+
+    expect(TestBed.inject(UiStore).error()).toContain('already a file');
+    expect(TestBed.inject(PictureLibraryStore).selectedId()).toBe(boat);
+  });
+
+  it('the filter narrows the list by name and by description', async () => {
+    const { el } = await render();
+    const filter = el.querySelector('[data-testid=picture-filter]') as HTMLInputElement;
+    filter.value = 'calm lake';
+    filter.dispatchEvent(new Event('input'));
+    await tick();
+    const rows = [...el.querySelectorAll('[data-testid=picture-row]')];
+    expect(rows).toHaveLength(1);
+    expect(rows[0].textContent).toContain('a-red-boat');
+
+    filter.value = 'photo';
+    filter.dispatchEvent(new Event('input'));
+    await tick();
+    expect(el.querySelectorAll('[data-testid=picture-row]')).toHaveLength(1);
+
+    filter.value = '';
+    filter.dispatchEvent(new Event('input'));
+    await tick();
+    expect(el.querySelectorAll('[data-testid=picture-row]')).toHaveLength(3);
   });
 });
 

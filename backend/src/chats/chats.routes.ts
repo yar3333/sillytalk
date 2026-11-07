@@ -436,8 +436,8 @@ export function createChatsRouter(
   // the description (what is on it), the prompt it should be redrawn with, the
   // picture itself (`image` — an existing image id of the data folder the card
   // should point at) and the `kind` the card is now ("generated" / "file").
-  // The sidecar *.json next to the file is updated along with the message, so
-  // the copy the user can hand-edit never lags behind.
+  // The picture's row of the images table is updated along with the message, so
+  // the one source a card is read from never lags behind.
   router.patch("/:id/messages/:messageId/picture", (req, res) => {
     const chat = chats.get(req.params.id);
     if (!chat) {

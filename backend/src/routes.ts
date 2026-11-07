@@ -10,6 +10,8 @@ import { createChatsRouter } from "./chats/chats.routes";
 import { createConfigRouter } from "./configuration/config.routes";
 import { createImageRouter } from "./image_generation/image.routes";
 import { createPersonsRouter } from "./persons/persons.routes";
+import { createPicturesRouter } from "./images/images.routes";
+import { PictureLibraryService } from "./images/PictureLibraryService";
 import { HttpHelper } from "./shared/HttpHelper";
 import { PathHelper } from "./shared/PathHelper";
 
@@ -28,6 +30,7 @@ export function createApiRouter(
   chats: ChatsService,
   configuration: ConfigurationService,
   reply: ReplyService,
+  pictures: PictureLibraryService,
 ): express.Router {
   const apiRouter = express.Router();
 
@@ -35,8 +38,8 @@ export function createApiRouter(
 
   // An image is addressed by its id — its path relative to the data folder —
   // so it is served by one route of its own rather than by a route per folder
-  // (a chat file, an imported character photo and a picture a sidecar points
-  // at are all just images). The id arrives as a query parameter and is
+  // (a chat file, an imported character photo and a persona avatar are all
+  // just images). The id arrives as a query parameter and is
   // resolved through PathHelper.resolvePictureId, which accepts only a file
   // inside the folders pictures live in (the chat files, a character folder, a
   // persona folder), and HttpHelper.sendImage then refuses a name that is not
@@ -61,6 +64,9 @@ export function createApiRouter(
   apiRouter.use("/persons", createPersonsRouter(persons, reply));
   apiRouter.use("/chats", createChatsRouter(chats, reply, characters, imageGeneration));
   apiRouter.use("/image", createImageRouter(imageGeneration, reply, chats));
+  // The picture browser: every picture of the data folder with its row of the
+  // images table, and the edit/rename of one of them.
+  apiRouter.use("/pictures", createPicturesRouter(pictures));
 
   return apiRouter;
 }

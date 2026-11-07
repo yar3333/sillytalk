@@ -2,6 +2,7 @@ import { Component, OnDestroy, OnInit, inject, signal } from '@angular/core';
 import { ChatSummary } from '../../services/api';
 import { ConfigStore } from '../../services/config-store';
 import { ChatStore } from '../../services/chat-store';
+import { PictureLibraryStore } from '../../services/picture-library-store';
 import { chatHintOf, chatTitleOf, messageCountLabel } from '../../services/helpers';
 
 // The header: character / persona (dropdown menus), the chat title and model,
@@ -314,12 +315,15 @@ import { chatHintOf, chatTitleOf, messageCountLabel } from '../../services/helpe
           ⋮
         </button>
 
-        <!-- Main menu: only Settings now (the chat-management items moved to
-             the "Chat: <date>" menu) -->
+        <!-- Main menu: the settings and the picture browser (the chat-management
+             items live in the "Chat: <date>" menu) -->
         @if (menuOpen()) {
           <div class="dropdown">
           <button class="opt" data-testid="settings" (click)="configStore.openSettings()">
             Settings
+          </button>
+          <button class="opt" data-testid="picture-library" (click)="openPictureLibrary()">
+            Pictures
           </button>
         </div>
       }
@@ -339,6 +343,7 @@ export class TopBar implements OnInit, OnDestroy {
   readonly visionMenuOpen = signal(false);
   readonly chatMenuOpen = signal(false);
   readonly chatDotsOpen = signal(false);
+  private readonly pictureLibrary = inject(PictureLibraryStore);
   private onDocClick = () => this.closeMenus();
 
   ngOnInit(): void {
@@ -357,6 +362,14 @@ export class TopBar implements OnInit, OnDestroy {
     this.visionMenuOpen.set(false);
     this.chatMenuOpen.set(false);
     this.chatDotsOpen.set(false);
+  }
+
+  // The picture browser is a dialog, not a menu: opening it closes the menu it
+  // was clicked from (the document click that would otherwise close the dialog
+  // never happens — the click is stopped here).
+  openPictureLibrary(): void {
+    this.closeMenus();
+    this.pictureLibrary.openLibrary();
   }
 
   // Opening one menu closes the others so they do not overlap.

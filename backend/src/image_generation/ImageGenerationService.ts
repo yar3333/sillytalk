@@ -4,7 +4,7 @@ import { randomUUID } from "crypto";
 import { Model } from "../configuration/Model";
 import { PathHelper } from "../shared/PathHelper";
 import { ImageGenerationRecord } from "../shared/ImageMeta";
-import { ImageMetaFile } from "../shared/ImageMetaFile";
+import { ImageMetaService } from "../images/ImageMetaService";
 import { ConfigurationService } from "../configuration/ConfigurationService";
 import { createToken } from "../di";
 import { ImageGenerator } from "../configuration/ImageGenerator";
@@ -80,6 +80,10 @@ export class ImageGenerationService {
     // The configuration service — read on demand, so a job that starts after
     // a settings change probes the current generators.
     private readonly configuration: ConfigurationService,
+    // The images table: the row of a finished picture records the prompt it was
+    // drawn with and the generator that drew it, which is what a card is
+    // redrawn from and what the picture browser shows.
+    private readonly imageMeta: ImageMetaService,
   ) {}
 
   hasAvailableGenerator(): boolean {
@@ -152,18 +156,23 @@ export class ImageGenerationService {
   // chat when `result` resolves. The job removes itself from the registry when
   // done.
   //
-  // On success the generation data is mirrored into the sidecar *.json next to
-  // the file (the prompt, the references, the generator that ran) so the
-  // picture carries its own story outside the database; a description the user
+  // On success the generation data is written into the picture's row of the
+  // images table (the prompt, the references, the generator that ran) — the one
+  // place a card reads its story from; a description the user
   // wrote in the meantime is left alone (the write merges, it does not replace).
   startImageJob(opts: {
     id: string;
     prompt: string;
     refs: string[];
-    chatId?: string;
+    // The job's owner may disappear while it waits in the queue. The caller
+    // says how to notice ("gone" is consulted right before the run starts) —
+    // this service knows generators, not chats, so it does not ask after them
+    // by itself; an id that is only a path is not evidence that the chat that
+    // reserved it still exists.
+    gone?: () => boolean;
     meta?: ImageGenerationRecord;
   }): ImageJob {
-    const { id, prompt, refs, chatId, meta } = opts;
+    const { id, prompt, refs, gone, meta } = opts;
     const target = PathHelper.resolveImageId(id);
     const dir = target ? path.dirname(target) : null;
     const entry: JobEntry = {
@@ -181,9 +190,10 @@ export class ImageGenerationService {
       const temp = path.join(dir, `.${path.basename(target)}.tmp-${randomUUID().slice(0, 8)}`);
       try {
         if (entry.cancelled) return { status: "cancelled", hadOld };
-        // The chat was deleted while the job waited in the queue — do not
-        // recreate its folder with an orphan image.
-        if (chatId && !fs.existsSync(PathHelper.chatDir(chatId))) {
+        // The owner of the job (the chat of its card) was deleted while the
+        // job waited in the queue — do not recreate its folder with an orphan
+        // image.
+        if (gone?.()) {
           return { status: "failed", error: "The chat was deleted", hadOld: false };
         }
         fs.mkdirSync(dir, { recursive: true });
@@ -201,7 +211,10 @@ export class ImageGenerationService {
           return { status: "cancelled", hadOld };
         }
         fs.renameSync(temp, target);
-        ImageMetaFile.write(target, {
+        // The row of the picture records how it was made: the prompt, the
+        // references, the generator and the model. A description written while
+        // the job ran is left alone — this is a merge, not a replace.
+        this.imageMeta.set(id, {
           ...(meta
             ? {
                 prompt: meta.prompt,

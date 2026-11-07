@@ -269,8 +269,8 @@ export class PictureDialog implements OnInit {
     this.description.set(msg.text);
     this.chosenId.set(target.image);
     this.api
-      .pictureCatalog()
-      .then((res) => this.catalog.set(res.images))
+      .listPictures()
+      .then((res) => this.catalog.set(res.pictures.map((p) => p.id)))
       .catch((e) => this.ui.error.set(String((e as Error).message)))
       .finally(() => this.catalogLoading.set(false));
   }
@@ -396,7 +396,7 @@ export class PictureDialog implements OnInit {
         imageId: this.chosenId(),
         data: this.pickedData() || undefined,
         // The two cast fields travel only when the dialog actually changed them
-        // — a patch that repeats what the card says would rewrite the sidecar
+        // — a patch that repeats what the card says would rewrite the row
         // for nothing (and an empty list of them IS an edit: it clears).
         refs: sameList(this.refs(), this.initialRefs) ? undefined : this.refs(),
         depicts: sameList(this.depicts(), this.initialDepicts) ? undefined : this.depicts(),

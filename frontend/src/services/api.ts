@@ -127,8 +127,9 @@ export interface ChatMessage {
 }
 
 // How a picture was made: the prompt it was drawn from, the pictures it was
-// drawn from, and who asked for it. The same block lives in the sidecar *.json
-// next to the file, where the user can edit it by hand.
+// drawn from, and who asked for it. This is a slice of the picture's row in the
+// one global images table — the same row an image card is filled from, so a card
+// and the picture browser can never show two different versions of it.
 export interface ImageGenerationData {
   prompt?: string;
   refs?: string[];
@@ -142,6 +143,20 @@ export interface ImageGenerationData {
   height?: number;
   steps?: number;
   createdAt?: string;
+}
+
+// One row of the picture browser: a picture of the data folder plus whatever the
+// images table says about it. The `id` is the image identifier — the path
+// relative to the data root — which is also what a rename changes.
+// `exists: false` is a row whose file is gone: not a picture, but the record of
+// one the user should still be able to see and clear.
+export interface Picture extends ImageGenerationData {
+  id: string;
+  description?: string;
+  depicts?: string[];
+  exists: boolean;
+  // When the file was last written (ms) — the browser's order.
+  modifiedAt?: number;
 }
 
 export interface Chat {
@@ -365,8 +380,8 @@ export class ApiService {
   // Edits what a card says about its picture — the picture-editor dialog: the
   // description (what is on it), the prompt to redraw it with, the picture the
   // card should point at (`image` — an existing id of the data folder) and what
-  // the card IS now (`kind`). The sidecar next to the file is updated along
-  // with the message.
+  // the card IS now (`kind`). The picture's row of the images table is updated
+  // along with the message.
   patchPicture(
     chatId: string,
     messageId: string,
@@ -385,10 +400,37 @@ export class ApiService {
     });
   }
 
-  // The picture catalog: every picture of the data folder as an image id,
-  // newest first — the "from a file" pick of the picture editor.
-  pictureCatalog(): Promise<{ images: string[] }> {
-    return this.req<{ images: string[] }>('/image/pictures');
+  // The picture browser: every picture of the data folder with the row of the
+  // images table that describes it, newest first. Also the "from a file" pick of
+  // the picture editor — one catalog for both, so the two can never disagree
+  // about what the data folder holds.
+  listPictures(): Promise<{ pictures: Picture[] }> {
+    return this.req<{ pictures: Picture[] }>('/pictures');
+  }
+
+  // Edits what the images table says about a picture, wherever it came from:
+  // the description, the prompt and its references, the cast on it. A card of
+  // any chat that shows this picture reads the change on its next poll, because
+  // the card is the row.
+  editPicture(
+    id: string,
+    patch: { description?: string; prompt?: string; refs?: string[]; depicts?: string[] },
+  ): Promise<{ picture: Picture }> {
+    return this.req<{ picture: Picture }>('/pictures', {
+      method: 'PATCH',
+      body: JSON.stringify({ id, ...patch }),
+    });
+  }
+
+  // Renames a picture. An id is a path, so this is a real file move: the chat
+  // cards and the stored reference lists that named the old path follow it.
+  // A name that is taken or points outside the picture folders comes back as a
+  // 400 with the reason in the banner.
+  renamePicture(id: string, newId: string): Promise<{ picture: Picture }> {
+    return this.req<{ picture: Picture }>('/pictures/rename', {
+      method: 'POST',
+      body: JSON.stringify({ id, newId }),
+    });
   }
 
   // The prompt for a picture card, planned from the dialogue ("From the chat").
@@ -425,9 +467,9 @@ export class ApiService {
 
   // Writes the caption of a picture card the user attached without one: the
   // chat's vision model looks at the file and its sentence becomes the card's
-  // caption (the row and the sidecar). A card that already has a caption and a
-  // chat with nothing that can see both come back unchanged — so this is safe to
-  // fire after every attachment.
+  // caption (the picture's row of the images table). A card that already has a
+  // caption and a chat with nothing that can see both come back unchanged — so
+  // this is safe to fire after every attachment.
   captionPicture(chatId: string, messageId: string): Promise<{ chat: Chat }> {
     return this.req<{ chat: Chat }>('/image/caption', {
       method: 'POST',

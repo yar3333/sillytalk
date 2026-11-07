@@ -14,7 +14,7 @@ describe("PathHelper.resolveImageId (the storage rule: what a stored id may poin
     expect(PathHelper.resolveImageId(id)).toBe(path.join(dataRoot, "chats", "c1", "files", "a-boat-1a2b3c.png"));
   });
 
-  it("accepts a file of the data root itself (a hand-edited sidecar may point at any image of the data folder)", () => {
+  it("accepts a file of the data root itself (a hand-edited row may point at any image of the data folder)", () => {
     expect(PathHelper.resolveImageId("config.json")).toBe(path.join(dataRoot, "config.json"));
   });
 
@@ -99,7 +99,7 @@ describe("PathHelper.listPictureIds (the catalog the picture editor offers)", ()
       fs.writeFileSync(file, content);
     };
     write("chats/c1/files/a-red-boat.png");
-    write("chats/c1/files/a-red-boat.png.json", "{}"); // a sidecar, not a picture
+    write("chats/c1/files/a-red-boat.png.json", "{}"); // a leftover sidecar, not a picture
     write("chats/c1/files/notes.txt");
     write("chats/chats.db");
     write("characters/alice/photos/photo1.jpg");

@@ -9,10 +9,12 @@ import { CharacterDialog } from '../components/character-dialog/character-dialog
 import { UserDialog } from '../components/user-dialog/user-dialog';
 import { ModelDialog } from '../components/model-dialog/model-dialog';
 import { PictureDialog } from '../components/picture-dialog/picture-dialog';
+import { PictureLibraryComponent } from '../components/picture-library/picture-library';
 import { ImageLightbox } from '../components/image-lightbox/image-lightbox';
 import { ConfigStore } from '../services/config-store';
 import { ChatStore } from '../services/chat-store';
 import { ImageStore } from '../services/image-store';
+import { PictureLibraryStore } from '../services/picture-library-store';
 
 @Component({
   selector: 'app-root',
@@ -27,6 +29,7 @@ import { ImageStore } from '../services/image-store';
     UserDialog,
     ModelDialog,
     PictureDialog,
+    PictureLibraryComponent,
     ImageLightbox,
   ],
   template: `
@@ -145,6 +148,21 @@ import { ImageStore } from '../services/image-store';
         </div>
       }
 
+      <!-- The picture browser: every picture of the data folder with what the
+           images table says about it, and the editor of one (its description,
+           its prompt, its ID). Opened from the "⋮" menu. -->
+      @if (pictureLibrary.open()) {
+        <div class="modal-backdrop" (click)="pictureLibrary.close()">
+          <div class="modal modal-library" (click)="$event.stopPropagation()">
+            <div class="modal-head">
+              <span>Pictures</span>
+              <button class="icon-btn" data-testid="picture-library-close" title="Close" (click)="pictureLibrary.close()">✕</button>
+            </div>
+            <app-picture-library />
+          </div>
+        </div>
+      }
+
       <!-- The image lightbox: opened when the user clicks an image in the chat. -->
       <app-image-lightbox />
     </div>
@@ -157,6 +175,9 @@ export class App implements OnInit {
   // Exposed for the unit tests (the template uses the child components, which
   // inject ImageStore themselves).
   readonly imageStore = inject(ImageStore);
+  // The picture browser dialog is opened from the top-bar menu and closed here,
+  // so the shell holds the store the backdrop clicks.
+  readonly pictureLibrary = inject(PictureLibraryStore);
   private readonly messageList = viewChild(MessageList);
 
   ngOnInit(): void {

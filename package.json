@@ -9,7 +9,9 @@
     "build": "cd backend && npm run build && cd ../frontend && npm run build",
     "start": "cd backend && npm start",
     "dev": "concurrently -n backend,frontend -c blue,green \"cd backend && npm run dev\" \"cd frontend && npm start\"",
-    "package": "node scripts/package-npm.mjs"
+    "package": "node scripts/package-npm.mjs",
+    "test:e2e": "cd e2e && npx playwright test && node ../scripts/discard-unchanged-screenshots.mjs",
+    "shots:clean": "node scripts/discard-unchanged-screenshots.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

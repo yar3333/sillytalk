@@ -3,6 +3,8 @@ import os from "os";
 import path from "path";
 import { ChatsService } from "./ChatsService";
 import { ConfigurationService } from "../configuration/ConfigurationService";
+import { ImageMetaService } from "../images/ImageMetaService";
+import { PathHelper } from "../shared/PathHelper";
 import { Chat } from "./Chat";
 import { Config } from "../configuration/Config";
 import { Model } from "../configuration/Model";
@@ -38,12 +40,15 @@ function configOf(names: string[]): Config {
 let root: string;
 let modelNames: string[];
 let chats: ChatsService;
+// The one images table the chats write their picture data to — the test reads
+// it directly to see what the chat store actually stored.
+let imageMeta: ImageMetaService;
 // Every service the test opened — all are closed before the temp root is
-// wiped (on Windows an open chats.db blocks deleting its folder).
-let open: ChatsService[];
+// wiped (on Windows an open database file blocks deleting its folder).
+let open: { close(): void }[];
 
 function makeChats(): ChatsService {
-  const service = new ChatsService(() => root, new StubConfigurationService());
+  const service = new ChatsService(() => root, new StubConfigurationService(), imageMeta);
   open.push(service);
   return service;
 }
@@ -52,7 +57,7 @@ function makeChats(): ChatsService {
 // would see (proves the last write reached the database, not just some
 // in-memory state).
 function peek(id: string): Chat | null {
-  const fresh = new ChatsService(() => root, new StubConfigurationService());
+  const fresh = new ChatsService(() => root, new StubConfigurationService(), imageMeta);
   try {
     return fresh.get(id);
   } finally {
@@ -69,6 +74,8 @@ beforeEach(() => {
   process.env.SILLYTALK_DATA_DIR = root;
   modelNames = ["m1", "m2"];
   open = [];
+  imageMeta = new ImageMetaService(() => root);
+  open.push(imageMeta);
   chats = makeChats();
 });
 
@@ -418,7 +425,7 @@ describe("clone", () => {
     expect(copy.createdAt).toBeGreaterThanOrEqual(chat.createdAt);
   });
 
-  it("copies the pictures into the copy's own folder and repoints the card, its refs and its sidecar", () => {
+  it("copies the pictures into the copy's own folder and repoints the card, its refs and its row", () => {
     const chat = chats.create(["a"], "m1", "me");
     const ref = chats.saveImage(chat.id, PNG, { nameHint: "a red boat" });
     const card = chats.saveImage(chat.id, PNG, { nameHint: "a fox" });
@@ -435,25 +442,24 @@ describe("clone", () => {
     expect(copiedRef).toMatch(new RegExp(`^${copy.id}/files/a-red-boat-[0-9a-f]{6}\\.png$`));
     expect(copiedCard.text).toBe("a fox in the snow");
 
-    // both files of the copy exist on disk, with their sidecars
+    // both files of the copy exist on disk, each with a row of the images table
+    // of its own (the copy's row, not the source's under a new name)
     const cardFile = path.join(root, copiedCard.images[0]!.split("/").join(path.sep));
     const refFile = path.join(root, copiedRef!.split("/").join(path.sep));
     expect(fs.existsSync(cardFile)).toBe(true);
     expect(fs.existsSync(refFile)).toBe(true);
-    const sidecar = JSON.parse(fs.readFileSync(`${cardFile}.json`, "utf-8")) as {
-      description?: string;
-      prompt?: string;
-      refs?: string[];
-    };
-    expect(sidecar.description).toBe("a fox in the snow");
-    expect(sidecar.prompt).toBe("a fox in the snow");
-    expect(sidecar.refs).toEqual([copiedRef]);
+    const row = imageMeta.get(copiedCard.images[0]);
+    expect(row?.description).toBe("a fox in the snow");
+    expect(row?.prompt).toBe("a fox in the snow");
+    expect(row?.refs).toEqual([copiedRef]);
 
     // the two chats are independent: deleting the source leaves the copy intact
+    // (its rows included — a deleted chat takes the rows of its own files only)
     expect(chats.delete(chat.id)).toBe(true);
     const after = chats.get(copy.id)!;
     expect(after.messages[0].text).toBe("a fox in the snow");
     expect(fs.existsSync(cardFile)).toBe(true);
+    expect(imageMeta.get(copiedCard.images[0])?.description).toBe("a fox in the snow");
   });
 
   it("a picture that was still being drawn becomes a broken card with a reason", () => {
@@ -513,7 +519,7 @@ describe("the message primitives", () => {
     expect(chats.get(chat.id)!.messages.map((m) => m.text)).toEqual(["first", "second"]);
   });
 
-  it("addImageMessage appends an image card and writes its sidecar", () => {
+  it("addImageMessage appends an image card and writes the picture's row", () => {
     const chat = chats.create(["a"], "m1", "me");
     const image = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=", { nameHint: "a red boat" });
     const card = chats.addImageMessage(chat, image, {
@@ -525,31 +531,39 @@ describe("the message primitives", () => {
     expect(card.text).toBe("a red boat on a calm lake");
     expect(card.images).toEqual([image]);
     expect(chats.get(chat.id)!.messages).toEqual([card]);
-    // the sidecar next to the file carries the same story
-    const sidecar = JSON.parse(fs.readFileSync(`${path.join(root, image)}.json`, "utf-8")) as Record<string, unknown>;
-    expect(sidecar.description).toBe("a red boat on a calm lake");
-    expect(sidecar.prompt).toBe("a red boat at dusk");
-    expect(sidecar.source).toBe("manual");
+    // the row of the picture in the images table is where that came from
+    const row = imageMeta.get(image);
+    expect(row?.description).toBe("a red boat on a calm lake");
+    expect(row?.prompt).toBe("a red boat at dusk");
+    expect(row?.source).toBe("manual");
+    // and the message itself persists no copy of it: a stale in-memory card
+    // saved over the top cannot outlive the table's version of the truth
+    const stale = chats.get(chat.id)!.messages[0];
+    stale.text = "written into the row by hand";
+    stale.generation = { prompt: "a prompt that was never saved" };
+    chats.save(chats.get(chat.id)!);
+    const again = chats.get(chat.id)!.messages[0];
+    expect(again.text).toBe("a red boat on a calm lake");
+    expect(again.generation?.prompt).toBe("a red boat at dusk");
   });
 
-  it("a pending card is stored before its file exists; a card with nothing to say gets no sidecar", () => {
+  it("a pending card is stored before its file exists; a card with nothing to say gets no row", () => {
     const chat = chats.create(["a"], "m1", "me");
     const id = chats.reservedImageId(chat.id, "a picture for the conversation");
     const card = chats.addImageMessage(chat, id, { status: "pending" });
     expect(card.imageStatus).toEqual({ [id]: "pending" });
     expect(fs.existsSync(path.join(root, id))).toBe(false);
-    expect(fs.existsSync(`${path.join(root, id)}.json`)).toBe(false);
+    expect(imageMeta.get(id)).toBeNull();
     expect(chats.get(chat.id)!.messages[0].imageStatus).toEqual({ [id]: "pending" });
 
-    // once the app knows how the picture came to be, the sidecar records it —
+    // once the app knows how the picture came to be, its row records it —
     // even while the file itself is still being drawn
     const planned = chats.reservedImageId(chat.id, "a red boat at dusk");
     chats.addImageMessage(chat, planned, { generation: { source: "auto", model: "m1" }, status: "pending" });
-    const sidecar = JSON.parse(fs.readFileSync(`${path.join(root, planned)}.json`, "utf-8")) as Record<string, unknown>;
-    expect(sidecar).toMatchObject({ source: "auto", model: "m1" });
+    expect(imageMeta.get(planned)).toMatchObject({ source: "auto", model: "m1" });
   });
 
-  it("editMessage applies the text and saves (a card refreshes its sidecar)", () => {
+  it("editMessage applies the text and saves (the caption of a card goes to its row)", () => {
     const chat = chats.create(["a"], "m1", "me");
     const image = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=");
     chat.messages.push({
@@ -565,8 +579,57 @@ describe("the message primitives", () => {
     chats.editMessage(chat, chat.messages[0], "new");
     const saved = chats.get(chat.id)!.messages[0];
     expect(saved.text).toBe("new");
-    const sidecar = JSON.parse(fs.readFileSync(`${path.join(root, image)}.json`, "utf-8")) as Record<string, unknown>;
-    expect(sidecar.description).toBe("new");
+    expect(imageMeta.get(image)?.description).toBe("new");
+  });
+
+  it("a card that carries a caption of its own is not read — the table is the only source", () => {
+    // The shape of the old format (a legacy chat.json folder, where the message
+    // row carried the picture's caption and prompt itself). The old format is
+    // not supported, so that copy is not adopted into the table and not shown
+    // either: a card reads its words from the images table and nowhere else. A
+    // picture nobody described reads as undescribed, and the user writes its
+    // caption again in the picture browser.
+    const legacyId = "legacy-card";
+    const image = `${legacyId}/files/fox.png`;
+    fs.mkdirSync(path.join(root, legacyId, "files"), { recursive: true });
+    fs.writeFileSync(path.join(root, legacyId, "files", "fox.png"), "img");
+    fs.writeFileSync(
+      path.join(root, legacyId, "chat.json"),
+      JSON.stringify({
+        id: legacyId,
+        characterIds: ["a"],
+        userId: "me",
+        modelId: "m1",
+        messages: [
+          {
+            id: "old1",
+            role: "user",
+            userId: "me",
+            kind: "image",
+            text: "a fox in the snow",
+            images: [image],
+            generation: { prompt: "a fox at dawn", source: "manual" },
+            depicts: ["char:alice"],
+            timestamp: 1,
+          },
+        ],
+      }),
+      "utf-8",
+    );
+
+    const card = chats.get(legacyId)!.messages[0];
+    expect(card.kind).toBe("image");
+    expect(card.images).toEqual([image]);
+    expect(card.text).toBe("");
+    expect(card.generation).toBeUndefined();
+    expect(card.depicts).toBeUndefined();
+    expect(imageMeta.get(image)).toBeNull();
+
+    // and the words appear the moment somebody writes them where they belong
+    imageMeta.set(image, { description: "a fox in the snow", prompt: "a fox at dawn" });
+    const described = chats.get(legacyId)!.messages[0];
+    expect(described.text).toBe("a fox in the snow");
+    expect(described.generation?.prompt).toBe("a fox at dawn");
   });
 
   it("editImageCard edits the description and the prompt together", () => {
@@ -584,11 +647,10 @@ describe("the message primitives", () => {
     const saved = chats.get(chat.id)!.messages[0];
     expect(saved.text).toBe("a different scene");
     expect(saved.generation).toEqual({ prompt: "a snowy pine ridge", source: "manual" });
-    const sidecar = JSON.parse(fs.readFileSync(`${path.join(root, image)}.json`, "utf-8")) as Record<string, unknown>;
-    expect(sidecar).toMatchObject({ description: "a different scene", prompt: "a snowy pine ridge" });
+    expect(imageMeta.get(image)).toMatchObject({ description: "a different scene", prompt: "a snowy pine ridge" });
   });
 
-  it("editImageCard drops the generation block from the row and the sidecar (the card is a plain file now)", () => {
+  it("editImageCard drops the generation fields from the row (the card is a plain file now)", () => {
     const chat = chats.create(["a"], "m1", "me");
     const image = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=");
     chats.addImageMessage(chat, image, {
@@ -600,12 +662,10 @@ describe("the message primitives", () => {
     chats.editImageCard(fresh, card, { generation: null });
 
     const saved = chats.get(chat.id)!.messages[0];
-    // the sidecar wins over the row on read, so it must be cleaned too —
-    // otherwise the prompt would come back
     expect(saved.generation).toBeUndefined();
-    const sidecar = JSON.parse(fs.readFileSync(`${path.join(root, image)}.json`, "utf-8")) as Record<string, unknown>;
-    expect(sidecar.description).toBe("as saved");
-    for (const key of ["prompt", "refs", "source", "model"]) expect(sidecar).not.toHaveProperty(key);
+    const row = imageMeta.get(image);
+    expect(row?.description).toBe("as saved");
+    for (const key of ["prompt", "refs", "source", "model"]) expect(row).not.toHaveProperty(key);
   });
 
   it("editImageCard replaces the generation block with the given one", () => {
@@ -631,7 +691,7 @@ describe("the message primitives", () => {
     expect(chats.setMessageText(chat.id, "missing", "x")).toBe(false);
   });
 
-  it("replaceMessageImageId repoints the card and moves its status and sidecar", () => {
+  it("replaceMessageImageId repoints the card and moves its status and row", () => {
     const chat = chats.create(["a"], "m1", "me");
     const placeholder = chats.reservedImageId(chat.id, "a picture for the conversation");
     const card = chats.addImageMessage(chat, placeholder, {
@@ -647,12 +707,9 @@ describe("the message primitives", () => {
     const saved = chats.get(chat.id)!.messages[0];
     expect(saved.images).toEqual([readable]);
     expect(saved.imageStatus).toEqual({ [readable]: "pending" });
-    // the metadata followed the name and nothing is left under the old one
-    const sidecar = JSON.parse(
-      fs.readFileSync(`${path.join(root, readable)}.json`, "utf-8"),
-    ) as Record<string, unknown>;
-    expect(sidecar).toMatchObject({ description: "what it shows", prompt: "a red boat at dusk" });
-    expect(fs.existsSync(`${path.join(root, placeholder)}.json`)).toBe(false);
+    // the row followed the name and nothing is left under the old one
+    expect(imageMeta.get(readable)).toMatchObject({ description: "what it shows", prompt: "a red boat at dusk" });
+    expect(imageMeta.get(placeholder)).toBeNull();
     // a second rename of the same image finds nothing to move
     expect(chats.replaceMessageImageId(chat.id, card.id, placeholder, readable)).toBe(false);
   });
@@ -697,16 +754,19 @@ describe("saveImage / reservedImageId", () => {
     expect(fs.readFileSync(path.join(root, id))).toEqual(Buffer.from("aGVsbG8=", "base64"));
   });
 
-  it("names the file after the hint and writes the sidecar it was given", () => {
+  it("names the file after the hint and stores the metadata it was given", () => {
     const chat = chats.create(["a"], "m1", "me");
     const id = chats.saveImage(chat.id, "data:image/jpeg;base64,aGVsbG8=", {
       nameHint: "A sunset over the sea",
       meta: { description: "the bay in the evening", prompt: "a sunset over the sea" },
     });
     expect(id).toMatch(new RegExp(`^${chat.id}/files/a-sunset-over-the-sea-[0-9a-f]{6}\\.jpg$`));
-    const sidecar = JSON.parse(fs.readFileSync(`${path.join(root, id)}.json`, "utf-8")) as Record<string, unknown>;
-    expect(sidecar.description).toBe("the bay in the evening");
-    expect(sidecar.prompt).toBe("a sunset over the sea");
+    expect(imageMeta.get(id)).toMatchObject({
+      description: "the bay in the evening",
+      prompt: "a sunset over the sea",
+    });
+    // nothing but the picture is written into the folder
+    expect(fs.readdirSync(path.join(root, chat.id, "files"))).toEqual([path.basename(id)]);
   });
 
   it("two saves of the same picture never share a file", () => {
@@ -759,13 +819,11 @@ describe("replaceMessageImage", () => {
     // what hangs on the message now is the user's file: no prompt, no source
     expect(saved.generation).toBeUndefined();
     expect(saved.text).toBe("a red fox in the snow");
-    const newSidecar = JSON.parse(fs.readFileSync(`${path.join(root, replacement)}.json`, "utf-8")) as Record<string, unknown>;
-    expect(newSidecar).toMatchObject({ description: "a red fox in the snow" });
-    expect(newSidecar.prompt).toBeUndefined();
+    expect(imageMeta.get(replacement)).toMatchObject({ description: "a red fox in the snow" });
+    expect(imageMeta.get(replacement)?.prompt).toBeUndefined();
     // the file that left the message keeps its own story (another picture may
     // still use it as a reference)
-    const oldSidecar = JSON.parse(fs.readFileSync(`${path.join(root, generated)}.json`, "utf-8")) as Record<string, unknown>;
-    expect(oldSidecar.prompt).toBe("a red fox in the snow");
+    expect(imageMeta.get(generated)?.prompt).toBe("a red fox in the snow");
   });
 
   it("clears the status and the error of the picture it replaced", () => {
@@ -792,16 +850,18 @@ describe("importImage / importCharacterPhoto", () => {
     expect(fs.readFileSync(path.join(root, id!))).toEqual(Buffer.from("img"));
   });
 
-  it("an imported picture keeps its sidecar", () => {
+  it("an imported picture keeps the metadata of its source", () => {
     const chat = chats.create(["a"], "m1", "me");
-    const photo = path.join(root, "outside", "harbour.png");
+    const photo = PathHelper.resolveImageId("outside/harbour.png")!;
     fs.mkdirSync(path.dirname(photo), { recursive: true });
     fs.writeFileSync(photo, "img");
-    fs.writeFileSync(`${photo}.json`, JSON.stringify({ description: "a harbour at dusk", prompt: "a harbour" }));
+    imageMeta.set("outside/harbour.png", { description: "a harbour at dusk", prompt: "a harbour" });
     const id = chats.importImage(chat.id, photo)!;
     const card = chats.addImageMessage(chat, id);
     // the card of an imported picture describes it right away
     expect(chats.get(chat.id)!.messages.find((m) => m.id === card.id)!.text).toBe("a harbour at dusk");
+    // the copy has its own row; the source keeps its one
+    expect(imageMeta.get("outside/harbour.png")?.description).toBe("a harbour at dusk");
   });
 
   it("returns null when the photo does not exist", () => {
@@ -830,7 +890,7 @@ describe("normalizeImages", () => {
   });
 });
 
-describe("the sidecar metadata on read", () => {
+describe("the picture data on read", () => {
   function chatWithCard(): { chatId: string; id: string; cardId: string } {
     const chat = chats.create(["a"], "m1", "me");
     const id = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=", { nameHint: "a red boat" });
@@ -841,74 +901,53 @@ describe("the sidecar metadata on read", () => {
     return { chatId: chat.id, id, cardId: card.id };
   }
 
-  it("a hand-edited sidecar wins over the copy in the database", () => {
+  it("the card of a chat IS the row of its picture: a row edit reads back here", () => {
     const { chatId, id } = chatWithCard();
     expect(chats.get(chatId)!.messages[0].text).toBe("as saved");
 
-    fs.writeFileSync(
-      path.join(root, `${id}.json`),
-      JSON.stringify({
-        description: "edited by hand",
-        prompt: "a red boat at dusk with gulls over the harbour",
-        source: "manual",
-      }),
-      "utf-8",
-    );
+    // what the picture browser (or a hand-written UPDATE) puts into the table is
+    // what the chat shows — there is no second copy that could disagree
+    imageMeta.set(id, {
+      description: "edited in the browser",
+      prompt: "a red boat at dusk with gulls over the harbour",
+      source: "manual",
+    });
     const msg = chats.get(chatId)!.messages[0];
-    expect(msg.text).toBe("edited by hand");
+    expect(msg.text).toBe("edited in the browser");
     expect(msg.generation?.prompt).toBe("a red boat at dusk with gulls over the harbour");
   });
 
-  it("a sidecar the user saved under the short name is found too", () => {
+  it("a picture with no row reads as a card with an empty caption", () => {
     const chat = chats.create(["a"], "m1", "me");
     const id = chats.reservedImageId(chat.id, "a red boat");
-    chats.addImageMessage(chat, id); // nothing to say yet — no sidecar was written
-    expect(fs.existsSync(`${path.join(root, id)}.json`)).toBe(false);
-    // "a-red-boat-xxxx.png.json" is the canonical name; the user wrote the
-    // shorter "a-red-boat-xxxx.json" instead — the app still reads it
-    const short = path.join(root, id.slice(0, -".png".length) + ".json");
-    fs.mkdirSync(path.dirname(short), { recursive: true });
-    fs.writeFileSync(short, JSON.stringify({ description: "the shorter name" }), "utf-8");
-    expect(chats.get(chat.id)!.messages[0].text).toBe("the shorter name");
-
-    // and the next write goes to the canonical name, removing the alias
-    chats.writeSidecar(id, "now the canonical one", undefined);
-    expect(fs.existsSync(short)).toBe(false);
-    expect(chats.get(chat.id)!.messages[0].text).toBe("now the canonical one");
+    chats.addImageMessage(chat, id);
+    expect(imageMeta.get(id)).toBeNull();
+    const card = chats.get(chat.id)!.messages[0];
+    expect(card.text).toBe("");
+    expect(card.generation).toBeUndefined();
+    // the moment somebody describes the picture, every reader sees it
+    imageMeta.set(id, { description: "described later" });
+    expect(chats.get(chat.id)!.messages[0].text).toBe("described later");
   });
 
-  it("an unparsable sidecar is ignored, not fatal", () => {
-    const { chatId, id } = chatWithCard();
-    fs.writeFileSync(path.join(root, `${id}.json`), "{ this is not json", "utf-8");
-    expect(chats.get(chatId)!.messages[0].text).toBe("as saved");
-  });
-
-  it("a write keeps the fields the app knows nothing about (the user's own notes)", () => {
+  it("a row that says nothing is deleted, not stored empty", () => {
     const { id } = chatWithCard();
-    const file = path.join(root, `${id}.json`);
-    fs.writeFileSync(file, JSON.stringify({ my_note: "keep me", seed: 17, description: "as saved" }), "utf-8");
-    chats.writeSidecar(id, "a new caption", { prompt: "a new prompt" });
-    const sidecar = JSON.parse(fs.readFileSync(file, "utf-8")) as Record<string, unknown>;
-    expect(sidecar.my_note).toBe("keep me");
-    expect(sidecar.seed).toBe(17);
-    expect(sidecar.description).toBe("a new caption");
-    expect(sidecar.prompt).toBe("a new prompt");
-    expect(sidecar.updatedAt).toEqual(expect.any(String));
+    imageMeta.set(id, { description: undefined, prompt: undefined, refs: undefined, source: undefined });
+    expect(imageMeta.get(id)).toBeNull();
+    // clearing the prompt of a card is a real edit: the row then has no prompt
+    imageMeta.set(id, { prompt: "" });
+    expect(imageMeta.get(id)?.prompt).toBeUndefined();
   });
 
-  it("a reference list pointing outside the data folders is dropped", () => {
+  it("a row whose refs name another chat's picture keeps them: the generator, not the store, decides", () => {
     const { chatId, id } = chatWithCard();
-    // a picture of ANOTHER chat is still inside the data folder, so it stays;
-    // a path pointing out of it never reaches the generator
+    // an id is a path relative to the data folder, so a picture of ANOTHER chat
+    // is a perfectly good reference; only resolveRefPaths drops what does not
+    // resolve to a file when the job actually runs
     const other = chats.create(["b"], "m1", "me");
     const elsewhere = chats.saveImage(other.id, "data:image/png;base64,aGVsbG8=", { nameHint: "another picture" });
-    fs.writeFileSync(
-      path.join(root, `${id}.json`),
-      JSON.stringify({ description: "as saved", refs: [elsewhere, "/etc/passwd", "../secret.png"] }),
-      "utf-8",
-    );
-    const card = chats.get(chatId)!.messages[0];
-    expect(card.generation?.refs).toEqual([elsewhere]);
+    imageMeta.set(id, { refs: [elsewhere] });
+    expect(chats.get(chatId)!.messages[0].generation?.refs).toEqual([elsewhere]);
   });
 });
 
