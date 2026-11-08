@@ -39,6 +39,41 @@ export function chatTimeOf(cs: ChatSummary): string {
   return cs.lastMessageAt ? formatTime(cs.lastMessageAt) : '';
 }
 
+// Whether a character/persona ID is a usable folder name: letters, digits,
+// ".", "-" and "_", no leading dot, at most 100 characters — the backend's
+// isValidId mirrored here so the dialog can say it before the server does.
+export function isEntityId(id: string): boolean {
+  return (
+    id.length > 0 &&
+    id.length <= 100 &&
+    !id.startsWith('.') &&
+    !id.includes('/') &&
+    !id.includes('\\') &&
+    /^[\p{L}\p{N}._-]+$/u.test(id)
+  );
+}
+
+// The sentence both dialogs show when the typed ID is not a usable folder name
+// (one place: both catalogs carry the same rule and must say it the same way).
+export const ENTITY_ID_RULE =
+  'The ID is the name of a folder: letters, digits and ". - _", no leading dot, at most 100 characters';
+
+// A suggested ID for a new character or persona: the name in lower case with
+// what a folder name cannot hold collapsed into single "-"
+// ("Alice of the Green Coat" → "alice-of-the-green-coat"). The ID is the name of
+// the entity's folder, so the suggestion follows the folder rules; nothing
+// usable in the name leaves the field empty for the user to fill.
+export function suggestEntityId(name: string): string {
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}._-]+/gu, '-')
+    .replace(/^[-.]+|[-.]+$/g, '')
+    .slice(0, 40)
+    .replace(/[-.]+$/g, '');
+  return slug;
+}
+
 // The title of a chat: its own name, or the date it was created when it has
 // none (that is a chat's default name). A row that carries no creation date at
 // all falls back to its last message date, so the header is never empty.

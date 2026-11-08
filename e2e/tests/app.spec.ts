@@ -24,7 +24,14 @@ test.beforeAll(async () => {
   comfy = await startMockComfy();
 });
 
-test.afterAll(() => {
+test.afterAll(async () => {
+  // A test that ends while its model call is still in flight must not have the
+  // mock closed under it: the backend's provider request then dies on a dead
+  // port (ECONNRESET) and the backend answers ITSELF with a "⚠️ Error: fetch
+  // failed" bubble in that chat — a row the next test reads as its own. An
+  // in-flight reply takes the mock's delay (300 ms), so a short grace period
+  // here makes the leftover call harmless instead of polluting the suite.
+  await new Promise((resolve) => setTimeout(resolve, 1500));
   llm?.close();
   llm = null;
   comfy?.close();
@@ -399,11 +406,14 @@ test('switching the active persona keeps the authors of the old messages', async
   await expect(userMsgs.first()).toHaveText(sender1);
   await page.screenshot({ path: `${SHOTS}/08a-persona-switched.png` });
 
-  // The new message goes from the second persona; wait for the end of the
-  // reply so a background request does not recreate the chat after the
-  // clear in the next test.
+  // The new message goes from the second persona; the wait is for the SECOND
+  // reply itself, never for the typing indicator alone: right after the click
+  // the indicator is not visible yet, so a hidden-check there passes at once
+  // and the test would end with the model call still in flight — the worker
+  // teardown would then close the mock under it (see the afterAll note).
   await page.getByTestId('input').fill('Now reply with one word: ready?');
   await page.getByTestId('send').click();
+  await expect(assistant).toHaveCount(2, { timeout: 120000 });
   await expect(page.getByTestId('typing')).toBeHidden({ timeout: 120000 });
   await expect(userMsgs.last()).toHaveText(persona2, { timeout: 15000 });
   await page.screenshot({ path: `${SHOTS}/08b-persona-second-message.png` });
@@ -670,6 +680,90 @@ test('the entity dialogs: edit, create, clone and delete', async ({ page }) => {
   await page.getByTestId('model-chip').click();
   await expect(page.getByTestId('model-option-row').filter({ hasText: 'test model' })).toHaveCount(0);
   await page.screenshot({ path: `${SHOTS}/10c-model-dialogs.png` });
+});
+
+// The ID of a character is the name of its folder, and a chat names its
+// participants and the author of every line by that ID. So the ID the user types
+// when creating one is what the server must store, and renaming it afterwards
+// has to take the open conversation along — the participant in the header and
+// the name over the lines she already said.
+test('the ID of a character: written at creation, renamed with the chat following', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByTestId('input')).toBeVisible();
+
+  // ---- create: the ID field suggests one from the name, the user overwrites it ----
+  await page.getByTestId('char-name').click();
+  await page.getByTestId('new-character').click();
+  await expect(page.getByTestId('character-dialog')).toBeVisible();
+  const idField = page.getByTestId('char-id-input');
+  await page.getByTestId('char-name-input').fill('Mira of the North');
+  await expect(idField).toHaveValue('mira-of-the-north');
+  await idField.fill('mira-north');
+  await page.getByTestId('char-save').click();
+  await expect(page.getByTestId('character-dialog')).toBeHidden();
+  // stored under exactly the ID the user wrote (an ID is the folder name)
+  const catalog = (await (await fetch(`${API}/characters`)).json()) as Array<{
+    id: string;
+    name: string;
+  }>;
+  expect(catalog.find((c) => c.name === 'Mira of the North')?.id).toBe('mira-north');
+  await page.screenshot({ path: `${SHOTS}/10d-character-id-creation.png` });
+
+  // ---- a conversation she takes part in, so the rename has something to follow ----
+  await page.getByTestId('char-name').click();
+  const miraRow = page.getByTestId('char-option').filter({ hasText: 'Mira of the North' });
+  await expect(miraRow).toHaveCount(1);
+  await miraRow.locator('.opt-toggle').click();
+  await page.mouse.click(10, 300);
+  await expect(page.getByTestId('char-name')).toContainText('Mira of the North');
+  await page.getByTestId('input').fill('Say hello to both of us.');
+  await page.getByTestId('send').click();
+  await expect(page.getByTestId('typing')).toBeHidden({ timeout: 120000 });
+  const senders = page.locator('.msg-sender');
+  await expect(senders.filter({ hasText: 'Mira of the North' }).first()).toBeVisible();
+
+  // ---- rename the ID: the field shows the current one, Rename is dead until it
+  // says another folder name, and Save alone does not move anything ----
+  await page.getByTestId('char-name').click();
+  await miraRow.getByTestId('char-edit').click();
+  await expect(page.getByTestId('character-dialog')).toBeVisible();
+  const rename = page.getByTestId('char-rename');
+  await expect(page.getByTestId('char-id-input')).toHaveValue('mira-north');
+  await expect(rename).toBeDisabled();
+  await page.getByTestId('char-id-input').fill('the-north-mira');
+  await expect(rename).toBeEnabled();
+  await rename.click();
+  // the dialog switches to the renamed character instead of closing on a folder
+  // that does not exist any more (the same path Clone takes)
+  await expect(page.getByTestId('char-id-input')).toHaveValue('the-north-mira');
+  await page.getByRole('button', { name: 'Cancel' }).click();
+  await expect(page.getByTestId('character-dialog')).toBeHidden();
+
+  // the folder really moved
+  const after = (await (await fetch(`${API}/characters`)).json()) as Array<{ id: string; name: string }>;
+  expect(after.find((c) => c.name === 'Mira of the North')?.id).toBe('the-north-mira');
+
+  // ---- the chat followed: the same participant in the header, the same name
+  // over the lines she already said — and on the server, where the chat stores
+  // the ID: her id in the participant list and in the author of her line, while
+  // the other participant's id and the persona of the chat are untouched ----
+  await expect(page.getByTestId('char-name')).toContainText('Mira of the North');
+  await expect(senders.filter({ hasText: 'Mira of the North' }).first()).toBeVisible();
+  // the app keeps the open chat in the store, not in the URL — the id comes
+  // from the chat list (newest first)
+  const chats = (await (await fetch(`${API}/chats`)).json()) as Array<{ id: string }>;
+  const stored = (await (await fetch(`${API}/chats/${chats[0].id}`)).json()) as {
+    characterIds: string[];
+    userId: string;
+    messages: Array<{ characterId?: string }>;
+  };
+  expect([...stored.characterIds].sort()).toEqual(['alice', 'the-north-mira']);
+  expect(stored.userId).toBe('carol');
+  expect(stored.messages.map((m) => m.characterId).filter(Boolean).sort()).toEqual([
+    'alice',
+    'the-north-mira',
+  ]);
+  await page.screenshot({ path: `${SHOTS}/10e-character-id-renamed.png` });
 });
 
 // The header menus: opening one closes the others, the model pick via the

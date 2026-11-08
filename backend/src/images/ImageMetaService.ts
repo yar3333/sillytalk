@@ -222,24 +222,38 @@ export class ImageMetaService {
   // Points every reference list at a renamed picture, so a prompt that says
   // "the first reference image shows …" keeps naming a picture that exists.
   repointRefs(fromId: string, toId: string): void {
-    if (!fromId || !toId || fromId === toId) return;
+    this.repointList("refs", fromId, toId);
+  }
+
+  // Points every picture's cast at a person that got a new ID: a row that says
+  // "char:alice stands in this picture" has to say it about the same person
+  // after her folder is renamed, or the next plan stops offering the card as
+  // her anchor and the generator draws a stranger.
+  repointDepicts(fromRef: string, toRef: string): void {
+    this.repointList("depicts", fromRef, toRef);
+  }
+
+  // Replaces one entry of a list column in every row that names it. The scan is
+  // over the whole table (the lists are short and the table is one user's
+  // pictures), so a row whose own id is not involved still gets fixed.
+  private repointList(column: "refs" | "depicts", fromValue: string, toValue: string): void {
+    if (!fromValue || !toValue || fromValue === toValue) return;
     const db = this.db();
-    const rows = db.prepare("SELECT id, refs, depicts FROM images").all() as Array<{
+    const rows = db.prepare(`SELECT id, ${column} AS value FROM images`).all() as Array<{
       id: string;
-      refs: string | null;
-      depicts: string | null;
+      value: string | null;
     }>;
-    const update = db.prepare("UPDATE images SET refs = ? WHERE id = ?");
+    const update = db.prepare(`UPDATE images SET ${column} = ? WHERE id = ?`);
     for (const row of rows) {
-      if (!row.refs) continue;
-      let refs: unknown;
+      if (!row.value) continue;
+      let list: unknown;
       try {
-        refs = JSON.parse(row.refs);
+        list = JSON.parse(row.value);
       } catch {
         continue;
       }
-      if (!Array.isArray(refs) || !refs.includes(fromId)) continue;
-      update.run(JSON.stringify(refs.map((x) => (x === fromId ? toId : x))), row.id);
+      if (!Array.isArray(list) || !list.includes(fromValue)) continue;
+      update.run(JSON.stringify(list.map((x) => (x === fromValue ? toValue : x))), row.id);
     }
   }
 

@@ -1,12 +1,20 @@
 import { Component, OnInit, inject, signal } from '@angular/core';
 import { ApiService } from '../../services/api';
+import { ChatStore } from '../../services/chat-store';
 import { ConfigStore } from '../../services/config-store';
+import { isEntityId, suggestEntityId, ENTITY_ID_RULE } from '../../services/helpers';
 import { UiStore } from '../../services/ui-store';
 
-// The character edit dialog: name, description, the avatar. The item is
+// The character edit dialog: ID, name, description, the avatar. The item is
 // taken from ConfigStore.entityDialog (a null id — creating a new one);
 // save/delete/clone — the store actions (the dialog itself holds only the
 // field values). Delete and Clone exist in the edit mode only.
+//
+// The ID is not a label but the name of the character's folder, so it is the one
+// field with a rule of its own: typed by the user when the character is created,
+// and changed afterwards only by the explicit Rename — a folder move the server
+// does (the chats, the photos and the picture rows follow it), never a side
+// effect of Save.
 @Component({
   selector: 'app-character-dialog',
   template: `
@@ -39,6 +47,33 @@ import { UiStore } from '../../services/ui-store';
           (input)="setName($event)"
         />
       </label>
+      <label class="field">
+        <span>ID</span>
+        <input
+          class="grow"
+          type="text"
+          spellcheck="false"
+          placeholder="alice"
+          data-testid="char-id-input"
+          [value]="idDraft()"
+          (input)="setId($event)"
+        />
+        @if (!isNew()) {
+          <button class="btn" data-testid="char-rename" [disabled]="!idChanged()" (click)="renameId()">
+            Rename
+          </button>
+        }
+      </label>
+      <div class="dialog-hint">
+        @if (isNew()) {
+          The ID is the name of the folder the character lives in — letters, digits and ". - _".
+          Suggested from the name, write your own if you want it differently.
+        } @else {
+          Rename moves characters/&lt;id&gt;/ to the new name: the chats that name this character,
+          its photos and avatar and the pictures that show it follow the new ID. Name and
+          description are untouched by it — and Save alone does not rename anything.
+        }
+      </div>
       <textarea
         rows="4"
         placeholder="Description / system prompt — the appearance of the character included, in English: the picture planner reads it out of this text"
@@ -68,11 +103,17 @@ export class CharacterDialog implements OnInit {
   readonly configStore = inject(ConfigStore);
   private api = inject(ApiService);
   private ui = inject(UiStore);
+  private chatStore = inject(ChatStore);
 
   readonly name = signal('');
   readonly description = signal('');
   readonly isNew = signal(true);
   readonly hasAvatar = signal(false);
+  // The ID field: the folder name of a new character, the current one in the
+  // edit mode (where Rename applies it).
+  readonly idDraft = signal('');
+  // The suggested ID follows the name until the user writes one of their own.
+  private idTouched = false;
   // A cache buster for the avatar preview after upload/removal.
   readonly mediaVersion = signal(0);
   private id = '';
@@ -82,6 +123,7 @@ export class CharacterDialog implements OnInit {
     if (dlg?.kind === 'character' && dlg.id) {
       this.id = dlg.id;
       this.isNew.set(false);
+      this.idDraft.set(dlg.id);
       const c = this.configStore.characters().find((x) => x.id === dlg.id);
       if (c) {
         this.name.set(c.name);
@@ -99,10 +141,22 @@ export class CharacterDialog implements OnInit {
     return this.api.characterAvatarUrl(this.id) + '?v=' + this.mediaVersion();
   }
   setName(e: Event): void {
-    this.name.set((e.target as HTMLInputElement).value);
+    const value = (e.target as HTMLInputElement).value;
+    this.name.set(value);
+    if (this.isNew() && !this.idTouched) this.idDraft.set(suggestEntityId(value));
+  }
+  setId(e: Event): void {
+    this.idTouched = true;
+    this.idDraft.set((e.target as HTMLInputElement).value);
   }
   setDescription(e: Event): void {
     this.description.set((e.target as HTMLTextAreaElement).value);
+  }
+
+  // Whether the ID field asks for a move (the edit mode: Rename is dead until
+  // the field says another folder name).
+  idChanged(): boolean {
+    return !this.isNew() && !!this.idDraft().trim() && this.idDraft().trim() !== this.id;
   }
 
   save(): void {
@@ -111,8 +165,40 @@ export class CharacterDialog implements OnInit {
       this.ui.error.set('The name cannot be empty');
       return;
     }
-    this.configStore.saveCharacter(this.isNew() ? null : this.id, nm, this.description().trim());
+    const id = this.idDraft().trim();
+    if (this.isNew() && id && !isEntityId(id)) {
+      this.ui.error.set(ENTITY_ID_RULE);
+      return;
+    }
+    this.configStore.saveCharacter(
+      this.isNew() ? null : this.id,
+      nm,
+      this.description().trim(),
+      this.isNew() ? id : undefined,
+    );
     this.configStore.closeEntityDialog();
+  }
+
+  // Renaming an ID is a folder move, not a field edit: the server moves the
+  // folder and takes the chats, the photos and the picture rows with it. The
+  // dialog then re-opens on the new ID — the modal's keyed block recreates this
+  // component (the same path Clone takes), so the avatar upload and Save go on
+  // working with the name the folder really has.
+  renameId(): void {
+    const next = this.idDraft().trim();
+    if (!isEntityId(next)) {
+      this.ui.error.set(ENTITY_ID_RULE);
+      return;
+    }
+    if (next === this.id) return;
+    this.configStore.renameCharacter(this.id, next).then((newId) => {
+      if (!newId) return; // the banner already says why the name was refused
+      // the open chat names this character in its participant list and in the
+      // author of its lines, and the chat list shows the same names
+      this.chatStore.refreshCurrentChat();
+      void this.chatStore.refreshChats();
+      this.configStore.openCharacterDialog(newId);
+    });
   }
 
   cancel(): void {

@@ -12,6 +12,7 @@ import { createImageRouter } from "./image_generation/image.routes";
 import { createPersonsRouter } from "./persons/persons.routes";
 import { createPicturesRouter } from "./images/images.routes";
 import { PictureLibraryService } from "./images/PictureLibraryService";
+import { EntityIdService } from "./entities/EntityIdService";
 import { HttpHelper } from "./shared/HttpHelper";
 import { PathHelper } from "./shared/PathHelper";
 
@@ -31,6 +32,7 @@ export function createApiRouter(
   configuration: ConfigurationService,
   reply: ReplyService,
   pictures: PictureLibraryService,
+  entityIds: EntityIdService,
 ): express.Router {
   const apiRouter = express.Router();
 
@@ -60,8 +62,8 @@ export function createApiRouter(
   });
 
   apiRouter.use("/config", createConfigRouter(configuration, characters, imageGeneration));
-  apiRouter.use("/characters", createCharactersRouter(characters));
-  apiRouter.use("/persons", createPersonsRouter(persons));
+  apiRouter.use("/characters", createCharactersRouter(characters, entityIds));
+  apiRouter.use("/persons", createPersonsRouter(persons, entityIds));
   apiRouter.use("/chats", createChatsRouter(chats, reply, characters, imageGeneration));
   apiRouter.use("/image", createImageRouter(imageGeneration, reply, chats));
   // The picture browser: every picture of the data folder with its row of the

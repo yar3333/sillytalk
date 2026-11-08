@@ -81,6 +81,24 @@ export class PersonsService {
     return true;
   }
 
+  // Moves the person folder to a new name, i.e. gives the persona a new ID
+  // (the id IS the folder name). Nothing else is touched here: what has to
+  // follow the new ID — the chats and messages authored by this persona, its
+  // avatar as a picture id, the cast refs of the picture rows — is the caller's
+  // business (EntityIdService), because this service owns the folders only.
+  //
+  // Returns false when the source folder does not exist or a folder already
+  // lives at the new name; a rename never overwrites a persona.
+  renameFolder(id: string, newId: string): boolean {
+    if (!this.isValidId(id) || !this.isValidId(newId) || id === newId) return false;
+    const root = this.personsRoot();
+    const from = PathHelper.personDir(id, root);
+    const to = PathHelper.personDir(newId, root);
+    if (!fs.existsSync(from) || fs.existsSync(to)) return false;
+    fs.renameSync(from, to);
+    return true;
+  }
+
   // Copies the person folder (user.json, the avatar) into a new one; the copy
   // is named "<name> (copy)". Returns the new id, null when the source does
   // not exist.

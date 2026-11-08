@@ -915,6 +915,89 @@ export class ChatsService {
     return touched;
   }
 
+  // Points every chat and every message at a participant whose ID changed —
+  // a character folder or a persona folder was renamed, and an ID IS the folder
+  // name, so it is written into the chats and not only into the catalog: a
+  // character lives in `Chat.characterIds` (the reply order) and in the
+  // `characterId` of the lines it already said, a persona in `Chat.userId` (who
+  // new messages of this chat go under) and in the `userId` of its lines. The
+  // author fields are exactly what the display and the labeled history are
+  // resolved through, so a rename that left them behind would turn every old
+  // line into "unknown author".
+  //
+  // Only the fields of the given kind are rewritten: a character and a persona
+  // may legally share an id and renaming one of them must not touch the other.
+  // Returns how many records (chats + messages) were rewritten.
+  repointAuthor(kind: "character" | "person", fromId: string, toId: string): number {
+    if (!fromId || !toId || fromId === toId) return 0;
+    const db = this.db();
+    // The LIKE filter only narrows the scan (an underscore is a wildcard in
+    // LIKE); the field comparison below is what decides.
+    const like = `%"${fromId}"%`;
+    let touched = 0;
+
+    const chatRows = db.prepare("SELECT id, data FROM chats WHERE data LIKE ?").all(like) as Array<{
+      id: string;
+      data: string;
+    }>;
+    const updateChat = db.prepare("UPDATE chats SET data = ? WHERE id = ?");
+    for (const row of chatRows) {
+      let chat: Chat;
+      try {
+        chat = JSON.parse(row.data) as Chat;
+      } catch {
+        continue;
+      }
+      let dirty = false;
+      if (kind === "character" && Array.isArray(chat.characterIds) && chat.characterIds.includes(fromId)) {
+        chat.characterIds = [...new Set(chat.characterIds.map((x) => (x === fromId ? toId : x)))];
+        dirty = true;
+      }
+      if (kind === "person" && chat.userId === fromId) {
+        chat.userId = toId;
+        dirty = true;
+      }
+      if (!dirty) continue;
+      updateChat.run(this.chatData(chat), row.id);
+      touched += 1;
+    }
+
+    const messageRows = db
+      .prepare("SELECT chat_id AS chatId, id, data FROM messages WHERE data LIKE ?")
+      .all(like) as Array<{ chatId: string; id: string; data: string }>;
+    const updateMessage = db.prepare("UPDATE messages SET data = ? WHERE chat_id = ? AND id = ?");
+    const castRef = `${kind === "character" ? "char" : "user"}:${fromId}`;
+    const castTarget = `${kind === "character" ? "char" : "user"}:${toId}`;
+    for (const row of messageRows) {
+      let msg: ChatMessage;
+      try {
+        msg = JSON.parse(row.data) as ChatMessage;
+      } catch {
+        continue;
+      }
+      let dirty = false;
+      if (kind === "character" && msg.characterId === fromId) {
+        msg.characterId = toId;
+        dirty = true;
+      }
+      if (kind === "person" && msg.userId === fromId) {
+        msg.userId = toId;
+        dirty = true;
+      }
+      // A row of the old format can still carry the cast of its own accord;
+      // the pictures table is the authority, but a stored copy must not keep
+      // naming the person by a ref that no longer exists.
+      if (Array.isArray(msg.depicts) && msg.depicts.includes(castRef)) {
+        msg.depicts = msg.depicts.map((x) => (x === castRef ? castTarget : x));
+        dirty = true;
+      }
+      if (!dirty) continue;
+      updateMessage.run(this.messageData(msg), row.chatId, row.id);
+      touched += 1;
+    }
+    return touched;
+  }
+
 
   // Sets (or clears, when status is undefined) the generation status of one
   // image of one message. A single-row read-modify-write, so a job finishing

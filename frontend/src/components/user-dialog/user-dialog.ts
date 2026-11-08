@@ -1,12 +1,20 @@
 import { Component, OnInit, inject, signal } from '@angular/core';
 import { ApiService } from '../../services/api';
+import { ChatStore } from '../../services/chat-store';
 import { ConfigStore } from '../../services/config-store';
+import { isEntityId, suggestEntityId, ENTITY_ID_RULE } from '../../services/helpers';
 import { UiStore } from '../../services/ui-store';
 
-// The persona (user) edit dialog: name, description, the avatar. The item is
+// The persona (user) edit dialog: ID, name, description, the avatar. The item is
 // taken from ConfigStore.entityDialog (a null id — creating a new one);
 // save/delete/clone — the store actions (the dialog itself holds only the
 // field values). Delete and Clone exist in the edit mode only.
+//
+// The ID is the name of the persona's folder, so it follows the same rule as a
+// character's: written by the user when the persona is created, changed later
+// only by the explicit Rename — the folder move the server does, taking the
+// chats and the picture rows with it. A rename of a persona is worth a moment's
+// thought: the chats store this id as the persona their messages go under.
 @Component({
   selector: 'app-user-dialog',
   template: `
@@ -39,6 +47,33 @@ import { UiStore } from '../../services/ui-store';
           (input)="setName($event)"
         />
       </label>
+      <label class="field">
+        <span>ID</span>
+        <input
+          class="grow"
+          type="text"
+          spellcheck="false"
+          placeholder="carol"
+          data-testid="user-id-input"
+          [value]="idDraft()"
+          (input)="setId($event)"
+        />
+        @if (!isNew()) {
+          <button class="btn" data-testid="user-rename" [disabled]="!idChanged()" (click)="renameId()">
+            Rename
+          </button>
+        }
+      </label>
+      <div class="dialog-hint">
+        @if (isNew()) {
+          The ID is the name of the folder the persona lives in — letters, digits and ". - _".
+          Suggested from the name, write your own if you want it differently.
+        } @else {
+          Rename moves users/&lt;id&gt;/ to the new name: the chats that send their messages under
+          this persona, the lines it already said and the pictures that show it follow the new ID.
+          Name and description are untouched by it — and Save alone does not rename anything.
+        }
+      </div>
       <textarea
         rows="4"
         placeholder="Persona description (who you are to the character) — your appearance included, in English: the picture planner reads it out of this text"
@@ -68,11 +103,17 @@ export class UserDialog implements OnInit {
   readonly configStore = inject(ConfigStore);
   private api = inject(ApiService);
   private ui = inject(UiStore);
+  private chatStore = inject(ChatStore);
 
   readonly name = signal('');
   readonly description = signal('');
   readonly isNew = signal(true);
   readonly hasAvatar = signal(false);
+  // The ID field: the folder name of a new persona, the current one in the edit
+  // mode (where Rename applies it).
+  readonly idDraft = signal('');
+  // The suggested ID follows the name until the user writes one of their own.
+  private idTouched = false;
   // A cache buster for the avatar preview after upload/removal.
   readonly mediaVersion = signal(0);
   private id = '';
@@ -82,6 +123,7 @@ export class UserDialog implements OnInit {
     if (dlg?.kind === 'user' && dlg.id) {
       this.id = dlg.id;
       this.isNew.set(false);
+      this.idDraft.set(dlg.id);
       const u = this.configStore.users().find((x) => x.id === dlg.id);
       if (u) {
         this.name.set(u.name);
@@ -99,10 +141,22 @@ export class UserDialog implements OnInit {
     return this.api.userAvatarUrl(this.id) + '?v=' + this.mediaVersion();
   }
   setName(e: Event): void {
-    this.name.set((e.target as HTMLInputElement).value);
+    const value = (e.target as HTMLInputElement).value;
+    this.name.set(value);
+    if (this.isNew() && !this.idTouched) this.idDraft.set(suggestEntityId(value));
+  }
+  setId(e: Event): void {
+    this.idTouched = true;
+    this.idDraft.set((e.target as HTMLInputElement).value);
   }
   setDescription(e: Event): void {
     this.description.set((e.target as HTMLTextAreaElement).value);
+  }
+
+  // Whether the ID field asks for a move (the edit mode: Rename is dead until
+  // the field says another folder name).
+  idChanged(): boolean {
+    return !this.isNew() && !!this.idDraft().trim() && this.idDraft().trim() !== this.id;
   }
 
   save(): void {
@@ -111,8 +165,40 @@ export class UserDialog implements OnInit {
       this.ui.error.set('The name cannot be empty');
       return;
     }
-    this.configStore.saveUser(this.isNew() ? null : this.id, nm, this.description().trim());
+    const id = this.idDraft().trim();
+    if (this.isNew() && id && !isEntityId(id)) {
+      this.ui.error.set(ENTITY_ID_RULE);
+      return;
+    }
+    this.configStore.saveUser(
+      this.isNew() ? null : this.id,
+      nm,
+      this.description().trim(),
+      this.isNew() ? id : undefined,
+    );
     this.configStore.closeEntityDialog();
+  }
+
+  // Renaming an ID is a folder move, not a field edit: the server moves the
+  // folder and takes the chats, the avatar and the picture rows with it. The
+  // dialog then re-opens on the new ID — the modal's keyed block recreates this
+  // component (the same path Clone takes), so the avatar upload and Save go on
+  // working with the name the folder really has.
+  renameId(): void {
+    const next = this.idDraft().trim();
+    if (!isEntityId(next)) {
+      this.ui.error.set(ENTITY_ID_RULE);
+      return;
+    }
+    if (next === this.id) return;
+    this.configStore.renameUser(this.id, next).then((newId) => {
+      if (!newId) return; // the banner already says why the name was refused
+      // this persona is the author of the open chat's user lines and the one
+      // new messages go under; the chat list names it too
+      this.chatStore.refreshCurrentChat();
+      void this.chatStore.refreshChats();
+      this.configStore.openUserDialog(newId);
+    });
   }
 
   cancel(): void {

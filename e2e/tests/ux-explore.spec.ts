@@ -129,7 +129,12 @@ test.beforeAll(async () => {
   fs.mkdirSync(ASSETS, { recursive: true });
 });
 
-test.afterAll(() => {
+test.afterAll(async () => {
+  // The grace period before the mocks go away: a test that ends with its model
+  // call still in flight would otherwise have the mock closed under that call,
+  // and the backend would answer itself with a "fetch failed" error bubble in
+  // the chat the next test then reads. (Same reason as in app.spec.ts.)
+  await new Promise((resolve) => setTimeout(resolve, 1500));
   llm?.close();
   llm = null;
   comfy?.close();

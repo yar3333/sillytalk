@@ -101,6 +101,41 @@ describe("sync", () => {
   });
 });
 
+describe("renameFolder", () => {
+  it("moves the folder and everything in it", () => {
+    characters.save({ id: "alice", name: "Alice", description: "a kind fairy" });
+    fs.writeFileSync(path.join(root, "alice", "photos", "a.png"), "x");
+    fs.writeFileSync(path.join(root, "alice", "avatar.jpg"), "y");
+
+    expect(characters.renameFolder("alice", "elf")).toBe(true);
+
+    expect(fs.existsSync(path.join(root, "alice"))).toBe(false);
+    expect(characters.get("elf")).toEqual({ id: "elf", name: "Alice", description: "a kind fairy" });
+    expect(fs.existsSync(path.join(root, "elf", "photos", "a.png"))).toBe(true);
+    expect(characters.findAvatar("elf")).toBeTruthy();
+  });
+
+  it("refuses a name that is taken and a character that is not there", () => {
+    characters.save({ id: "alice", name: "Alice", description: "" });
+    characters.save({ id: "bob", name: "Bob", description: "" });
+    expect(characters.renameFolder("alice", "bob")).toBe(false);
+    expect(characters.renameFolder("ghost", "someone")).toBe(false);
+    // the refused rename left both exactly where they were
+    expect(characters.get("alice")).toMatchObject({ name: "Alice" });
+    expect(characters.get("bob")).toMatchObject({ name: "Bob" });
+  });
+
+  it("refuses an ID that is not a folder name", () => {
+    characters.save({ id: "alice", name: "Alice", description: "" });
+    for (const bad of ["", "two words", "../elsewhere", ".hidden", "a/b", "a\\b"]) {
+      expect(characters.renameFolder("alice", bad)).toBe(false);
+    }
+    // the same name is not a rename
+    expect(characters.renameFolder("alice", "alice")).toBe(false);
+    expect(characters.get("alice")).toMatchObject({ name: "Alice" });
+  });
+});
+
 describe("migrate", () => {
   it("moves entries from the old config into folders", () => {
     characters.migrate([

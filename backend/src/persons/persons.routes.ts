@@ -2,12 +2,14 @@ import express from "express";
 import { HttpHelper } from "../shared/HttpHelper";
 import { Person } from "./Person";
 import { PersonsService } from "./PersonsService";
+import { EntityIdService } from "../entities/EntityIdService";
 
 // The /persons routes (the persona cards). The JSON body field and the
 // response keys stay "users", and the on-disk layout stays users/<id>/
-// user.json. The domain logic lives in PersonsService; this file is the
-// thin HTTP layer (validation, status codes, streaming).
-export function createPersonsRouter(persons: PersonsService): express.Router {
+// user.json. The domain logic lives in PersonsService (the folders) and in
+// EntityIdService (what a new ID drags along); this file is the thin HTTP layer
+// (validation, status codes, streaming).
+export function createPersonsRouter(persons: PersonsService, entityIds: EntityIdService): express.Router {
   const router = express.Router();
 
   router.get("/", (_req, res) => {
@@ -54,6 +56,28 @@ export function createPersonsRouter(persons: PersonsService): express.Router {
       return;
     }
     res.json({ id: newId, users: persons.listWithAvatars() });
+  });
+
+  // Gives the persona a new ID. An ID is the name of its folder, so this is a
+  // folder move and not a field edit: the chats that send their messages under
+  // this persona, the author of the lines it already said, its avatar as a
+  // picture id and the cast of the picture rows follow the new one (the rules
+  // and the reason are in EntityIdService). The new ID is a path segment, so it
+  // travels in the body.
+  router.post("/:id/rename", (req, res) => {
+    const newId = typeof req.body?.newId === "string" ? req.body.newId.trim() : "";
+    if (!newId) {
+      res.status(400).json({ error: "Expected the new ID (newId field)" });
+      return;
+    }
+    try {
+      entityIds.renamePerson(String(req.params.id), newId);
+      res.json({ id: newId, users: persons.listWithAvatars() });
+    } catch (err) {
+      // The service says why the name is not usable (taken, malformed) — the
+      // banner can show it as it is.
+      res.status(400).json({ error: (err as Error).message });
+    }
   });
 
   // ---- avatar ----

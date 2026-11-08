@@ -731,4 +731,14 @@ export class ChatStore {
       .then((c) => this.setChat(c))
       .catch(() => undefined);
   }
+
+  // Re-reads the CURRENT chat from the server. For the changes that rewrite a
+  // chat behind this store's back — renaming a character or persona ID moves its
+  // folder and rewrites the participant list, the active persona and the author
+  // of every line of every chat — the open conversation has to come back from
+  // the server for its names, its avatars and its picture cards to be right.
+  refreshCurrentChat(): void {
+    const id = this.chat()?.id;
+    if (id) this.refreshChat(id);
+  }
 }

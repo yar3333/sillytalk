@@ -140,13 +140,36 @@ export class ConfigStore {
   }
 
   // ---- characters (the characters/ folders — full list sync) ----
-  // id === null — creates a new one (the id is generated here).
-  saveCharacter(id: string | null, name: string, description: string): void {
+  // id === null — creates a new one; its ID is the newId the user typed (an ID
+  // is the name of the character's folder), with a generated one as the fallback
+  // for a field left empty. A rename is NOT here: it is renameCharacter below,
+  // because an ID is a folder and its move drags the chats and the picture rows
+  // along — a job for the server, not for the list sync (which would delete the
+  // old folder with its photos and write an empty one under the new name).
+  saveCharacter(id: string | null, name: string, description: string, newId?: string): void {
     const chars = this.characters();
     const next = id
       ? chars.map((c) => (c.id === id ? { ...c, name, description } : c))
-      : [...chars, { id: 'c' + Date.now(), name, description }];
+      : [...chars, { id: (newId ?? '').trim() || 'c' + Date.now(), name, description }];
     this.putCharacters(next);
+  }
+
+  // Renames a character: the folder move on the server, with the chats that
+  // name this character, its photos and avatar as picture ids and the cast of
+  // the picture rows following the new ID. Resolves with the new id (null on
+  // error) — the dialog switches to the copy of itself that edits the renamed
+  // character, the way Clone does.
+  renameCharacter(id: string, newId: string): Promise<string | null> {
+    return this.api
+      .renameCharacter(id, newId.trim())
+      .then((res) => {
+        this.characters.set(res.characters);
+        return res.id;
+      })
+      .catch((e) => {
+        this.ui.error.set(String((e as Error).message));
+        return null;
+      });
   }
 
   deleteCharacter(id: string): void {
@@ -176,12 +199,32 @@ export class ConfigStore {
   }
 
   // ---- users (the users/ folders — full list sync) ----
-  saveUser(id: string | null, name: string, description: string): void {
+  // The same rules as a character: id === null creates one, its ID is the newId
+  // the user typed (the name of the persona's folder), and renaming goes to
+  // renameUser, not to the sync.
+  saveUser(id: string | null, name: string, description: string, newId?: string): void {
     const users = this.users();
     const next = id
       ? users.map((u) => (u.id === id ? { ...u, name, description } : u))
-      : [...users, { id: 'u' + Date.now(), name, description }];
+      : [...users, { id: (newId ?? '').trim() || 'u' + Date.now(), name, description }];
     this.putUsers(next);
+  }
+
+  // Renames a persona: the folder move on the server, with the chats that send
+  // their messages under this persona, the author of the lines it already said,
+  // its avatar as a picture id and the cast of the picture rows following the
+  // new ID. Resolves with the new id (null on error).
+  renameUser(id: string, newId: string): Promise<string | null> {
+    return this.api
+      .renameUser(id, newId.trim())
+      .then((res) => {
+        this.users.set(res.users);
+        return res.id;
+      })
+      .catch((e) => {
+        this.ui.error.set(String((e as Error).message));
+        return null;
+      });
   }
 
   deleteUser(id: string): void {

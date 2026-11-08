@@ -778,6 +778,30 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   `description` (when non-empty) is appended to the system prompt by
   `systemPromptFor(character, person, …)` so the model knows who it is talking to. A chat also
   carries its own `sampling` overrides and a `systemSuffix` — see "Per-chat settings" below.
+- **An ID is a folder name, and it is the user's to choose.** The ID of a character or a persona is
+  the name of its folder (`characters/<id>/`, `users/<id>/`), so it is not a label the app slaps on
+  something — it is written into the chats (`Chat.characterIds`, `Chat.userId`, the `characterId` /
+  `userId` of every stored line), into the picture ids of that folder (`characters/<id>/photos/*`,
+  `avatar.jpg` — the primary keys of the images table and the ids the cards point at) and into the
+  picture rows' `depicts` (the cast refs `char:<id>` / `user:<id>`). Both entity dialogs therefore
+  carry an **ID field**: when creating, the user writes the ID (the field suggests one from the name —
+  `helpers.suggestEntityId` — until he touches it; an empty field falls back to the generated
+  `c<timestamp>` / `u<timestamp>`), and afterwards the ID changes only through the field's own
+  **Rename** button, disabled until it says another name (the same shape as the picture browser's
+  rename; Save alone never moves a folder). The rename is `POST /api/characters/:id/rename` /
+  `POST /api/persons/:id/rename` (`{ newId }`; the response is the clone's — `{ id, characters }` /
+  `{ id, users }`, and the dialog re-opens on the new ID via `openCharacterDialog(newId)`).
+  `CharactersService.renameFolder` / `PersonsService.renameFolder` move the folder and refuse a name
+  that is taken (`isValidId` = letters, digits, `.`, `-`, `_`, no leading dot, ≤ 100 chars — mirrored
+  in `helpers.isEntityId`); **`entities/EntityIdService.ts`** is the piece that walks the trail above
+  (`renameCharacter` / `renamePerson`: the cards and reference lists through
+  `ChatsService.repointImageId`, the rows through `ImageMetaService.move`, the chats through the new
+  `ChatsService.repointAuthor`, the cast through `ImageMetaService.repointDepicts`) — it sits above
+  both catalogs, the chat store and the table for the same reason the picture browser does: a rename
+  is nothing one folder can do on its own. Renaming is per kind, so a character and a persona that
+  happen to share an ID are two entities and one rename leaves the other alone. After a rename the
+  dialog re-reads the open chat (`ChatStore.refreshCurrentChat()`) and the chat list, because the
+  server has just rewritten that chat's participant list and message authors.
 - **Multi-participant chats.** `Chat.characterIds` is the ordered participant list (order =
   answer priority). Every `ChatMessage` carries its author — `characterId` (assistant) /
   `userId` (user) — stored at send time, so switching participants or the active persona never
@@ -1234,7 +1258,9 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   chip) and `picture-ref-add` (the `<select>` of catalog ids), the `picture-id-input` with
   `picture-rename` (disabled until the id differs) / `picture-reset` / `picture-save`. The entity dialogs: `character-dialog`/`user-dialog`/
   `model-dialog` + `char-name-input`/`user-name-input`/`model-name-input`/`model-id-input` and
-  `char-save`/`char-clone`/`char-delete` (the `user-*`/`model-*` analogues); the
+  `char-save`/`char-clone`/`char-delete` (the `user-*`/`model-*` analogues); the entity dialogs also
+  carry the ID field — `char-id-input` with `char-rename` and `user-id-input` with `user-rename`
+  (both rename buttons disabled until the field says another folder name); the
   model dialog also
   has `model-reasoning-select` + `model-reasoning-levels-input`. The per-chat dialog:
   `chat-settings-dialog` + `chat-name-input` +

@@ -282,6 +282,25 @@ export class ApiService {
     return this.req<{ id: string; users: User[] }>(`/persons/${id}/clone`, { method: 'POST' });
   }
 
+  // Gives the character a new ID — which is the name of its folder, so the
+  // server moves it and takes the chats, the photos and the picture rows with
+  // it. Returns the new id + the updated list; a 400 says why the name is not
+  // usable (taken, not a folder name).
+  renameCharacter(id: string, newId: string): Promise<{ id: string; characters: Character[] }> {
+    return this.req<{ id: string; characters: Character[] }>(`/characters/${id}/rename`, {
+      method: 'POST',
+      body: JSON.stringify({ newId }),
+    });
+  }
+
+  // Gives the persona a new ID (the same move on users/<id>/).
+  renameUser(id: string, newId: string): Promise<{ id: string; users: User[] }> {
+    return this.req<{ id: string; users: User[] }>(`/persons/${id}/rename`, {
+      method: 'POST',
+      body: JSON.stringify({ newId }),
+    });
+  }
+
   getChats(): Promise<ChatSummary[]> {
     return this.req<ChatSummary[]>('/chats');
   }

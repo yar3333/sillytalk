@@ -86,6 +86,32 @@ describe("sync", () => {
   });
 });
 
+describe("renameFolder", () => {
+  it("moves the folder and the avatar with it", () => {
+    persons.save({ id: "me", name: "You", description: "engineer" });
+    fs.writeFileSync(path.join(root, "me", "avatar.jpg"), "av");
+
+    expect(persons.renameFolder("me", "karin")).toBe(true);
+
+    expect(fs.existsSync(path.join(root, "me"))).toBe(false);
+    expect(persons.get("karin")).toEqual({ id: "karin", name: "You", description: "engineer" });
+    expect(persons.findAvatar("karin")).toBeTruthy();
+  });
+
+  it("refuses a name that is taken, a missing source and a name that is not a folder name", () => {
+    persons.save({ id: "me", name: "You", description: "" });
+    persons.save({ id: "dave", name: "Dave", description: "" });
+    expect(persons.renameFolder("me", "dave")).toBe(false);
+    expect(persons.renameFolder("ghost", "someone")).toBe(false);
+    expect(persons.renameFolder("me", "me")).toBe(false);
+    for (const bad of ["", "two words", "../elsewhere", ".hidden"]) {
+      expect(persons.renameFolder("me", bad)).toBe(false);
+    }
+    expect(persons.get("me")).toMatchObject({ name: "You" });
+    expect(persons.get("dave")).toMatchObject({ name: "Dave" });
+  });
+});
+
 describe("symlink folders", () => {
   it("list sees a person behind a symlink/junction", () => {
     const real = fs.mkdtempSync(path.join(os.tmpdir(), "sillytalk-real-"));

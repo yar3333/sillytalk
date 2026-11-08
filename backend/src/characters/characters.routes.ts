@@ -4,12 +4,17 @@ import { PathHelper } from "../shared/PathHelper";
 import { HttpHelper } from "../shared/HttpHelper";
 import { Character } from "./Character";
 import { CharactersService } from "./CharactersService";
+import { EntityIdService } from "../entities/EntityIdService";
 
-// The /characters routes: the catalog CRUD (the full-list sync), the clone,
-// the photo serving and the avatar. The domain logic lives in
-// CharactersService; this file is the thin HTTP layer (validation, status
-// codes, streaming).
-export function createCharactersRouter(characters: CharactersService): express.Router {
+// The /characters routes: the catalog CRUD (the full-list sync), the clone, the
+// ID rename, the photo serving and the avatar. The domain logic lives in
+// CharactersService (the folders) and in EntityIdService (what a new ID drags
+// along); this file is the thin HTTP layer (validation, status codes,
+// streaming).
+export function createCharactersRouter(
+  characters: CharactersService,
+  entityIds: EntityIdService,
+): express.Router {
   const router = express.Router();
 
   router.get("/", (_req, res) => {
@@ -56,6 +61,27 @@ export function createCharactersRouter(characters: CharactersService): express.R
       return;
     }
     res.json({ id: newId, characters: characters.listWithPhotos() });
+  });
+
+  // Gives the character a new ID. An ID is the name of its folder, so this is a
+  // folder move and not a field edit: the chats that name this character, its
+  // photos and avatar as picture ids and the cast of the picture rows follow the
+  // new one (the rules and the reason are in EntityIdService). The new ID is a
+  // path segment, so it travels in the body.
+  router.post("/:id/rename", (req, res) => {
+    const newId = typeof req.body?.newId === "string" ? req.body.newId.trim() : "";
+    if (!newId) {
+      res.status(400).json({ error: "Expected the new ID (newId field)" });
+      return;
+    }
+    try {
+      entityIds.renameCharacter(String(req.params.id), newId);
+      res.json({ id: newId, characters: characters.listWithPhotos() });
+    } catch (err) {
+      // The service says why the name is not usable (taken, malformed) — the
+      // banner can show it as it is.
+      res.status(400).json({ error: (err as Error).message });
+    }
   });
 
   router.get("/:id/photos/:name", (req, res) => {

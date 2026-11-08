@@ -62,6 +62,12 @@ input.grow {
   flex: 1;
   min-width: 60px;
 }
+
+/* the ID row: the field takes the room, the Rename button keeps its own */
+.field .btn {
+  flex: 0 0 auto;
+}
+
 textarea {
   resize: vertical;
   line-height: 1.4;
@@ -80,8 +86,12 @@ textarea:focus {
   border-radius: 8px;
   font-size: 13px;
 }
-.btn:hover {
+.btn:hover:not(:disabled) {
   border-color: var(--accent);
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 .btn.danger {
   color: var(--err);

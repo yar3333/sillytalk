@@ -94,6 +94,24 @@ export class CharactersService {
     return true;
   }
 
+  // Moves the character folder to a new name, i.e. gives the character a new
+  // ID (the id IS the folder name). Nothing else is touched here: what has to
+  // follow the new ID — the chats that name this character, its photos and
+  // avatar as picture ids, the cast refs of the picture rows — is the caller's
+  // business (EntityIdService), because this service owns the folders only.
+  //
+  // Returns false when the source folder does not exist or a folder already
+  // lives at the new name; a rename never overwrites a character.
+  renameFolder(id: string, newId: string): boolean {
+    if (!this.isValidId(id) || !this.isValidId(newId) || id === newId) return false;
+    const root = this.charactersRoot();
+    const from = PathHelper.characterDir(id, root);
+    const to = PathHelper.characterDir(newId, root);
+    if (!fs.existsSync(from) || fs.existsSync(to)) return false;
+    fs.renameSync(from, to);
+    return true;
+  }
+
   // Copies the character folder (character.json, photos/, the avatar) into a
   // new one; the copy is named "<name> (copy)". Returns the new id, null when
   // the source does not exist.

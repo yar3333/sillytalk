@@ -14,6 +14,7 @@ import { DI_REPLY_SERVICE, ReplyService } from "./reply/ReplyService";
 import { DI_TEXT_GENERATION_SERVICE, TextGenerationService } from "./text_generation/TextGenerationService";
 import { DI_IMAGE_META_SERVICE, ImageMetaService } from "./images/ImageMetaService";
 import { DI_PICTURE_LIBRARY_SERVICE, PictureLibraryService } from "./images/PictureLibraryService";
+import { DI_ENTITY_ID_SERVICE, EntityIdService } from "./entities/EntityIdService";
 
 // ---- DI: the composition root of the backend ----
 // Services are registered as lazy singletons on the container and resolved
@@ -66,6 +67,20 @@ container.register(
 container.register(
   DI_PICTURE_LIBRARY_SERVICE,
   (c) => new PictureLibraryService(c.resolve(DI_IMAGE_META_SERVICE), c.resolve(DI_CHATS_SERVICE)),
+);
+// Renaming a character or a persona renames its FOLDER, and the id of that
+// folder is written into the chats, into the picture ids and into the cast of
+// the picture rows — so this sits above both catalogs, the chat store and the
+// table, the same way the picture browser does.
+container.register(
+  DI_ENTITY_ID_SERVICE,
+  (c) =>
+    new EntityIdService(
+      c.resolve(DI_CHARACTERS_SERVICE),
+      c.resolve(DI_PERSONS_SERVICE),
+      c.resolve(DI_CHATS_SERVICE),
+      c.resolve(DI_IMAGE_META_SERVICE),
+    ),
 );
 const configuration = container.resolve(DI_CONFIGURATION_SERVICE);
 const characters = container.resolve(DI_CHARACTERS_SERVICE);
@@ -121,6 +136,7 @@ app.use(
     configuration,
     reply,
     container.resolve(DI_PICTURE_LIBRARY_SERVICE),
+    container.resolve(DI_ENTITY_ID_SERVICE),
   ),
 );
 
