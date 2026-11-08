@@ -8,13 +8,14 @@ import {
   ComfyUiWorkflowTemplate,
   variantFor,
 } from "../comfyui/ComfyUiWorkflows";
+import { ComfyUiObjectInfo, ComfyUiSystemStats } from "../comfyui/ComfyUiServerInfo";
 import { IImageGeneratorDriver } from "../IImageGeneratorDriver";
 
 // One node of a workflow in the API format (what the server's
 // /workflow/convert returns and what /prompt expects): inputs by name, a
 // link to another node being the node id + the output index.
-type ApiNode = { class_type?: string; inputs?: Record<string, unknown> };
-type ApiWorkflow = Record<string, ApiNode>;
+export type ApiNode = { class_type?: string; inputs?: Record<string, unknown> };
+export type ApiWorkflow = Record<string, ApiNode>;
 
 // The picture the server's SaveImage node wrote: where in its output/ folder.
 type SavedImage = { filename: string; subfolder?: string; type?: string };
@@ -38,6 +39,9 @@ const GENERATION_TIMEOUT_MS = 600_000;
 // cancelled: short, they must not hold the job.
 const PROBE_TIMEOUT_MS = 2000;
 const CANCEL_TIMEOUT_MS = 3000;
+// The node listing is a real payload, not a ping — the self-test would rather
+// wait a few seconds for it than report a healthy server as broken.
+const INFO_TIMEOUT_MS = 30_000;
 
 // The ComfyUI backend: the workflow templates come from the app's own folder
 // and the user's `<data root>/comfyui/` folder (see
@@ -97,8 +101,53 @@ export class ComfyUiDriver implements IImageGeneratorDriver {
     // rather than failing every job.
     if (!this.base || !comfyUiWorkflowSet(this.cfg.model)) return false;
     try {
-      await this.request("/system_stats", { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+      await this.systemStats();
       return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // ---- the read-only probes the self-test uses ----
+  //
+  // These three are the questions a ComfyUI problem comes down to: is the
+  // server there and on what hardware, does it have the converter node, and can
+  // it run the graph the app is about to send. They are on the driver because
+  // the protocol belongs here — the self-test above asks questions, it does not
+  // learn HTTP dialects.
+
+  /** The server URL this driver talks to (no trailing slash). */
+  get baseUrl(): string {
+    return this.base;
+  }
+
+  /** GET /system_stats — is the server up, and what is it running on. */
+  systemStats(timeoutMs: number = PROBE_TIMEOUT_MS): Promise<ComfyUiSystemStats> {
+    return this.requestJson<ComfyUiSystemStats>("/system_stats", { signal: AbortSignal.timeout(timeoutMs) });
+  }
+
+  /**
+   * GET /object_info — every node class the server can execute, with the input
+   * specs that say which checkpoint, LoRA or sampler names it actually has.
+   * The payload is a few hundred kilobytes to a couple of megabytes, so it is
+   * fetched once per run and given a longer timeout than a liveness probe.
+   */
+  objectInfo(timeoutMs: number = INFO_TIMEOUT_MS): Promise<ComfyUiObjectInfo> {
+    return this.requestJson<ComfyUiObjectInfo>("/object_info", { signal: AbortSignal.timeout(timeoutMs) });
+  }
+
+  /**
+   * Whether the server knows one node class, asked on its own — a node the
+   * full listing does not show may simply be one the server loads lazily, and
+   * calling the diagnostic a false name is worse than not calling it.
+   */
+  async hasNodeClass(classType: string, timeoutMs: number = INFO_TIMEOUT_MS): Promise<boolean> {
+    try {
+      const info = await this.requestJson<ComfyUiObjectInfo>(
+        `/object_info/${encodeURIComponent(classType)}`,
+        { signal: AbortSignal.timeout(timeoutMs) },
+      );
+      return !!info && Object.keys(info).length > 0;
     } catch {
       return false;
     }
@@ -149,7 +198,7 @@ export class ComfyUiDriver implements IImageGeneratorDriver {
       if (!finished) void this.abandonJob(promptId);
     });
 
-    const api = await this.apiWorkflow(template, refPaths.length, ctrl.signal);
+    const api = await this.convert(template, refPaths.length, ctrl.signal);
     const refNames = await this.uploadRefs(refPaths, ctrl.signal);
     // substitute() walks the workflow generically, so the result is handed back
     // as the same shape it was given.
@@ -169,7 +218,9 @@ export class ComfyUiDriver implements IImageGeneratorDriver {
   private async request(route: string, init: RequestInit): Promise<Response> {
     const url = `${this.base}${route}`;
     const response = await fetch(url, init).catch((err: Error) => {
-      throw new Error(`ComfyUI request ${init.method ?? "GET"} ${url} failed: ${err.message}`);
+      throw new Error(
+        `ComfyUI request ${init.method ?? "GET"} ${url} failed: ${ComfyUiDriver.describeFetchError(err)}`,
+      );
     });
     if (!response.ok) {
       const body = await response.text().catch(() => "");
@@ -180,6 +231,18 @@ export class ComfyUiDriver implements IImageGeneratorDriver {
       throw failure;
     }
     return response;
+  }
+
+  // A connection failure reaches fetch as "fetch failed" with the real reason
+  // (ECONNREFUSED, ENOTFOUND, http spoken to an https port) in `cause`, so the
+  // message alone would leave even a diagnostic saying nothing but "failed".
+  private static describeFetchError(err: Error): string {
+    const cause = (err as { cause?: unknown }).cause;
+    const code = (cause as { code?: string } | undefined)?.code ?? "";
+    const reason =
+      (cause as { message?: string } | undefined)?.message ?? (typeof cause === "string" ? cause : "");
+    const detail = [code, reason].filter(Boolean).join(" ");
+    return detail ? `${err.message} (${detail})` : err.message;
   }
 
   private async requestJson<T>(route: string, init: RequestInit): Promise<T> {
@@ -195,7 +258,11 @@ export class ComfyUiDriver implements IImageGeneratorDriver {
   // comfyui-workflow-to-api-converter-endpoint custom node). An edited workflow
   // file is a different template text, so it converts again — the user's edit
   // cannot be shadowed by the copy of the previous one.
-  private async apiWorkflow(
+  //
+  // Public because the self-test converts every template of every model before
+  // it spends a minute of GPU on one: the converter answers are where a broken
+  // workflow file shows up, and a job is the expensive way to find that out.
+  async convert(
     template: ComfyUiWorkflowTemplate,
     refCount: number,
     signal: AbortSignal,

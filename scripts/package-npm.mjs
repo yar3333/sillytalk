@@ -2,7 +2,9 @@
  * Pack the built backend + frontend into a publishable npm package.
  *
  * Layout produced under release/sillytalk/:
- *   bin/sillytalk.js                  # entry point for `npx sillytalk`
+ *   bin/sillytalk.js                  # entry point for `npx sillytalk` — with no
+ *                                     # argument it runs the app, any argument
+ *                                     # goes to backend/src/cli.ts
  *   backend/dist/**                   # compiled backend
  *   frontend/dist/frontend/browser/** # built Angular frontend
  *   package.json                      # publishable manifest (runtime deps only)
@@ -39,9 +41,20 @@ fs.cpSync(browserDir, path.join(outDir, "frontend", "dist", "frontend", "browser
   recursive: true,
 });
 
+// Without arguments the bin keeps running the app (the documented way to start
+// it); any argument goes to the CLI, so a mistyped command reports an error
+// instead of silently starting a server the user did not ask for.
 fs.writeFileSync(
   path.join(outDir, "bin", "sillytalk.js"),
-  '#!/usr/bin/env node\nrequire("../backend/dist/index.js");\n',
+  [
+    "#!/usr/bin/env node",
+    'if (process.argv.length > 2) {',
+    '  require("../backend/dist/cli.js").main(process.argv.slice(2));',
+    "} else {",
+    '  require("../backend/dist/index.js");',
+    "}",
+    "",
+  ].join("\n"),
   "utf-8",
 );
 

@@ -16,6 +16,19 @@ npx --yes sillytalk@latest
 
 Open http://127.0.0.1:3210.
 
+With an argument the command is the CLI instead of the app:
+
+```bash
+npx --yes sillytalk@latest test-comfyui http://127.0.0.1:8188
+```
+
+`test-comfyui <url>` tests a ComfyUI server before you configure it: it checks the server and its
+GPUs, every workflow the app can draw with, the converter custom node, the node classes and model
+files the server actually has, and then draws one real picture per template (text, 1 reference,
+2 references) into `~/.config/sillytalk/comfyui-test/`, naming the reason and the fix for anything
+that did not work. It reads and changes nothing of your config. `--size 768x768`, `--device cuda:1`,
+`--model <name>`, `--no-refs`, `--no-draw` and `--out <dir>` steer it; `sillytalk help` lists them.
+
 ## Configuration
 
 - Config, characters, personas and chats: `~/.config/sillytalk/` (created automatically on the

@@ -25,6 +25,35 @@ export interface ComfyUiWorkflowSet {
 const VARIANTS = ["text", "oneImage", "twoImages"] as const;
 export type ComfyUiWorkflowVariant = (typeof VARIANTS)[number];
 
+// The variants in the order of their reference count (0, 1, 2) — exported for
+// the callers that walk the templates of a model one by one (the ComfyUI
+// self-test), rather than hardcoding the names again.
+export const COMFYUI_WORKFLOW_VARIANTS: readonly ComfyUiWorkflowVariant[] = VARIANTS;
+
+// Which of the two folders a workflow file came from.
+export type ComfyUiWorkflowSource = "app" | "user";
+
+// One workflow of the catalogue as the app sees it: which file defines it
+// (the user's own wins), what it can draw, and — when it cannot — why. The
+// self-test prints this table; the app only needs the name list, so the errors
+// stay out of the log until a caller asks.
+export interface ComfyUiWorkflowEntry {
+  model: string;
+  /** The file the app would load — the user's own even when it is broken. */
+  file: string;
+  source: ComfyUiWorkflowSource;
+  /** The templates it defines; null when the file cannot be used at all. */
+  set: ComfyUiWorkflowSet | null;
+  /** Why the file is not a workflow the app can run. */
+  error?: string;
+  /**
+   * A broken user file that shadows a readable shipped workflow: the app uses
+   * the user's file and does NOT fall back, so the shipped copy sitting right
+   * next to it is worth naming in the report.
+   */
+  shadowed?: string;
+}
+
 // Where the workflows live — two folders, read on every lookup:
 //
 //   <this folder>/workflows/<model>.json   the ones the app ships; the source
@@ -69,36 +98,45 @@ function modelFiles(dir: string): Map<string, string> {
 
 // Reads and validates one workflow file: JSON holding an object with at least
 // one of the known templates. Anything else is not a workflow, and the reason
-// goes to the server log — a file the user wrote themselves failing without a
-// word is the worst version of this.
-function readWorkflowSet(file: string): ComfyUiWorkflowSet | null {
+// comes back with the file so a caller can say it out loud — the server log for
+// the app, the self-test report for the user, who wrote half of these files and
+// deserves to know what is wrong with one.
+interface WorkflowFileRead {
+  file: string;
+  source: ComfyUiWorkflowSource;
+  set: ComfyUiWorkflowSet | null;
+  error?: string;
+}
+
+function readWorkflowFile(file: string, source: ComfyUiWorkflowSource): WorkflowFileRead {
   let parsed: unknown;
   try {
     parsed = JSON.parse(fs.readFileSync(file, "utf8"));
   } catch (err) {
-    console.error(`ComfyUI workflow ${file}: not readable JSON — ${(err as Error).message}`);
-    return null;
+    return { file, source, set: null, error: `not readable JSON — ${(err as Error).message}` };
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    console.error(`ComfyUI workflow ${file}: expected an object holding the workflow templates`);
-    return null;
+    return { file, source, set: null, error: "expected an object holding the workflow templates" };
   }
-  const source = parsed as Record<string, unknown>;
+  const graph = parsed as Record<string, unknown>;
   const set: ComfyUiWorkflowSet = {};
   for (const variant of VARIANTS) {
-    const template = source[variant];
+    const template = graph[variant];
     if (template && typeof template === "object" && !Array.isArray(template)) {
       set[variant] = template as ComfyUiWorkflowTemplate;
     }
   }
   if (Object.keys(set).length === 0) {
-    console.error(
-      `ComfyUI workflow ${file}: holds none of "${VARIANTS.join(", ")}" — ` +
-        `the file keeps the ComfyUI graph under those keys, one per number of reference images`,
-    );
-    return null;
+    return {
+      file,
+      source,
+      set: null,
+      error:
+        `holds none of "${VARIANTS.join(", ")}" — the file keeps the ComfyUI graph ` +
+        `under those keys, one per number of reference images`,
+    };
   }
-  return set;
+  return { file, source, set };
 }
 
 // The workflow file that defines a model: the user's own when it is there —
@@ -116,22 +154,62 @@ function workflowFileOf(model: string): string | null {
 }
 
 // The workflow set of a model, or null when no readable workflow file defines
-// it — the model is then not one the app can draw with.
+// it — the model is then not one the app can draw with. A file the app cannot
+// use is written to the server log here, because this is where a job finds out
+// and the alternative is a generation failing over a file nobody explained.
 export function comfyUiWorkflowSet(model: string): ComfyUiWorkflowSet | null {
   const file = workflowFileOf(model);
-  return file ? readWorkflowSet(file) : null;
+  if (!file) return null;
+  const read = readWorkflowFile(file, file.startsWith(path.resolve(bundledDir())) ? "app" : "user");
+  if (read.error) console.error(`ComfyUI workflow ${file}: ${read.error}`);
+  return read.set;
 }
 
-// The models the app can draw with: the shipped workflows plus the user's own
-// files, a user file winning over a shipped one of the same name. A model
-// whose file cannot be read is left out, so a generator naming it becomes
-// unavailable instead of failing every job with a parse error.
+// Every workflow of the catalogue — the shipped ones and the user's own, a user
+// file winning over a shipped one of the same name — each with the templates it
+// defines or the reason it is unusable. This is the shape a person reads; the
+// app itself only ever asks for a name (comfyUiWorkflowSet) or the name list.
+export function comfyUiWorkflowEntries(): ComfyUiWorkflowEntry[] {
+  const byModel = new Map<string, { app?: WorkflowFileRead; user?: WorkflowFileRead }>();
+  const collect = (dir: string, source: ComfyUiWorkflowSource): void => {
+    for (const [name, file] of modelFiles(dir)) {
+      const read = readWorkflowFile(file, source);
+      const slot = byModel.get(name) ?? {};
+      slot[source] = read;
+      byModel.set(name, slot);
+    }
+  };
+  collect(bundledDir(), "app");
+  collect(PathHelper.comfyWorkflowsDir(), "user");
+
+  const entries: ComfyUiWorkflowEntry[] = [];
+  for (const [model, slot] of byModel) {
+    // The user's file wins even when it is broken — silently falling back to
+    // the shipped one would make the file they just wrote look ignored. The
+    // report names the shipped copy that is being shadowed so the fix is obvious.
+    const used = slot.user ?? slot.app;
+    if (!used) continue;
+    entries.push({
+      model,
+      file: used.file,
+      source: used.source,
+      set: used.set,
+      error: used.error,
+      shadowed: slot.user?.error && slot.app?.set ? slot.app.file : undefined,
+    });
+  }
+  return entries.sort((a, b) => a.model.localeCompare(b.model));
+}
+
+// The models the app can draw with: every readable workflow of the catalogue. A
+// model whose file cannot be read is left out, so a generator naming it becomes
+// unavailable instead of failing every job with a parse error — the reason is
+// already in the log by way of comfyUiWorkflowSet.
 export function comfyUiModelNames(): string[] {
-  const files = modelFiles(bundledDir());
-  for (const [name, file] of modelFiles(PathHelper.comfyWorkflowsDir())) files.set(name, file);
   const names: string[] = [];
-  for (const [name, file] of files) {
-    if (readWorkflowSet(file)) names.push(name);
+  for (const entry of comfyUiWorkflowEntries()) {
+    if (entry.set) names.push(entry.model);
+    else console.error(`ComfyUI workflow ${entry.file}: ${entry.error}`);
   }
   return names.sort();
 }

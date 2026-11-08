@@ -100,6 +100,42 @@ npm run dev
 - the backend — <http://localhost:3210>
 - the frontend (the dev server, proxies `/api` to 3210) — <http://localhost:4200>
 
+### Command line
+
+The published `sillytalk` command runs the app when it is given no argument and the CLI when it is
+given one. In this repository the same CLI is `npm run cli --` (after a build):
+
+```bash
+npx --yes sillytalk                                  # the app, same as `npm run start`
+npx --yes sillytalk test-comfyui http://127.0.0.1:8188
+npm run cli -- test-comfyui http://127.0.0.1:8188    # the same from this repository
+```
+
+`test-comfyui <url>` is the way to find out why a ComfyUI server draws nothing, without opening
+its console: it walks the same chain the app walks and prints every step — the server and its GPUs
+(`GET /system_stats`), the workflow files the app can draw with and why a file it holds is not one,
+the converter node (`POST /workflow/convert`) for every template, the node classes and model files
+the server actually has (`GET /object_info`) compared with what the workflows ask for, and then
+**one real picture per template** (text, 1 reference, 2 references), kept in
+`~/.config/sillytalk/comfyui-test/` so you can look at them. A failing step is reported with the
+reason and what to do about it (a missing custom node, a checkpoint the server does not have,
+a full GPU, a server bound to 127.0.0.1 only).
+
+It reads nothing of your config and changes nothing — the URL, the size and the GPU are arguments:
+
+| Option | What it does |
+| --- | --- |
+| `--model <name>` | only this workflow (repeatable) |
+| `--size <WxH>` | the size of the test pictures (default `1024x1024`) |
+| `--device <gpu>` | the GPU the workflow pins its loaders to (default `cuda:0`) |
+| `--prompt <text>` | the prompt of the test pictures |
+| `--out <dir>` | where the test pictures go (default `<data root>/comfyui-test`) |
+| `--no-refs` | draw the text template only |
+| `--no-draw` | run the checks and draw nothing |
+
+Exit code: `0` clean, `1` something failed or needs a look, `2` a bad command line. Ctrl+C stops
+the run and tells the server to drop the job it was given.
+
 ## Configuration
 
 Stored in `~/.config/sillytalk/config.json` (created automatically on the first run, with
@@ -188,6 +224,8 @@ resolved by `resolveApiKey()`: `envKey` (an environment variable) takes priority
   models of the workflow and the `comfyui-workflow-to-api-converter-endpoint` node (it turns the
   UI-format workflow into the API format the server executes). `device` is the GPU the workflow pins
   its model loaders to — on a multi-GPU server, one generator per GPU.
+  `sillytalk test-comfyui <url>` checks exactly these prerequisites and draws one real picture per
+  template — see [Command line](#command-line).
 - **A ComfyUI workflow is an ordinary JSON file, so you can replace it without rebuilding the
   app.** The app ships `qwen-image-2.1.json` and `qwen-image-2512.json` (in the source tree:
   `backend/src/image_generation/comfyui/workflows/`, and the build copies them next to the compiled
@@ -215,6 +253,8 @@ resolved by `resolveApiKey()`: `envKey` (an environment variable) takes priority
   `avatar.jpg` — the avatar
 - ComfyUI workflows of your own: `~/.config/sillytalk/comfyui/<model>.json` — replaces the workflow
   the app ships for that model name, or adds a model (empty by default)
+- Test pictures of `sillytalk test-comfyui`: `~/.config/sillytalk/comfyui-test/` — written by that
+  command only (`--out` sends them elsewhere); nothing reads them, delete them whenever you like
 - Chats: `~/.config/sillytalk/chats/chats.db` — a SQLite database (`node:sqlite`) with the chat
   fields and the messages; the pictures stay plain files in
   `~/.config/sillytalk/chats/<chatId>/files/` (the old per-chat `chat.json` files are imported

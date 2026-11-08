@@ -29,6 +29,15 @@ backend/               Express API; also serves the built frontend
                        keeps its own <domain>.routes.ts (the thin HTTP layer:
                        parameter parsing, validation, status codes, file
                        streaming over the services)
+    cli.ts             the command line (the thin layer of the same kind):
+                       parseArgs/run/main + USAGE; `test-comfyui <url>` runs the
+                       ComfyUI self-test. The published bin runs the SERVER with
+                       no argument and this CLI with any argument, so a mistyped
+                       command errors instead of silently starting a server;
+                       `require.main === module` makes `node dist/cli.js` work
+                       too. Exit codes: 0 clean, 1 something wrong, 2 bad
+                       command line. Ctrl+C cancels the run (the service aborts
+                       the job and the server is told to drop it)
     text_generation/   the LLM domain: the top-level service class
                        (TextGenerationService.ts — the OpenAI-compatible provider client:
                        chatCompletion (text + the image_url parts of the
@@ -57,7 +66,11 @@ backend/               Express API; also serves the built frontend
                        of a model is a raw JSON FILE, read again for every job,
                        so replacing one needs no rebuild — comfyUiModelNames()
                        for the Settings pick, comfyUiWorkflowSet(model) +
-                       variantFor(refs) + comfyUiMaxRefs(set) for the driver;
+                       variantFor(refs) + comfyUiMaxRefs(set) for the driver,
+                       comfyUiWorkflowEntries() for the self-test (the whole
+                       catalogue with the source folder, the templates and the
+                       reason a file is unusable); COMFYUI_WORKFLOW_VARIANTS is
+                       the variants in the order of their reference count;
                        the app's own files are comfyui/workflows/<model>.json
                        — qwen-image-2.1.json and qwen-image-2512.json, the UI
                        format as ComfyUI saves it — and the user's own
@@ -65,6 +78,26 @@ backend/               Express API; also serves the built frontend
                        adds a model; the build copies the folder into dist —
                        backend "scripts/copy-workflows.cjs", because tsc only
                        compiles TypeScript),
+                       comfyui/ComfyUiServerInfo.ts (the loose types of what a
+                       ComfyUI server REPORTS about itself — /system_stats and
+                       /object_info — plus comboOptionsOf(), the two spellings of
+                       a combo input; every field optional because these are the
+                       server's fields and they moved between releases),
+                       comfyui/ComfyUiSelfTestService.ts (the class behind
+                       `sillytalk test-comfyui`: five steps, cheapest first —
+                       /system_stats and its GPUs and free VRAM, the workflow
+                       catalogue, POST /workflow/convert per template,
+                       /object_info compared with what the workflows ask for
+                       (a node class it lacks — confirmed by the per-class
+                       endpoint, so a lazily loaded node is not a false alarm —
+                       and a model file name the server does not have, while a
+                       PARAM_* placeholder is never compared with a list of
+                       files), then one REAL job per template with the app's own
+                       driver, the picture checked by reading the size out of its
+                       own header; a line sink is the report, so the test reads
+                       the lines as the user does; it reads no config and writes
+                       nothing but its output folder, because the point is to
+                       test a server the user has not configured yet),
                        the driver factory (DriverFactory.ts), and the top-level
                        service class (ImageGenerationService.ts —
                        ImageGenerationService: availability cache, the
@@ -361,6 +394,8 @@ e2e/                   Playwright suite
   comfyui/           — the user's own ComfyUI workflows: <model>.json replaces the
                        workflow the app ships for that name, or adds a model (the
                        file name is the model name); empty by default
+  comfyui-test/      — the pictures `sillytalk test-comfyui` drew, written by that
+                       command only (--out moves them); no reader, safe to delete
 ```
 
 ## Commands
@@ -373,6 +408,7 @@ Run from the repo root unless noted.
 | Build backend + frontend | `npm run build` |
 | Run production (single server, port 3210) | `npm run start` |
 | Run dev (backend :3210 + Angular :4200, `/api` proxied) | `npm run dev` |
+| CLI of the built backend (e.g. `-- test-comfyui http://127.0.0.1:8188`) | `npm run cli -- <command>` |
 | Backend unit tests (jest) | `cd backend && npm test` |
 | Frontend unit tests (vitest via `ng test`) | `cd frontend && npm test` |
 | Frontend production build | `cd frontend && npm run build` |
@@ -411,10 +447,12 @@ Release flow: `npm version patch|minor|major` (bumps the root `package.json` ver
 `git push origin master --tags`; the tag triggers the pipeline.
 
 `npm run package` (`scripts/package-npm.mjs`) builds `release/sillytalk/` — the publishable package:
-`bin/sillytalk.js` (the `npx sillytalk` entry), `backend/dist/`, and the built frontend at
-`frontend/dist/frontend/browser/` (the FIRST candidate `index.ts` looks for — keep the package layout
-in sync with those candidates), plus a runtime-only `package.json` and `scripts/npm-package/README.md`
-as the package README. `release/` is gitignored.
+`bin/sillytalk.js` (the `npx sillytalk` entry: **no argument runs the server, any argument goes to
+`backend/dist/cli.js`** — that is what keeps `npx sillytalk` the documented way to start the app while
+`sillytalk test-comfyui …` still reports a typo instead of starting a server), `backend/dist/`, and
+the built frontend at `frontend/dist/frontend/browser/` (the FIRST candidate `index.ts` looks for —
+keep the package layout in sync with those candidates), plus a runtime-only `package.json` and
+`scripts/npm-package/README.md` as the package README. `release/` is gitignored.
 
 ## Configuration
 
@@ -547,6 +585,12 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   carries the server's `status.messages`); `GET /view?filename&subfolder&type=output` downloads the
   picture onto the target file. Cancelling a job aborts the local request AND tells the server to
   drop it (`POST /queue {remove:[prompt_id]}` then `POST /interrupt {prompt_id}`, best-effort).
+  **The driver is the only place that knows this dialect**, so the read-only questions the self-test
+  asks are methods of it too: `baseUrl`, `systemStats(timeoutMs)`, `objectInfo()`,
+  `hasNodeClass(name)` and `convert(template, refCount, signal)` (the converted-workflow cache stays
+  its own — keyed by the template text, so a converted copy cannot shadow an edited file). A failed
+  connection reports the `cause` code (`ECONNREFUSED`, `ENOTFOUND`, a TLS mismatch) inside its
+  message, because that code is the whole diagnostic and `fetch` hides it otherwise.
   `device` is the GPU the workflow's model loaders are pinned to — on a multi-GPU server a
   generator per GPU; the ComfyUI server needs the models of the workflow installed (the
   `picgen-install-comfyui` script of the `d:\MyDocs\AiPic\generators` folder the workflows were
@@ -842,6 +886,52 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   follows the actual uploaded format (usually `.jpg`); the GET route serves the first existing
   candidate and sets `Cache-Control: no-store`. List endpoints add a computed `hasAvatar` flag —
   the UI shows the image only when it is true.
+
+## Command line (`backend/src/cli.ts`)
+
+The CLI is the thin layer of the terminal, the way `<domain>.routes.ts` is the thin layer of HTTP:
+`parseArgs` turns the command line into typed options (or a message), `run` hands them to a domain
+service and prints what comes back, `main` exits with the code. No container, no state, and a command
+that needs the databases resolves them here — the one place allowed to.
+
+- **The bin dispatch is the contract** (see CI / npm publish): no argument = the server, any argument
+  = the CLI. A new command therefore goes into `cli.ts`, never into `index.ts`.
+- **`test-comfyui <url>`** drives `image_generation/comfyui/ComfyUiSelfTestService.ts` and is the
+  supported way to find out why a ComfyUI server draws nothing. Its invariants:
+  - **Nothing of the user's config is read or written.** The URL, the size and the GPU are arguments
+    (defaults 1024x1024 / `cuda:0`), so it can test a server the user has not configured yet — and
+    `ConfigurationService.loadConfig` is never called, because it WRITES a config file when there is
+    none and a diagnostic does not create state. The only writes are the test pictures and the two
+    reference pictures, under `--out` / `<data root>/comfyui-test/`.
+  - **The five steps run cheapest first and each one is printed**: server → workflow files → converter
+    → nodes and model files → one real job per template. Everything before the GPU is free, so a
+    broken workflow file or a missing converter node is said before a minute of drawing is spent;
+    a missing converter stops the run (nothing can be drawn without it), a missing `/object_info`
+    does not (the run says what it skipped and draws anyway).
+  - **Node/model findings are warnings, the draw is the verdict.** A class the listing lacks is
+    confirmed through `GET /object_info/<name>` first (a lazily loaded node must not be called
+    missing) and a `PARAM_*` value is never compared with a list of the server's files (the value it
+    stands for exists only at run time) — a false alarm in a diagnostic costs more than the request
+    it saves.
+  - **The drawn file is read back** (format + pixel size from its own header): a workflow that
+    ignores `PARAM_INT_OUTPUT_IMAGE_*` and a server that answers a download with an error page both
+    look like success until the file is opened.
+  - **A server that dies mid-run is one event, not N failures.** A ComfyUI whose GPU code aborts
+    takes the whole process with it (core dumped), so the client sees `ECONNRESET` and then
+    `ECONNREFUSED`; the run marks the server as lost, names the cause once (with the journalctl hint)
+    and reports the templates it never reached as SKIPPED — they are not evidence about those
+    workflows. The same reading ends a converter step that stops answering.
+  - **`/system_stats` is read twice.** A real 0.44/ROCm server answers it WITHOUT a device list before
+    its first job and draws on its GPU right after it, so an empty device list before the draws is
+    printed as a neutral note, never as a problem; after a job the same field is read again (that is
+    where the GPU and its free VRAM can be named), and a low free VRAM in the FIRST reading — the
+    state a new job would start from — is a warning.
+  - **Every failure line carries its own hint** (the converter custom node, a model file of the
+    workflow, an out-of-memory GPU, a job still queued, a server bound to 127.0.0.1 without
+    `--listen`). Exit codes: `0` clean, `1` something failed or needs a look, `2` a bad command line.
+  - **Ctrl+C cancels through the service** (`cancel()` → the driver aborts and tells the server to
+    drop the job); the second one ends the process. The SIGINT listener is removed when the command
+    returns, so a long-lived process does not accumulate them.
 
 ## Product / UI behavior (invariants to preserve)
 
