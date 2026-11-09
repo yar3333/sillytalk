@@ -8,9 +8,9 @@ import { EntityIdService } from "../entities/EntityIdService";
 
 // The /characters routes: the catalog CRUD (the full-list sync), the clone, the
 // ID rename, the photo serving and the avatar. The domain logic lives in
-// CharactersService (the folders) and in EntityIdService (what a new ID drags
-// along); this file is the thin HTTP layer (validation, status codes,
-// streaming).
+// CharactersService (the catalogs table and the picture folders) and in
+// EntityIdService (what a new ID drags along); this file is the thin HTTP layer
+// (validation, status codes, streaming).
 export function createCharactersRouter(
   characters: CharactersService,
   entityIds: EntityIdService,
@@ -51,9 +51,10 @@ export function createCharactersRouter(
     res.json(characters.listWithPhotos());
   });
 
-  // Clones the character folder (the photos and the avatar go along); the
-  // copy is named "<name> (copy)" in a free <id>-copy* folder. The response
-  // carries the new id (the UI opens the copy's edit dialog right away).
+  // Clones the character — its row and its folder (the photos and the avatar
+  // go along); the copy is named "<name> (copy)" under a free <id>-copy* id.
+  // The response carries the new id (the UI opens the copy's edit dialog right
+  // away).
   router.post("/:id/clone", (req, res) => {
     const newId = characters.clone(req.params.id);
     if (newId === null) {
@@ -63,11 +64,12 @@ export function createCharactersRouter(
     res.json({ id: newId, characters: characters.listWithPhotos() });
   });
 
-  // Gives the character a new ID. An ID is the name of its folder, so this is a
-  // folder move and not a field edit: the chats that name this character, its
-  // photos and avatar as picture ids and the cast of the picture rows follow the
-  // new one (the rules and the reason are in EntityIdService). The new ID is a
-  // path segment, so it travels in the body.
+  // Gives the character a new ID. An ID is the primary key of the catalogs row
+  // and the name of the folder of its pictures at once, so this is a move and
+  // not a field edit: the chats that name this character, its photos and avatar
+  // as picture ids and the cast of the picture rows follow the new one (the
+  // rules and the reason are in EntityIdService). The new ID is a path segment,
+  // so it travels in the body.
   router.post("/:id/rename", (req, res) => {
     const newId = typeof req.body?.newId === "string" ? req.body.newId.trim() : "";
     if (!newId) {

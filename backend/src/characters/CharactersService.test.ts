@@ -4,14 +4,17 @@ import path from "path";
 import { CharactersService } from "./CharactersService";
 
 let root: string;
+let dir: string; // the characters folder (the home of the picture folders)
 let characters: CharactersService;
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "sillytalk-chars-"));
-  characters = new CharactersService(() => root);
+  dir = path.join(root, "characters");
+  characters = new CharactersService(() => dir, () => path.join(root, "catalogs.db"));
 });
 
 afterEach(() => {
+  characters.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -20,7 +23,7 @@ describe("isValidId", () => {
     expect(characters.isValidId("assistant")).toBe(true);
     expect(characters.isValidId("alisa")).toBe(true);
     expect(characters.isValidId("c1712345678901")).toBe(true);
-    // unicode letters are allowed in folder names
+    // unicode letters are allowed: the id names the folder of the pictures
     expect(characters.isValidId("а-лиса_1.2")).toBe(true);
   });
 
@@ -37,7 +40,7 @@ describe("isValidId", () => {
 });
 
 describe("save / get / list", () => {
-  it("saves the character into a folder and reads it back", () => {
+  it("saves the character into a row and reads it back", () => {
     characters.save({ id: "alisa", name: "Alice", description: "a kind fairy" });
     expect(characters.get("alisa")).toEqual({
       id: "alisa",
@@ -47,26 +50,45 @@ describe("save / get / list", () => {
     expect(characters.list().map((c) => c.id)).toEqual(["alisa"]);
   });
 
-  it("creates the photos folder", () => {
-    characters.save({ id: "a", name: "A", description: "" });
-    expect(fs.existsSync(path.join(root, "a", "photos"))).toBe(true);
+  it("sorts the list by name", () => {
+    characters.save({ id: "b", name: "Bob", description: "" });
+    characters.save({ id: "a", name: "Anna", description: "" });
+    expect(characters.list().map((c) => c.id)).toEqual(["a", "b"]);
   });
 
-  it("list ignores folders without character.json and broken files", () => {
-    fs.mkdirSync(path.join(root, "empty"));
-    fs.mkdirSync(path.join(root, "broken"));
-    fs.writeFileSync(path.join(root, "broken", "character.json"), "{oops", "utf-8");
+  it("overwrites the row on a second save", () => {
+    characters.save({ id: "alisa", name: "Alice", description: "first" });
+    characters.save({ id: "alisa", name: "Alice", description: "second" });
+    expect(characters.list()).toEqual([{ id: "alisa", name: "Alice", description: "second" }]);
+  });
+
+  it("creates the folder with the photos subfolder", () => {
+    characters.save({ id: "a", name: "A", description: "" });
+    expect(fs.existsSync(path.join(dir, "a", "photos"))).toBe(true);
+  });
+
+  it("the table is the catalog: folders are not read, old character.json files are ignored", () => {
+    // a leftover folder of the old format — with a card file in it — is no
+    // character: nothing reads those files any more
+    fs.mkdirSync(path.join(dir, "empty"), { recursive: true });
+    fs.mkdirSync(path.join(dir, "stale"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "stale", "character.json"),
+      JSON.stringify({ name: "Stale", description: "not a character" }),
+      "utf-8",
+    );
     characters.save({ id: "ok", name: "OK", description: "" });
     expect(characters.list().map((c) => c.id)).toEqual(["ok"]);
+    expect(characters.get("stale")).toBeNull();
   });
 });
 
 describe("photoFile", () => {
   it("answers the path of the starter-set photo (the name reduced to its basename)", () => {
     characters.save({ id: "alice", name: "Alice", description: "" });
-    expect(characters.photoFile("alice", "p1.png")).toBe(path.join(root, "alice", "photos", "p1.png"));
+    expect(characters.photoFile("alice", "p1.png")).toBe(path.join(dir, "alice", "photos", "p1.png"));
     expect(characters.photoFile("alice", path.join("/elsewhere", "p1.png"))).toBe(
-      path.join(root, "alice", "photos", "p1.png"),
+      path.join(dir, "alice", "photos", "p1.png"),
     );
   });
 
@@ -95,49 +117,65 @@ describe("sync", () => {
 
   it("deletes the character together with the photos", () => {
     characters.save({ id: "one", name: "One", description: "" });
-    fs.writeFileSync(path.join(root, "one", "photos", "a.png"), "x");
+    fs.writeFileSync(path.join(dir, "one", "photos", "a.png"), "x");
     characters.sync([]);
-    expect(fs.existsSync(path.join(root, "one"))).toBe(false);
+    expect(fs.existsSync(path.join(dir, "one"))).toBe(false);
+  });
+
+  it("removes a leftover folder no row names", () => {
+    fs.mkdirSync(path.join(dir, "stranger"), { recursive: true });
+    characters.sync([{ id: "ok", name: "OK", description: "" }]);
+    expect(fs.existsSync(path.join(dir, "stranger"))).toBe(false);
+    expect(characters.list().map((c) => c.id)).toEqual(["ok"]);
   });
 });
 
-describe("renameFolder", () => {
-  it("moves the folder and everything in it", () => {
+describe("rename", () => {
+  it("moves the row and the folder with everything in it", () => {
     characters.save({ id: "alice", name: "Alice", description: "a kind fairy" });
-    fs.writeFileSync(path.join(root, "alice", "photos", "a.png"), "x");
-    fs.writeFileSync(path.join(root, "alice", "avatar.jpg"), "y");
+    fs.writeFileSync(path.join(dir, "alice", "photos", "a.png"), "x");
+    fs.writeFileSync(path.join(dir, "alice", "avatar.jpg"), "y");
 
-    expect(characters.renameFolder("alice", "elf")).toBe(true);
+    expect(characters.rename("alice", "elf")).toBe(true);
 
-    expect(fs.existsSync(path.join(root, "alice"))).toBe(false);
+    expect(fs.existsSync(path.join(dir, "alice"))).toBe(false);
     expect(characters.get("elf")).toEqual({ id: "elf", name: "Alice", description: "a kind fairy" });
-    expect(fs.existsSync(path.join(root, "elf", "photos", "a.png"))).toBe(true);
+    expect(characters.get("alice")).toBeNull();
+    expect(fs.existsSync(path.join(dir, "elf", "photos", "a.png"))).toBe(true);
     expect(characters.findAvatar("elf")).toBeTruthy();
   });
 
   it("refuses a name that is taken and a character that is not there", () => {
     characters.save({ id: "alice", name: "Alice", description: "" });
     characters.save({ id: "bob", name: "Bob", description: "" });
-    expect(characters.renameFolder("alice", "bob")).toBe(false);
-    expect(characters.renameFolder("ghost", "someone")).toBe(false);
+    expect(characters.rename("alice", "bob")).toBe(false);
+    expect(characters.rename("ghost", "someone")).toBe(false);
     // the refused rename left both exactly where they were
     expect(characters.get("alice")).toMatchObject({ name: "Alice" });
     expect(characters.get("bob")).toMatchObject({ name: "Bob" });
   });
 
+  it("refuses a folder standing at the new name", () => {
+    characters.save({ id: "alice", name: "Alice", description: "" });
+    fs.mkdirSync(path.join(dir, "ghost-folder"));
+    expect(characters.rename("alice", "ghost-folder")).toBe(false);
+    expect(characters.get("alice")).toMatchObject({ name: "Alice" });
+    expect(fs.existsSync(path.join(dir, "ghost-folder"))).toBe(true);
+  });
+
   it("refuses an ID that is not a folder name", () => {
     characters.save({ id: "alice", name: "Alice", description: "" });
     for (const bad of ["", "two words", "../elsewhere", ".hidden", "a/b", "a\\b"]) {
-      expect(characters.renameFolder("alice", bad)).toBe(false);
+      expect(characters.rename("alice", bad)).toBe(false);
     }
     // the same name is not a rename
-    expect(characters.renameFolder("alice", "alice")).toBe(false);
+    expect(characters.rename("alice", "alice")).toBe(false);
     expect(characters.get("alice")).toMatchObject({ name: "Alice" });
   });
 });
 
 describe("migrate", () => {
-  it("moves entries from the old config into folders", () => {
+  it("moves entries from the old config into rows", () => {
     characters.migrate([
       { id: "alisa", name: "Alice", description: "kind" },
       { id: "bad id", name: "X", description: "" },
@@ -148,76 +186,30 @@ describe("migrate", () => {
     expect(characters.get("alisa")?.description).toBe("kind");
   });
 
-  it("does not overwrite existing character.json", () => {
+  it("does not overwrite an existing character", () => {
     characters.save({ id: "alisa", name: "New", description: "" });
     characters.migrate([{ id: "alisa", name: "Old", description: "" }]);
     expect(characters.get("alisa")?.name).toBe("New");
   });
 });
 
-describe("symlink folders", () => {
-  it("list sees a character behind a symlink/junction", () => {
-    const real = fs.mkdtempSync(path.join(os.tmpdir(), "sillytalk-real-"));
-    try {
-      fs.mkdirSync(path.join(real, "carol"));
-      fs.writeFileSync(
-        path.join(real, "carol", "character.json"),
-        JSON.stringify({ name: "Carol", description: "" }),
-        "utf-8",
-      );
-      let linked = false;
-      try {
-        fs.symlinkSync(
-          path.join(real, "carol"),
-          path.join(root, "carol"),
-          process.platform === "win32" ? "junction" : "dir",
-        );
-        linked = true;
-      } catch {
-        // no permission to create links — the check is unavailable
-      }
-      if (linked) {
-        expect(characters.list().map((c) => c.id)).toContain("carol");
-        expect(characters.get("carol")?.name).toBe("Carol");
-      }
-    } finally {
-      fs.rmSync(real, { recursive: true, force: true });
-    }
-  });
-
-  it("a broken link is not counted as a character", () => {
-    let linked = false;
-    try {
-      fs.symlinkSync(
-        path.join(root, "no-such-folder"),
-        path.join(root, "ghost"),
-        process.platform === "win32" ? "junction" : "dir",
-      );
-      linked = true;
-    } catch {
-      // no permission to create links — the check is unavailable
-    }
-    if (linked) {
-      expect(characters.list()).toEqual([]);
-    }
-  });
-});
-
 describe("delete", () => {
-  it("deletes the character folder", () => {
+  it("deletes the row and the character folder", () => {
     characters.save({ id: "a", name: "A", description: "" });
+    fs.writeFileSync(path.join(dir, "a", "photos", "p.png"), "x");
     expect(characters.delete("a")).toBe(true);
     expect(characters.get("a")).toBeNull();
+    expect(fs.existsSync(path.join(dir, "a"))).toBe(false);
     expect(characters.delete("a")).toBe(false);
     expect(characters.delete("a/b")).toBe(false);
   });
 });
 
 describe("clone", () => {
-  it("copies the folder (photos and avatar go along) with the (copy) name", () => {
+  it("copies the row and the folder (photos and avatar go along) with the (copy) name", () => {
     characters.save({ id: "alice", name: "Alice", description: "a friend" });
-    fs.writeFileSync(path.join(root, "alice", "photos", "p1.png"), "img");
-    fs.writeFileSync(path.join(root, "alice", "avatar.jpg"), "av");
+    fs.writeFileSync(path.join(dir, "alice", "photos", "p1.png"), "img");
+    fs.writeFileSync(path.join(dir, "alice", "avatar.jpg"), "av");
     const newId = characters.clone("alice");
     expect(newId).toBe("alice-copy");
     expect(characters.get("alice-copy")).toEqual({
@@ -225,8 +217,8 @@ describe("clone", () => {
       name: "Alice (copy)",
       description: "a friend",
     });
-    expect(fs.existsSync(path.join(root, "alice-copy", "photos", "p1.png"))).toBe(true);
-    expect(fs.existsSync(path.join(root, "alice-copy", "avatar.jpg"))).toBe(true);
+    expect(fs.existsSync(path.join(dir, "alice-copy", "photos", "p1.png"))).toBe(true);
+    expect(fs.existsSync(path.join(dir, "alice-copy", "avatar.jpg"))).toBe(true);
     // the source is left untouched
     expect(characters.get("alice")?.name).toBe("Alice");
   });

@@ -4,14 +4,17 @@ import path from "path";
 import { PersonsService } from "./PersonsService";
 
 let root: string;
+let dir: string; // the users folder (the home of the picture folders)
 let persons: PersonsService;
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "sillytalk-persons-"));
-  persons = new PersonsService(() => root);
+  dir = path.join(root, "users");
+  persons = new PersonsService(() => dir, () => path.join(root, "catalogs.db"));
 });
 
 afterEach(() => {
+  persons.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -19,7 +22,7 @@ describe("isValidId", () => {
   it("accepts ordinary folder names", () => {
     expect(persons.isValidId("me")).toBe(true);
     expect(persons.isValidId("u1712345678901")).toBe(true);
-    // unicode letters are allowed in folder names
+    // unicode letters are allowed: the id names the folder of the pictures
     expect(persons.isValidId("а-лиса_1.2")).toBe(true);
   });
 
@@ -36,7 +39,7 @@ describe("isValidId", () => {
 });
 
 describe("save / get / list", () => {
-  it("saves the person into a folder and reads it back", () => {
+  it("saves the person into a row and reads it back", () => {
     persons.save({ id: "me", name: "You", description: "engineer" });
     expect(persons.get("me")).toEqual({
       id: "me",
@@ -46,18 +49,31 @@ describe("save / get / list", () => {
     expect(persons.list().map((p) => p.id)).toEqual(["me"]);
   });
 
-  it("list ignores folders without user.json and broken files", () => {
-    fs.mkdirSync(path.join(root, "empty"));
-    fs.mkdirSync(path.join(root, "broken"));
-    fs.writeFileSync(path.join(root, "broken", "user.json"), "{oops", "utf-8");
-    persons.save({ id: "ok", name: "OK", description: "" });
-    expect(persons.list().map((p) => p.id)).toEqual(["ok"]);
-  });
-
   it("sorts the list by name", () => {
     persons.save({ id: "b", name: "Bob", description: "" });
     persons.save({ id: "a", name: "Anna", description: "" });
     expect(persons.list().map((p) => p.id)).toEqual(["a", "b"]);
+  });
+
+  it("overwrites the row on a second save", () => {
+    persons.save({ id: "me", name: "You", description: "first" });
+    persons.save({ id: "me", name: "You", description: "second" });
+    expect(persons.list()).toEqual([{ id: "me", name: "You", description: "second" }]);
+  });
+
+  it("the table is the catalog: folders are not read, old user.json files are ignored", () => {
+    // a leftover folder of the old format — with a card file in it — is no
+    // persona: nothing reads those files any more
+    fs.mkdirSync(path.join(dir, "empty"), { recursive: true });
+    fs.mkdirSync(path.join(dir, "stale"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "stale", "user.json"),
+      JSON.stringify({ name: "Stale", description: "not a persona" }),
+      "utf-8",
+    );
+    persons.save({ id: "ok", name: "OK", description: "" });
+    expect(persons.list().map((p) => p.id)).toEqual(["ok"]);
+    expect(persons.get("stale")).toBeNull();
   });
 });
 
@@ -80,83 +96,70 @@ describe("sync", () => {
 
   it("deletes the person together with the avatar", () => {
     persons.save({ id: "one", name: "One", description: "" });
-    fs.writeFileSync(path.join(root, "one", "avatar.jpg"), "x");
+    fs.writeFileSync(path.join(dir, "one", "avatar.jpg"), "x");
     persons.sync([]);
-    expect(fs.existsSync(path.join(root, "one"))).toBe(false);
+    expect(fs.existsSync(path.join(dir, "one"))).toBe(false);
+  });
+
+  it("removes a leftover folder no row names", () => {
+    fs.mkdirSync(path.join(dir, "stranger"), { recursive: true });
+    persons.sync([{ id: "ok", name: "OK", description: "" }]);
+    expect(fs.existsSync(path.join(dir, "stranger"))).toBe(false);
+    expect(persons.list().map((p) => p.id)).toEqual(["ok"]);
   });
 });
 
-describe("renameFolder", () => {
-  it("moves the folder and the avatar with it", () => {
+describe("rename", () => {
+  it("moves the row and the folder with the avatar in it", () => {
     persons.save({ id: "me", name: "You", description: "engineer" });
-    fs.writeFileSync(path.join(root, "me", "avatar.jpg"), "av");
+    fs.writeFileSync(path.join(dir, "me", "avatar.jpg"), "av");
 
-    expect(persons.renameFolder("me", "karin")).toBe(true);
+    expect(persons.rename("me", "karin")).toBe(true);
 
-    expect(fs.existsSync(path.join(root, "me"))).toBe(false);
+    expect(fs.existsSync(path.join(dir, "me"))).toBe(false);
     expect(persons.get("karin")).toEqual({ id: "karin", name: "You", description: "engineer" });
+    expect(persons.get("me")).toBeNull();
     expect(persons.findAvatar("karin")).toBeTruthy();
   });
 
   it("refuses a name that is taken, a missing source and a name that is not a folder name", () => {
     persons.save({ id: "me", name: "You", description: "" });
     persons.save({ id: "dave", name: "Dave", description: "" });
-    expect(persons.renameFolder("me", "dave")).toBe(false);
-    expect(persons.renameFolder("ghost", "someone")).toBe(false);
-    expect(persons.renameFolder("me", "me")).toBe(false);
+    expect(persons.rename("me", "dave")).toBe(false);
+    expect(persons.rename("ghost", "someone")).toBe(false);
+    expect(persons.rename("me", "me")).toBe(false);
     for (const bad of ["", "two words", "../elsewhere", ".hidden"]) {
-      expect(persons.renameFolder("me", bad)).toBe(false);
+      expect(persons.rename("me", bad)).toBe(false);
     }
     expect(persons.get("me")).toMatchObject({ name: "You" });
     expect(persons.get("dave")).toMatchObject({ name: "Dave" });
   });
-});
 
-describe("symlink folders", () => {
-  it("list sees a person behind a symlink/junction", () => {
-    const real = fs.mkdtempSync(path.join(os.tmpdir(), "sillytalk-real-"));
-    try {
-      fs.mkdirSync(path.join(real, "friend"));
-      fs.writeFileSync(
-        path.join(real, "friend", "user.json"),
-        JSON.stringify({ name: "Friend", description: "" }),
-        "utf-8",
-      );
-      let linked = false;
-      try {
-        fs.symlinkSync(
-          path.join(real, "friend"),
-          path.join(root, "friend"),
-          process.platform === "win32" ? "junction" : "dir",
-        );
-        linked = true;
-      } catch {
-        // no permission to create links — the check is unavailable
-      }
-      if (linked) {
-        expect(persons.list().map((p) => p.id)).toContain("friend");
-        expect(persons.get("friend")?.name).toBe("Friend");
-      }
-    } finally {
-      fs.rmSync(real, { recursive: true, force: true });
-    }
+  it("refuses a folder standing at the new name", () => {
+    persons.save({ id: "me", name: "You", description: "" });
+    fs.mkdirSync(path.join(dir, "ghost-folder"));
+    expect(persons.rename("me", "ghost-folder")).toBe(false);
+    expect(persons.get("me")).toMatchObject({ name: "You" });
+    expect(fs.existsSync(path.join(dir, "ghost-folder"))).toBe(true);
   });
 });
 
 describe("delete", () => {
-  it("deletes the person folder", () => {
+  it("deletes the row and the person folder", () => {
     persons.save({ id: "a", name: "A", description: "" });
+    fs.writeFileSync(path.join(dir, "a", "avatar.jpg"), "x");
     expect(persons.delete("a")).toBe(true);
     expect(persons.get("a")).toBeNull();
+    expect(fs.existsSync(path.join(dir, "a"))).toBe(false);
     expect(persons.delete("a")).toBe(false);
     expect(persons.delete("a/b")).toBe(false);
   });
 });
 
 describe("clone", () => {
-  it("copies the folder (the avatar goes along) with the (copy) name", () => {
+  it("copies the row and the folder (the avatar goes along) with the (copy) name", () => {
     persons.save({ id: "me", name: "You", description: "engineer" });
-    fs.writeFileSync(path.join(root, "me", "avatar.jpg"), "av");
+    fs.writeFileSync(path.join(dir, "me", "avatar.jpg"), "av");
     const newId = persons.clone("me");
     expect(newId).toBe("me-copy");
     expect(persons.get("me-copy")).toEqual({
@@ -164,7 +167,7 @@ describe("clone", () => {
       name: "You (copy)",
       description: "engineer",
     });
-    expect(fs.existsSync(path.join(root, "me-copy", "avatar.jpg"))).toBe(true);
+    expect(fs.existsSync(path.join(dir, "me-copy", "avatar.jpg"))).toBe(true);
     // the source is left untouched
     expect(persons.get("me")?.name).toBe("You");
   });

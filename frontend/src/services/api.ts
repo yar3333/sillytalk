@@ -30,7 +30,8 @@ export interface Character {
   hasAvatar?: boolean; // is there a characters/<id>/avatar.*
 }
 
-// A user is stored in users/<id>/user.json (served by the backend via /api/persons).
+// A user (persona card) is a row of the persons table in the backend's catalogs
+// database (served by the backend via /api/persons).
 export interface User {
   id: string;
   name: string;
@@ -78,8 +79,9 @@ export function isSdApiGenerator(g: ImageGenerator): g is SdApiSettings {
   return (g as { kind?: string }).kind === 'sdapi';
 }
 
-// Characters and users are not in the config — each one is stored in a
-// characters/<id>/character.json and users/<id>/user.json folder respectively
+// Characters and users are not in the config — each one is a row of the
+// characters / persons table of the backend's catalogs database (catalogs.db);
+// the characters/<id>/ and users/<id>/ folders hold only their pictures
 // (the backend serves them via /api/characters and /api/persons).
 // There is no "current" user in the config: each chat picks its own persona (Chat.userId).
 export interface AppConfig {

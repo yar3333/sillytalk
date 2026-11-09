@@ -21,13 +21,18 @@ type EntityTarget = {
   cast: "char" | "user";
   dir: (id: string) => string;
   isValid: (id: string) => boolean;
-  // The folder move itself — the domain's own service owns its layout.
-  renameFolder: (id: string, newId: string) => boolean;
+  // Whether the catalog has such an entity — the row of the catalogs table is
+  // what a character/persona is; its folder only holds its pictures.
+  exists: (id: string) => boolean;
+  // The row's primary key and the entity's folder move together — the domain's
+  // own service owns both.
+  rename: (id: string, newId: string) => boolean;
 };
 
-// The ID of a character or a persona is not a label: it is the NAME OF ITS
-// FOLDER, and through that folder it is written all over the data —
-//   characters/<id>/            the card, its photos/ set, its avatar
+// The ID of a character or a persona is the PRIMARY KEY of its row in the
+// catalogs table and the NAME OF ITS FOLDER at once, and through that folder it
+// is written all over the data —
+//   characters/<id>/            the card's photos/ set, its avatar
 //   chats: Chat.characterIds, Chat.userId, the characterId/userId of every line
 //   picture ids: characters/<id>/photos/x.jpg, users/<id>/avatar.jpg — the very
 //                primary keys of the images table and the ids the cards point at
@@ -39,10 +44,10 @@ type EntityTarget = {
 // face.
 //
 // This service is the piece that walks that trail. It sits above the two catalog
-// domains (whose services stay folder-persistence and know nothing about chats),
-// the chat store and the images table — exactly like PictureLibraryService sits
-// above the table and the chats for the same reason: a rename is nothing one
-// folder can do on its own.
+// domains (whose services stay catalog-persistence and know nothing about
+// chats), the chat store and the images table — exactly like
+// PictureLibraryService sits above the table and the chats for the same reason:
+// a rename is nothing one row or one folder can do on its own.
 export class EntityIdService {
   constructor(
     private readonly characters: CharactersService,
@@ -73,13 +78,17 @@ export class EntityIdService {
     }
     const from = target.dir(id);
     const to = target.dir(newId);
-    if (!fs.existsSync(from)) throw new Error(`There is no ${target.word} "${id}"`);
-    if (fs.existsSync(to)) throw new Error(`There is already a ${target.word} with the ID "${newId}"`);
+    if (!target.exists(id)) throw new Error(`There is no ${target.word} "${id}"`);
+    // Taken by a row or by a folder still standing there — a rename never
+    // overwrites an entity, and never lands on files that belong to nobody.
+    if (target.exists(newId) || fs.existsSync(to)) {
+      throw new Error(`There is already a ${target.word} with the ID "${newId}"`);
+    }
 
     // The picture ids are collected BEFORE the move (after it, the folder has a
     // different name and there is nothing left to enumerate).
     const pairs = this.picturePairs(from, to);
-    if (!target.renameFolder(id, newId)) {
+    if (!target.rename(id, newId)) {
       throw new Error(`The ${target.word} "${id}" could not be renamed to "${newId}"`);
     }
 
@@ -140,7 +149,8 @@ export class EntityIdService {
       cast: "char",
       dir: (id) => PathHelper.characterDir(id),
       isValid: (id) => service.isValidId(id),
-      renameFolder: (id, newId) => service.renameFolder(id, newId),
+      exists: (id) => service.get(id) !== null,
+      rename: (id, newId) => service.rename(id, newId),
     };
   }
 
@@ -152,7 +162,8 @@ export class EntityIdService {
       cast: "user",
       dir: (id) => PathHelper.personDir(id),
       isValid: (id) => service.isValidId(id),
-      renameFolder: (id, newId) => service.renameFolder(id, newId),
+      exists: (id) => service.get(id) !== null,
+      rename: (id, newId) => service.rename(id, newId),
     };
   }
 }

@@ -22,8 +22,9 @@ export class PathHelper {
     return path.join(PathHelper.configDir(), "config.json");
   }
 
-  // A character is a ~/.config/sillytalk/characters/<id>/ folder:
-  // the folder name is the character ID, character.json holds name and description.
+  // A character's pictures live in a ~/.config/sillytalk/characters/<id>/
+  // folder: the folder name is the character ID (the primary key of its row in
+  // the catalogs database, which holds the card itself).
   static charactersDir(): string {
     return process.env.SILLYTALK_CHARACTERS_DIR || path.join(PathHelper.configDir(), "characters");
   }
@@ -32,30 +33,22 @@ export class PathHelper {
     return path.join(root, id);
   }
 
-  static characterFile(id: string, root: string = PathHelper.charactersDir()): string {
-    return path.join(PathHelper.characterDir(id, root), "character.json");
-  }
-
   // The path to a character's photo folder is always fixed: ~/.config/sillytalk/characters/<id>/photos
   static characterPhotosDir(id: string, root: string = PathHelper.charactersDir()): string {
     return path.join(PathHelper.characterDir(id, root), "photos");
   }
 
-  // A person (the persona card) is a ~/.config/sillytalk/users/<id>/ folder:
-  // the folder name is the person ID, user.json holds name and persona
-  // description. The on-disk layout (users/, user.json) and the
-  // SILLYTALK_USERS_DIR env var are historical — the domain concept in the code
-  // is person/persons.
+  // A person's pictures (the avatar) live in a ~/.config/sillytalk/users/<id>/
+  // folder: the folder name is the person ID (the primary key of its row in
+  // the catalogs database, which holds the card itself). The on-disk layout
+  // (users/) and the SILLYTALK_USERS_DIR env var are historical — the domain
+  // concept in the code is person/persons.
   static personsDir(): string {
     return process.env.SILLYTALK_USERS_DIR || path.join(PathHelper.configDir(), "users");
   }
 
   static personDir(id: string, root: string = PathHelper.personsDir()): string {
     return path.join(root, id);
-  }
-
-  static personFile(id: string, root: string = PathHelper.personsDir()): string {
-    return path.join(PathHelper.personDir(id, root), "user.json");
   }
 
   // The user's own ComfyUI workflows: a <model>.json here replaces the workflow
@@ -94,6 +87,15 @@ export class PathHelper {
   // generation prompt of a picture live here, never in a sidecar file.
   static imagesDatabaseFile(root: string = PathHelper.configDir()): string {
     return path.join(root, "images.db");
+  }
+
+  // The catalogs database (node:sqlite): the character and the persona cards —
+  // one `characters` and one `persons` table, each keyed by the id that is
+  // also the name of the folder where that entity's pictures (photos/, the
+  // avatar) live. The card is the row: character.json / user.json are not read
+  // and not written.
+  static catalogsDatabaseFile(root: string = PathHelper.configDir()): string {
+    return path.join(root, "catalogs.db");
   }
 
   static chatFilesDir(chatId: string, root: string = PathHelper.chatsDir()): string {

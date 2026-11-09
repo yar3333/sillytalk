@@ -148,14 +148,19 @@ backend/               Express API; also serves the built frontend
                        ImageMetaService.test.ts — jest unit tests
     characters/        the character domain: the Character.ts type and the
                        top-level service class (CharactersService.ts — the
-                       character catalog on the
-                       characters/<id>/ folders: CRUD, clone, the full-list
-                       sync, the migration from the old config format, the ID
-                       validation, the avatar (findAvatar/saveAvatar/
+                       character catalog in the `characters` table of the
+                       catalogs.db SQLite database (node:sqlite; the card — id
+                       (also the folder name of the entity's pictures), name,
+                       description; the characters/<id>/ folders hold only the
+                       pictures — a leftover character.json is not read): CRUD,
+                       clone, the full-list sync, the migration from the old
+                       config format, the ID validation, the ID rename (the row
+                       + the folder move together), the avatar
+                       (findAvatar/saveAvatar/
                        deleteAvatar), the list with photos + the avatar flag
                        (listWithPhotos), the photo path (photoFile); DI token
-                       DI_CHARACTERS_SERVICE, the root folder injected as
-                       () => string);
+                       DI_CHARACTERS_SERVICE, the root folder and the database
+                       file injected as () => string, close() is final);
                        characters.routes.ts — the /characters routes (the
                        catalog sync, the clone, the photos, the avatar);
                        CharactersService.test.ts — jest unit tests
@@ -211,12 +216,17 @@ backend/               Express API; also serves the built frontend
                        ChatsService.test.ts — jest unit tests
     persons/           the person (persona card) domain: the Person.ts type and
                        the top-level service class (PersonsService.ts — the
-                       persona catalog on the
-                       users/<id>/ folders: CRUD, clone, the full-list sync,
-                       the ID validation, the avatar (findAvatar/saveAvatar/
+                       persona catalog in the `persons` table of the same
+                       catalogs.db (the card — id (also the folder name of the
+                       avatar folder under users/), name, description; a
+                       leftover user.json is not read): CRUD, clone, the
+                       full-list sync, the ID validation, the ID rename (the row
+                       + the folder move together), the avatar
+                       (findAvatar/saveAvatar/
                        deleteAvatar), the list with the avatar flag
                        (listWithAvatars); DI token DI_PERSONS_SERVICE, the root
-                       folder injected as () => string); persons.routes.ts —
+                       folder and the database file injected as () => string,
+                       close() is final); persons.routes.ts —
                        the /persons routes (the persona catalog + the avatar);
                        PersonsService.test.ts — jest unit tests
     configuration/     the configuration domain: the types (Config.ts,
@@ -280,8 +290,9 @@ backend/               Express API; also serves the built frontend
                        accepts only the folders pictures live in, and
                        listPictureIds — the newest-first catalog of the picture
                        browser, reading only those folders and only the names
-                       HttpHelper.isImage accepts; the two database files
-                       chatsDatabaseFile/imagesDatabaseFile; PathHelper
+                       HttpHelper.isImage accepts; the three database files
+                       chatsDatabaseFile/imagesDatabaseFile/
+                       catalogsDatabaseFile; PathHelper
                        and HttpHelper have their own tests)
   jest.config.js       ts-jest setup
 
@@ -389,8 +400,18 @@ e2e/                   Playwright suite
   chats/<chatId>/files/ — the pictures of a chat, every one of them addressable by
                        its data-root-relative id (<chatId>/files/<slug>-<6hex>.png);
                        plain pictures, nothing is written next to them
-  characters/<id>/character.json (+ photos/ — "starter" set, avatar.jpg — character avatar)
-  users/<id>/user.json (+ avatar.jpg — user avatar)
+  characters/<id>/  — the pictures of a character: photos/ — the "starter" set,
+                       avatar.<ext> — the character avatar (the card itself is a row
+                       of catalogs.db, the folder holds no files of its own besides
+                       pictures; a leftover character.json is not read)
+  users/<id>/       — the pictures of a persona: avatar.<ext> — the persona avatar
+                       (the card is a row of catalogs.db; a leftover user.json is
+                       not read)
+  catalogs.db       (node:sqlite: the characters + persons tables — the cards
+                       themselves: id (also the folder name of the entity's
+                       pictures), name, description; opened lazily, close() is
+                       final; the old character.json / user.json files are not
+                       read and not touched)
   comfyui/           — the user's own ComfyUI workflows: <model>.json replaces the
                        workflow the app ships for that name, or adds a model (the
                        file name is the model name); empty by default
@@ -791,11 +812,13 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   outright, so it needs no translation.
   The final prompt lives in the picture's row (which is what the card shows as
   `generation.prompt`), so the caption line and the hover hint show it.
-- **Characters are NOT in the config.** Each character is a folder
-  `~/.config/sillytalk/characters/<id>/`: the folder name IS the character id, `character.json` holds
-  `{ name, description }` — the **one** description is the whole card, the appearance included
+- **Characters are NOT in the config.** Each character is a row of the `characters` table of
+  `~/.config/sillytalk/catalogs.db` (`node:sqlite`, `catalogsDatabaseFile()`): the id is the primary
+  key and at the same time the name of the character's picture folder
+  `~/.config/sillytalk/characters/<id>/`, the row carries `{ name, description }` — the **one**
+  description is the whole card, the appearance included
   (English, since the picture planner reads the visual line out of it for every prompt that shows
-  her; a card has no appearance field of its own),
+  her; a card has no appearance field of its own).
   `photos/` is the fixed "starter" photo set (computed by
   `characterPhotosDir(id)`), and `avatar.jpg` is the character avatar shown next to its messages.
   The photos and the avatar are ordinary pictures of a character folder, so they can be addressed by
@@ -803,19 +826,26 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   machinery for them and no "access to all images" flag (the characters do not attach pictures at
   all). They ARE, however, what the picture planner offers as a person's **look references** (see the
   cast bullet above).
-  CRUD lives in `characters/CharactersService.ts`; `GET/PUT /api/characters` read/sync the folders (PUT performs a full
-  sync: create/update/delete). An on-disk `characters` field in an old config.json is migrated to
-  folders at startup (`index.ts`) and stripped by `PUT /api/config` — do not reintroduce a
+  CRUD lives in `characters/CharactersService.ts`; `GET/PUT /api/characters` read/sync the table
+  (PUT performs a full
+  sync: create/update/delete — a sync also deletes a folder no row names). The old
+  `character.json` files are **not supported and not read** — a leftover file is just a file, the
+  card is the row (the existing files were converted into rows once by a throwaway script, and the
+  user deletes them by hand). An on-disk `characters` field in an old config.json is migrated to
+  rows at startup (`index.ts`) and stripped by `PUT /api/config` — do not reintroduce a
   `characters` array in the config.
-- **Users are NOT in the config either.** Each person (persona card) is a folder
-  `~/.config/sillytalk/users/<id>/` with `user.json` holding `{ name, description }` (the description
-  is the whole card, the appearance included, exactly as for a character) and `avatar.jpg`
+- **Users are NOT in the config either.** Each person (persona card) is a row of the `persons` table
+  of the same `catalogs.db` (the row carries `{ name, description }` — the description
+  is the whole card, the appearance included, exactly as for a character); the id is the primary key
+  and the name of the folder `~/.config/sillytalk/users/<id>/` that holds `avatar.jpg`
   (persona avatar, shown next to user messages — the persona appears in the picture cast of the chat
   too, so a persona whose card says nothing visual and whose avatar is missing is the one case the
-  model has to invent a face from). CRUD lives in `persons/PersonsService.ts` (the
+  model has to invent a face from). The old `user.json` files are **not supported and not read**
+  (converted into rows once by a throwaway script, deleted by the user by hand). CRUD lives in
+  `persons/PersonsService.ts` (the
   domain concept in the code is `person`/`persons`, type `Person`); `GET/PUT /api/persons` mirror the
   character endpoints — the `users` JSON body/response fields, the `userId` fields and the on-disk
-  layout (`users/`, `user.json`) stay "user"-named. There is **no selected/current user** in the
+  picture layout (`users/`) stay "user"-named. There is **no selected/current user** in the
   config anymore: each chat stores the **active** persona (whose name new messages are sent under) in
   `Chat.userId`, chosen when creating a new chat (dialog) or via the header menu. On a fresh install
   the default person is created with id `default` (previously `me`). The active persona's
@@ -823,7 +853,8 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   `systemPromptFor(character, person, …)` so the model knows who it is talking to. A chat also
   carries its own `sampling` overrides and a `systemSuffix` — see "Per-chat settings" below.
 - **An ID is a folder name, and it is the user's to choose.** The ID of a character or a persona is
-  the name of its folder (`characters/<id>/`, `users/<id>/`), so it is not a label the app slaps on
+  the primary key of its catalogs row and the name of its picture folder (`characters/<id>/`,
+  `users/<id>/`) at once, so it is not a label the app slaps on
   something — it is written into the chats (`Chat.characterIds`, `Chat.userId`, the `characterId` /
   `userId` of every stored line), into the picture ids of that folder (`characters/<id>/photos/*`,
   `avatar.jpg` — the primary keys of the images table and the ids the cards point at) and into the
@@ -832,17 +863,20 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   `helpers.suggestEntityId` — until he touches it; an empty field falls back to the generated
   `c<timestamp>` / `u<timestamp>`), and afterwards the ID changes only through the field's own
   **Rename** button, disabled until it says another name (the same shape as the picture browser's
-  rename; Save alone never moves a folder). The rename is `POST /api/characters/:id/rename` /
+  rename; Save alone never moves a row or a folder). The rename is `POST /api/characters/:id/rename` /
   `POST /api/persons/:id/rename` (`{ newId }`; the response is the clone's — `{ id, characters }` /
   `{ id, users }`, and the dialog re-opens on the new ID via `openCharacterDialog(newId)`).
-  `CharactersService.renameFolder` / `PersonsService.renameFolder` move the folder and refuse a name
-  that is taken (`isValidId` = letters, digits, `.`, `-`, `_`, no leading dot, ≤ 100 chars — mirrored
+  `CharactersService.rename` / `PersonsService.rename` move the row and its folder together and
+  refuse a name
+  that is taken — by a row or by a folder still standing there (`isValidId` = letters, digits, `.`,
+  `-`, `_`, no leading dot, ≤ 100 chars — mirrored
   in `helpers.isEntityId`); **`entities/EntityIdService.ts`** is the piece that walks the trail above
   (`renameCharacter` / `renamePerson`: the cards and reference lists through
   `ChatsService.repointImageId`, the rows through `ImageMetaService.move`, the chats through the new
   `ChatsService.repointAuthor`, the cast through `ImageMetaService.repointDepicts`) — it sits above
   both catalogs, the chat store and the table for the same reason the picture browser does: a rename
-  is nothing one folder can do on its own. Renaming is per kind, so a character and a persona that
+  is nothing one row or one folder can do on its own. Renaming is per kind, so a character and a
+  persona that
   happen to share an ID are two entities and one rename leaves the other alone. After a rename the
   dialog re-reads the open chat (`ChatStore.refreshCurrentChat()`) and the chat list, because the
   server has just rewritten that chat's participant list and message authors.

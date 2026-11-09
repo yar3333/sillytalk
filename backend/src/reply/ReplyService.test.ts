@@ -248,8 +248,14 @@ beforeEach(() => {
   configuration = new StubConfigurationService();
   imageMeta = new ImageMetaService(() => root);
   chats = new ChatsService(() => path.join(root, "chats"), configuration, imageMeta);
-  characters = new CharactersService(() => path.join(root, "characters"));
-  persons = new PersonsService(() => path.join(root, "users"));
+  characters = new CharactersService(
+    () => path.join(root, "characters"),
+    () => path.join(root, "catalogs.db"),
+  );
+  persons = new PersonsService(
+    () => path.join(root, "users"),
+    () => path.join(root, "catalogs.db"),
+  );
   characters.save({ id: "alice", name: "Alice", description: "A test character." });
   persons.save({ id: "me", name: "Me", description: "" });
   textGeneration = new StubTextGeneration();
@@ -275,6 +281,8 @@ afterEach(async () => {
   await new Promise((resolve) => setImmediate(resolve));
   chats.close();
   imageMeta.close();
+  characters.close();
+  persons.close();
   delete process.env.SILLYTALK_DATA_DIR;
   fs.rmSync(root, { recursive: true, force: true });
 });

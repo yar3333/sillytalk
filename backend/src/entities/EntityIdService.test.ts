@@ -88,8 +88,8 @@ beforeEach(() => {
   process.env.SILLYTALK_DATA_DIR = root;
   meta = track(new ImageMetaService(() => root));
   chats = track(new ChatsService(() => PathHelper.chatsDir(), new StubConfigurationService(), meta));
-  characters = new CharactersService(() => PathHelper.charactersDir());
-  persons = new PersonsService(() => PathHelper.personsDir());
+  characters = track(new CharactersService(() => PathHelper.charactersDir(), () => PathHelper.catalogsDatabaseFile()));
+  persons = track(new PersonsService(() => PathHelper.personsDir(), () => PathHelper.catalogsDatabaseFile()));
   entityIds = new EntityIdService(characters, persons, chats, meta);
 });
 

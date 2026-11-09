@@ -26,8 +26,14 @@ container.register(
   DI_TEXT_GENERATION_SERVICE,
   (c) => new TextGenerationService(c.resolve(DI_CONFIGURATION_SERVICE)),
 );
-container.register(DI_CHARACTERS_SERVICE, () => new CharactersService(() => PathHelper.charactersDir()));
-container.register(DI_PERSONS_SERVICE, () => new PersonsService(() => PathHelper.personsDir()));
+container.register(
+  DI_CHARACTERS_SERVICE,
+  () => new CharactersService(() => PathHelper.charactersDir(), () => PathHelper.catalogsDatabaseFile()),
+);
+container.register(
+  DI_PERSONS_SERVICE,
+  () => new PersonsService(() => PathHelper.personsDir(), () => PathHelper.catalogsDatabaseFile()),
+);
 // The images table comes first among the consumers of the data layout: the chat
 // store and the generator both write through it, so it is the one place a
 // picture's description and prompt are kept.
@@ -68,10 +74,11 @@ container.register(
   DI_PICTURE_LIBRARY_SERVICE,
   (c) => new PictureLibraryService(c.resolve(DI_IMAGE_META_SERVICE), c.resolve(DI_CHATS_SERVICE)),
 );
-// Renaming a character or a persona renames its FOLDER, and the id of that
-// folder is written into the chats, into the picture ids and into the cast of
-// the picture rows — so this sits above both catalogs, the chat store and the
-// table, the same way the picture browser does.
+// Renaming a character or a persona renames its row in the catalogs table and
+// with it the folder of its pictures — and the id is written into the chats,
+// into the picture ids and into the cast of the picture rows — so this sits
+// above both catalogs, the chat store and the table, the same way the picture
+// browser does.
 container.register(
   DI_ENTITY_ID_SERVICE,
   (c) =>
@@ -88,8 +95,8 @@ const persons = container.resolve(DI_PERSONS_SERVICE);
 const chats = container.resolve(DI_CHATS_SERVICE);
 
 // Migration: the legacy config.json fields are cleaned up in one place
-// (ConfigurationService.prepareLegacyConfig) — the characters array is moved
-// into characters/<id>/character.json folders.
+// (ConfigurationService.prepareLegacyConfig) — the characters array becomes
+// rows of the catalogs table.
 if (fs.existsSync(PathHelper.configFile())) {
   try {
     const raw = JSON.parse(fs.readFileSync(PathHelper.configFile(), "utf-8")) as Record<string, unknown>;

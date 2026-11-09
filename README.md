@@ -202,13 +202,15 @@ resolved by `resolveApiKey()`: `envKey` (an environment variable) takes priority
   `llmModels[].reasoningLevels` — the possible levels; when absent the
   default set `low, medium, high, xhigh, max` applies. Edited in the model dialog (the "Reasoning
   levels" input + the "Reasoning" pick).
-- Characters are **not stored in the config**: each one is a separate folder
-  `~/.config/sillytalk/characters/<id>/`, where the folder name is the character ID and
-  `character.json` holds the name and the description (created/edited in **Settings**). The old
-  `characters` field in the config is migrated into the folders automatically at startup.
-- Users — like the characters: `~/.config/sillytalk/users/<id>/` folders with `user.json` (the name
-  and the persona description). There is no "current" user in the config anymore: each chat picks
-  its own persona (`Chat.userId`) — in the menu on the name in the header or when creating a chat.
+- Characters are **not stored in the config**: each one is a row of the `characters` table in the
+  catalogs database `~/.config/sillytalk/catalogs.db` (`node:sqlite`), keyed by its ID — created and
+  edited in the app; the ID is also the name of the character's folder
+  `~/.config/sillytalk/characters/<id>/`, where its pictures live. The old `characters` field in
+  the config is migrated into the table automatically at startup.
+- Users — like the characters: rows of the `persons` table of the same database (the name and the
+  persona description), with `~/.config/sillytalk/users/<id>/` folders holding their pictures.
+  There is no "current" user in the config anymore: each chat picks its own persona
+  (`Chat.userId`) — in the menu on the name in the header or when creating a chat.
 - Avatars: `users/<id>/avatar.jpg` and `characters/<id>/avatar.jpg` — uploaded in **Settings**,
   shown next to the messages.
 - Image generation: there can be several methods (`imageGenerators`), each named by its `kind`
@@ -246,11 +248,13 @@ resolved by `resolveApiKey()`: `envKey` (an environment variable) takes priority
 ## Data storage
 
 - Config: `~/.config/sillytalk/config.json`
-- Characters: `~/.config/sillytalk/characters/<id>/` — folder name = character ID; `character.json`
-  — the name and the description; `photos/` — the "starter" photos;
-  `avatar.jpg` — the avatar
-- Users: `~/.config/sillytalk/users/<id>/` — `user.json` (the name and the persona description);
-  `avatar.jpg` — the avatar
+- Characters and users (the cards): `~/.config/sillytalk/catalogs.db` — a SQLite database
+  (`node:sqlite`) with two tables, `characters` and `persons`, each row keyed by the ID that is
+  also the name of the entity's folder below
+- Characters: `~/.config/sillytalk/characters/<id>/` — folder name = character ID; `photos/` — the
+  "starter" photos; `avatar.jpg` — the avatar (the card itself is the row of `catalogs.db`)
+- Users: `~/.config/sillytalk/users/<id>/` — `avatar.jpg` — the avatar (the card is the row of
+  `catalogs.db`)
 - ComfyUI workflows of your own: `~/.config/sillytalk/comfyui/<model>.json` — replaces the workflow
   the app ships for that model name, or adds a model (empty by default)
 - Test pictures of `sillytalk test-comfyui`: `~/.config/sillytalk/comfyui-test/` — written by that

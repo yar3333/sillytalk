@@ -5,10 +5,10 @@ import { PersonsService } from "./PersonsService";
 import { EntityIdService } from "../entities/EntityIdService";
 
 // The /persons routes (the persona cards). The JSON body field and the
-// response keys stay "users", and the on-disk layout stays users/<id>/
-// user.json. The domain logic lives in PersonsService (the folders) and in
-// EntityIdService (what a new ID drags along); this file is the thin HTTP layer
-// (validation, status codes, streaming).
+// response keys stay "users", and the picture folders on disk stay users/<id>/.
+// The domain logic lives in PersonsService (the catalogs table and the picture
+// folders) and in EntityIdService (what a new ID drags along); this file is the
+// thin HTTP layer (validation, status codes, streaming).
 export function createPersonsRouter(persons: PersonsService, entityIds: EntityIdService): express.Router {
   const router = express.Router();
 

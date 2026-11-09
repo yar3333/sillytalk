@@ -134,10 +134,10 @@ export class TextGenerationService {
 
   // ---- prompts and history ----
 
-  // person — the active persona (users/<id>/user.json); if it has a persona
-  // description, the model knows who it is talking to. fellowCharacters — the
-  // other characters in the chat: in a group chat the prompt explains the reply
-  // order and allows staying silent with the [SILENT] tag.
+  // person — the active persona (the persons table of catalogs.db); if it has a
+  // persona description, the model knows who it is talking to. fellowCharacters
+  // — the other characters in the chat: in a group chat the prompt explains the
+  // reply order and allows staying silent with the [SILENT] tag.
   //
   // The prompt offers no image protocol: a character cannot attach or generate
   // a picture — those are the user's messages only.
