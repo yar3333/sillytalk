@@ -28,8 +28,14 @@ textarea {
   border-radius: 8px;
   font-size: 13px;
 }
-.btn:hover {
+.btn:hover:not(:disabled) {
   border-color: var(--accent);
+}
+/* the sleep of Rename before the field says another folder name — the same
+   dimmed look the Rename of the entity dialogs carries */
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 .btn.primary {
   background: var(--accent);
