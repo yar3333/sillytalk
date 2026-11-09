@@ -6,6 +6,7 @@ import { Chat } from "./Chat";
 import { ChatMessage, ImageGenerationData, isImageMessage } from "./ChatMessage";
 import { ChatSummary } from "./ChatSummary";
 import { PathHelper } from "../shared/PathHelper";
+import { HttpHelper } from "../shared/HttpHelper";
 import { ImageMeta, IMAGE_GENERATION_KEYS } from "../shared/ImageMeta";
 import { ImageMetaService } from "../images/ImageMetaService";
 import { ConfigurationService } from "../configuration/ConfigurationService";
@@ -273,7 +274,7 @@ export class ChatsService {
 
   create(characterIds: string[], modelId: string, userId: string): Chat {
     const chat: Chat = {
-      id: PathHelper.newId(),
+      id: this.newChatId(),
       createdAt: Date.now(),
       characterIds: [...characterIds],
       userId,
@@ -282,6 +283,139 @@ export class ChatsService {
     };
     this.save(chat);
     return chat;
+  }
+
+  // The ID of a chat names its folder (chats/<id>/, the home of its files/) and
+  // is the key of its rows at once, so the allowed characters are those of a
+  // folder name — the same rule as for a character or a persona ID.
+  isValidId(id: unknown): id is string {
+    return (
+      typeof id === "string" &&
+      id.length > 0 &&
+      id.length <= 100 &&
+      !id.startsWith(".") &&
+      !id.includes("/") &&
+      !id.includes("\\") &&
+      !id.includes("\0") &&
+      /^[\p{L}\p{N}._-]+$/u.test(id)
+    );
+  }
+
+  // A new chat is named by its creation moment — "2026-02-08_14-03-22" — which
+  // reads meaningfully in a chat ID, in a picture id (chats/<id>/files/…) and in
+  // a file listing, where a UUID says nothing. Two chats created in the same
+  // second take a "-2", "-3" suffix, so the name stays unique (a row or a folder
+  // still standing there counts as taken).
+  private newChatId(): string {
+    const base = ChatsService.timestampId(Date.now());
+    let id = base;
+    for (let n = 2; this.exists(id) || fs.existsSync(PathHelper.chatDir(id, this.chatsRoot())); n++) {
+      id = `${base}-${n}`;
+    }
+    return id;
+  }
+
+  // The local time as "yyyy-mm-dd_hh-mm-ss" — the folder-name-safe form of the
+  // creation date (digits, "-" and "_" only).
+  private static timestampId(ms: number): string {
+    const d = new Date(ms);
+    const p = (n: number): string => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
+  }
+
+  // Gives the chat a new ID. An ID is the key of the chat's rows AND the name of
+  // its folder, so — exactly like a character rename — this is a move, not a
+  // field edit: the folder goes to the new name, the rows take it and every
+  // picture id built on it ("chats/<old>/files/x.png" — the cards, the status
+  // maps, the stored reference sets and the rows of the images table) follows,
+  // or the cards lose their files.
+  //
+  // Throws with the reason when the name is not a usable ID, there is no such
+  // chat, another chat already lives there, or a picture of the chat is still
+  // being drawn — a running job writes to the ids of the OLD name, so renaming
+  // under its feet would lose its picture (the same guard the picture editor
+  // applies to a card swap).
+  rename(chatId: string, newId: string): Chat {
+    if (!this.isValidId(newId)) {
+      throw new Error(
+        `"${newId}" is not a valid ID — letters, digits, ".", "-" and "_", no leading dot, at most 100 characters`,
+      );
+    }
+    const chat = this.get(chatId);
+    if (!chat) throw new Error(`There is no chat "${chatId}"`);
+    if (newId === chatId) return chat;
+    // Taken by a row or by a folder still standing there — a rename never
+    // overwrites a chat and never lands on files that belong to nobody.
+    if (this.exists(newId) || fs.existsSync(PathHelper.chatDir(newId, this.chatsRoot()))) {
+      throw new Error(`There is already a chat with the ID "${newId}"`);
+    }
+    const pending = chat.messages.some((m) =>
+      m.imageStatus ? Object.values(m.imageStatus).includes("pending") : false,
+    );
+    if (pending) {
+      throw new Error("A picture of this chat is still being generated — wait for it or cancel it first");
+    }
+    // The picture ids are collected BEFORE the move (after it the folder has a
+    // different name and there is nothing left to enumerate), and they include
+    // the rows that describe a file the user already deleted by hand — an
+    // orphan row follows too, or it stays behind naming a path that never
+    // existed under the new ID.
+    const fromDir = PathHelper.chatDir(chatId, this.chatsRoot());
+    const pairs = this.picturePairs(fromDir, PathHelper.chatDir(newId, this.chatsRoot()));
+    const db = this.db();
+    chat.id = newId;
+    this.transact(db, () => {
+      // The blob carries the id of its chat, so the row is rewritten, not just
+      // re-keyed (the message rows only name the chat through chat_id).
+      db.prepare("UPDATE chats SET id = ?, data = ? WHERE id = ?").run(newId, this.chatData(chat), chatId);
+      db.prepare("UPDATE messages SET chat_id = ? WHERE chat_id = ?").run(newId, chatId);
+    });
+    if (fs.existsSync(fromDir)) fs.renameSync(fromDir, PathHelper.chatDir(newId, this.chatsRoot()));
+    // First the cards and the reference lists (repointImageId does both, and it
+    // scans rows by their content, so the rewrites above do not hide them),
+    // then the rows themselves — a row belongs to the picture, so it travels
+    // with the file.
+    for (const [oldId, nextId] of pairs) {
+      this.repointImageId(oldId, nextId);
+      this.imageMeta.move(oldId, nextId);
+    }
+    return this.get(newId) ?? chat;
+  }
+
+  // Every picture id the old chat folder addressed: the image files in it (the
+  // files/ set) and the rows that describe a picture under it — collected the
+  // same way EntityIdService does it for a character folder.
+  private picturePairs(fromDir: string, toDir: string): Array<[string, string]> {
+    const fromPrefix = `${PathHelper.imageIdOf(fromDir)}/`;
+    const toPrefix = `${PathHelper.imageIdOf(toDir)}/`;
+    const pairs = new Map<string, string>();
+    const add = (oldId: string): void => {
+      if (oldId.startsWith(fromPrefix)) pairs.set(oldId, toPrefix + oldId.slice(fromPrefix.length));
+    };
+    for (const file of ChatsService.pictureFiles(fromDir)) add(PathHelper.imageIdOf(file));
+    for (const row of this.imageMeta.list()) add(row.id);
+    return [...pairs];
+  }
+
+  // The picture files of a chat folder, recursively. The same name rule as the
+  // media route, so the database file or a leftover chat.json.migrated inside
+  // the folder is not treated as a picture.
+  private static pictureFiles(dir: string, depth = 0): string[] {
+    if (depth > 4) return [];
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+    const out: string[] = [];
+    for (const entry of entries) {
+      if (entry.name.startsWith(".")) continue;
+      const full = path.join(dir, entry.name);
+      if (PathHelper.isDirEntry(dir, entry)) out.push(...ChatsService.pictureFiles(full, depth + 1));
+      else if (HttpHelper.isImage(full)) out.push(full);
+    }
+    return out;
   }
 
   // Deletes the chat — its rows and its folder (the files/ go along, and with
@@ -316,7 +450,7 @@ export class ChatsService {
     const source = this.get(chatId);
     if (!source) return null;
     const copy: Chat = {
-      id: PathHelper.newId(),
+      id: this.newChatId(),
       ...(source.name ? { name: `${source.name} (copy)` } : {}),
       createdAt: Date.now(),
       characterIds: [...source.characterIds],

@@ -766,6 +766,81 @@ test('the ID of a character: written at creation, renamed with the chat followin
   await page.screenshot({ path: `${SHOTS}/10e-character-id-renamed.png` });
 });
 
+// The ID of a chat names its folder AND prefixes every picture id of the chat
+// (chats/<id>/files/…), so a new chat is born under a name that reads — its
+// creation moment, not a UUID — and the Rename in the chat settings is the same
+// kind of move a character rename is: the folder and the picture ids of the
+// chat follow the new name.
+test('the ID of a chat: the creation date by default, renamed with its pictures following', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await expect(page.getByTestId('input')).toBeVisible();
+
+  // A drawn picture gives the rename a file and a row to move.
+  await page.getByTestId('gen-toggle').click();
+  await page.getByTestId('input').fill('a red circle');
+  await page.getByTestId('send').click();
+  await expect(page.getByTestId('img-pending')).toBeVisible({ timeout: 15000 });
+  await expect(page.getByTestId('img-pending')).toBeHidden({ timeout: 20000 });
+
+  // The open chat is named by its creation moment, not a UUID.
+  const list0 = (await (await fetch(`${API}/chats`)).json()) as Array<{ id: string }>;
+  expect(list0.length).toBe(1);
+  const oldId = list0[0].id;
+  expect(oldId).toMatch(/^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(-\d+)?$/);
+  const before = (await (await fetch(`${API}/chats/${oldId}`)).json()) as {
+    messages: Array<{ kind: string; images: string[] }>;
+  };
+  const cardBefore = before.messages.find((m) => m.kind === 'image')!;
+  expect(cardBefore.images[0].startsWith(`chats/${oldId}/files/`)).toBe(true);
+  const fileName = cardBefore.images[0].split('/').pop()!;
+
+  // ---- the chat settings dialog carries the ID; Rename is dead until the
+  // field says another folder name, and Save alone does not move anything ----
+  await page.getByTestId('chat-dots').click();
+  await page.getByTestId('chat-settings').click();
+  const idField = page.getByTestId('chat-id-input');
+  await expect(idField).toHaveValue(oldId);
+  const rename = page.getByTestId('chat-rename');
+  await expect(rename).toBeDisabled();
+  await idField.fill('harbour-talk');
+  await expect(rename).toBeEnabled();
+  await page.getByTestId('chat-settings-save').click();
+  await expect(page.getByTestId('chat-settings-dialog')).toBeHidden();
+  const listSaved = (await (await fetch(`${API}/chats`)).json()) as Array<{ id: string }>;
+  expect(listSaved.map((c) => c.id)).toEqual([oldId]);
+
+  // ---- the explicit Rename: the folder move ----
+  await page.getByTestId('chat-dots').click();
+  await page.getByTestId('chat-settings').click();
+  await expect(idField).toHaveValue(oldId);
+  await idField.fill('harbour-talk');
+  await rename.click();
+  // the dialog keeps working on the new name instead of the folder that is gone
+  await expect(idField).toHaveValue('harbour-talk');
+  await expect(rename).toBeDisabled();
+  await page.getByRole('button', { name: 'Cancel' }).click();
+  await expect(page.getByTestId('chat-settings-dialog')).toBeHidden();
+
+  // the chat reads under the new id only, and its card names the moved file
+  const list1 = (await (await fetch(`${API}/chats`)).json()) as Array<{ id: string }>;
+  expect(list1.map((c) => c.id)).toEqual(['harbour-talk']);
+  const after = (await (await fetch(`${API}/chats/harbour-talk`)).json()) as {
+    messages: Array<{ kind: string; images: string[] }>;
+  };
+  const cardAfter = after.messages.find((m) => m.kind === 'image')!;
+  expect(cardAfter.images[0]).toBe(`chats/harbour-talk/files/${fileName}`);
+  // the file itself travels: the media route serves it at the new id
+  const media = await fetch(`${API}/media?path=${encodeURIComponent(cardAfter.images[0])}`);
+  expect(media.status).toBe(200);
+  // and its row of the images table moved with it — the picture browser knows
+  // the picture under the new path
+  const pictures = (await (await fetch(`${API}/pictures`)).json()) as { pictures: Array<{ id: string }> };
+  expect(pictures.pictures.some((p) => p.id === cardAfter.images[0])).toBe(true);
+  await page.screenshot({ path: `${SHOTS}/10f-chat-id-renamed.png` });
+});
+
 // The header menus: opening one closes the others, the model pick via the
 // chip menu and "+ New character" (the create-mode dialog). No model calls.
 test('the header menus: exclusivity, the model pick, the new character', async ({ page }) => {

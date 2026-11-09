@@ -1808,6 +1808,10 @@ describe('chatHintOf (helpers.ts)', () => {
 describe('The chat title and cloning a chat', () => {
   let cloneCalls: string[];
   let patchBodies: Record<string, unknown>[];
+  let renameCalls: Array<{ id: string; newId: string }>;
+  // What the fake getChats answers with as the only row — the rename stub
+  // moves it, so a test can see the list re-read under the new id.
+  let listId: string;
   const copyChat: Chat = {
     ...turnChat([]),
     id: 'chat-2',
@@ -1818,6 +1822,8 @@ describe('The chat title and cloning a chat', () => {
   beforeEach(async () => {
     cloneCalls = [];
     patchBodies = [];
+    renameCalls = [];
+    listId = 'chat-2';
     await TestBed.resetTestingModule();
     await TestBed.configureTestingModule({
       imports: [TopBar, ChatSettingsDialog],
@@ -1833,8 +1839,15 @@ describe('The chat title and cloning a chat', () => {
               patchBodies.push(patch);
               return Promise.resolve({ ...turnChat([]), ...patch });
             },
+            renameChat: (id: string, newId: string) => {
+              renameCalls.push({ id, newId });
+              listId = newId;
+              return Promise.resolve({ id: newId, chat: { ...turnChat([]), id: newId } });
+            },
             getChats: () =>
-              Promise.resolve<ChatSummary[]>([{ ...copyChat, messageCount: 0, lastMessageAt: 0 }]),
+              Promise.resolve<ChatSummary[]>([
+                { ...copyChat, id: listId, messageCount: 0, lastMessageAt: 0 },
+              ]),
           }),
         },
       ],
@@ -1937,6 +1950,55 @@ describe('The chat title and cloning a chat', () => {
     await new Promise((r) => setTimeout(r, 0));
 
     expect(patchBodies[0]).toMatchObject({ stylePrompt: 'photorealistic, 35mm, warm light' });
+  });
+
+  it('the dialog carries the chat ID; Rename wakes only when the field says another name, and Save alone never renames', async () => {
+    const store = TestBed.inject(ChatStore);
+    store.chat.set(turnChat([]));
+    const fixture = TestBed.createComponent(ChatSettingsDialog);
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+
+    const input = el.querySelector('[data-testid=chat-id-input]') as HTMLInputElement;
+    const btn = el.querySelector('[data-testid=chat-rename]') as HTMLButtonElement;
+    expect(input.value).toBe('chat-1');
+    expect(btn.disabled).toBe(true);
+
+    input.value = 'harbour-talk';
+    input.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+    expect(btn.disabled).toBe(false);
+
+    (el.querySelector('[data-testid=chat-settings-save]') as HTMLButtonElement).click();
+    await new Promise((r) => setTimeout(r, 0));
+    // the ID moves through the explicit Rename only — a Save keeps the folder
+    expect(renameCalls).toEqual([]);
+    expect(store.chat()?.id).toBe('chat-1');
+  });
+
+  it('renaming the chat ID re-opens the chat under the new id and re-reads the chat list', async () => {
+    const store = TestBed.inject(ChatStore);
+    store.chat.set(turnChat([]));
+    const fixture = TestBed.createComponent(ChatSettingsDialog);
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+
+    const input = el.querySelector('[data-testid=chat-id-input]') as HTMLInputElement;
+    input.value = 'harbour-talk';
+    input.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+    (el.querySelector('[data-testid=chat-rename]') as HTMLButtonElement).click();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(renameCalls).toEqual([{ id: 'chat-1', newId: 'harbour-talk' }]);
+    expect(store.chat()?.id).toBe('harbour-talk');
+    // the dialog stays open on the new name, and the button sleeps again
+    expect((el.querySelector('[data-testid=chat-id-input]') as HTMLInputElement).value).toBe(
+      'harbour-talk',
+    );
+    expect((el.querySelector('[data-testid=chat-rename]') as HTMLButtonElement).disabled).toBe(true);
+    // the chat list is re-read — its rows are keyed by the id
+    expect(store.chats().map((c) => c.id)).toEqual(['harbour-talk']);
   });
 
   it('the chat list rows show the title and keep the characters, the persona and the last message date in the hint', () => {

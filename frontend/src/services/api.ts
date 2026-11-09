@@ -332,6 +332,17 @@ export class ApiService {
     return this.req<{ chat: Chat }>(`/chats/${id}/clone`, { method: 'POST' }).then((r) => r.chat);
   }
 
+  // Gives the chat a new ID — a folder move like a character rename: chats/<id>/
+  // and every picture id of the chat follow it. Returns the new id and the
+  // renamed chat; a 400 says why the name was refused (taken, not a folder
+  // name, a picture still drawing).
+  renameChat(id: string, newId: string): Promise<{ id: string; chat: Chat }> {
+    return this.req<{ id: string; chat: Chat }>(`/chats/${id}/rename`, {
+      method: 'POST',
+      body: JSON.stringify({ newId }),
+    });
+  }
+
   // Imports a character photo into the chat files/ as a 🎨 reference; the
   // answer is the new image id.
   importPhoto(chatId: string, characterId: string, photo: string): Promise<{ id: string }> {

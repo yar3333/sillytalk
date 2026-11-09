@@ -709,6 +709,27 @@ export class ChatStore {
       .catch((e) => this.ui.error.set(String((e as Error).message)));
   }
 
+  // Gives the CURRENT chat a new ID (the Rename of the chat settings dialog).
+  // The server moves the folder and rewrites the rows and the picture ids; the
+  // store keeps working with the renamed chat the server answers with, and the
+  // chat list is re-read because its rows are keyed by the id. Resolves to the
+  // new id — or null when the name was refused (the banner already says why,
+  // the same surface as the character rename).
+  renameChat(newId: string): Promise<string | null> {
+    const c = this.chat();
+    if (!c) return Promise.resolve(null);
+    return this.api
+      .renameChat(c.id, newId)
+      .then((r) => {
+        this.setChat(r.chat);
+        return this.refreshChats().then(() => r.id);
+      })
+      .catch((e) => {
+        this.ui.error.set(String((e as Error).message));
+        return null;
+      });
+  }
+
   deleteCurrentChat(): void {
     const c = this.chat();
     if (!c) return;

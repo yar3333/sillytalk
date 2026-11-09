@@ -184,6 +184,13 @@ backend/               Express API; also serves the built frontend
                        the clone (clone — the messages, the settings, the files/
                        folder and a picture row per copied picture, every image
                        id and reference repointed at the copy's folder),
+                       the date-based default ID (a new chat is named by its
+                       creation moment yyyy-mm-dd_hh-mm-ss, a "-2"/"-3" suffix
+                       keeps it unique) and the chat's own ID rename
+                       (rename — the folder move + the chats/messages rows
+                       re-keyed + every chats/<old>/ picture id and images.db
+                       row repointed; it refuses a malformed or taken name and
+                       a chat whose picture is still pending),
                        the format guards, the model
                        fallback (and the vision pick — Chat.visionModelId is
                        dropped when the model it names leaves the config),
@@ -208,7 +215,8 @@ backend/               Express API; also serves the built frontend
                        configuration service and the image-metadata service
                        injected); chats.routes.ts — the
                        /chats routes
-                       (the chat CRUD + the clone (POST /:id/clone), the
+                       (the chat CRUD + the clone (POST /:id/clone) + the ID
+                       rename (POST /:id/rename), the
                        messages, the reply queue, the
                        picture of the user's turn (POST /:id/auto-image), the
                        card edit (PATCH /:id/messages/:id/picture), the
@@ -372,7 +380,7 @@ frontend/              Angular app
     user-dialog/       persona edit dialog (name, description, avatar, Delete/Clone)
     model-dialog/      model edit dialog (llmModels entry fields, the reasoning
                        pick + levels, Delete/Clone)
-    chat-settings-dialog/ the per-chat name + the per-chat overrides: temperature /
+    chat-settings-dialog/ the per-chat name + the ID field with its Rename button + the per-chat overrides: temperature /
                        min-P / repetition penalty + the system-prompt addition
     image-lightbox/    a picture enlarged over a dark backdrop (ImageStore
                        .lightbox carries the media URL)
@@ -881,6 +889,29 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   happen to share an ID are two entities and one rename leaves the other alone. After a rename the
   dialog re-reads the open chat (`ChatStore.refreshCurrentChat()`) and the chat list, because the
   server has just rewritten that chat's participant list and message authors.
+- **A chat ID follows the same rule.** It is the primary key of the chat's rows
+  AND the name of its folder `chats/<id>/`, and it prefixes every picture id of
+  the chat (`chats/<id>/files/…`). A new chat is therefore named by its
+  **creation moment** — `yyyy-mm-dd_hh-mm-ss` local time, a `-2`/`-3` suffix
+  keeping it unique inside one second (`ChatsService.newChatId`; the clone takes
+  the same shape) — a name that reads in a chat list, a picture id and a folder
+  listing, where a UUID said nothing. The chat settings dialog carries an **ID
+  field with its own Rename** button exactly like the entity dialogs (disabled
+  until it says another folder name, `helpers.isEntityId` on the frontend and
+  `ChatsService.isValidId` on the server, Save alone never renames). The rename
+  is `POST /api/chats/:id/rename` (`{ newId }` → `{ id, chat }`) and lives in
+  `ChatsService.rename` itself — every piece it drags along belongs to the chat
+  domain, so no EntityIdService-like piece above it is needed: the folder
+  moves, the `chats` row is re-keyed (its blob carries the id) and the
+  `messages` `chat_id` follows, then every picture id under `chats/<old>/` is
+  repointed — the cards and status maps through `repointImageId`, the
+  `images.db` rows through `ImageMetaService.move`, orphan rows included. It
+  refuses a malformed ID, a name that is taken (by a row or by a folder still
+  standing there) and a chat with a **pending picture** — a running job writes
+  to the old ids, the same guard the card swap applies. On the frontend
+  `ChatStore.renameChat(newId)` applies the renamed chat the server answers
+  with and re-reads the chat list; the dialog stays open on the new name (the
+  other fields of the dialog are untouched by a move).
 - **Multi-participant chats.** `Chat.characterIds` is the ordered participant list (order =
   answer priority). Every `ChatMessage` carries its author — `characterId` (assistant) /
   `userId` (user) — stored at send time, so switching participants or the active persona never
@@ -1399,7 +1430,9 @@ that needs the databases resolves them here — the one place allowed to.
   (both rename buttons disabled until the field says another folder name); the
   model dialog also
   has `model-reasoning-select` + `model-reasoning-levels-input`. The per-chat dialog:
-  `chat-settings-dialog` + `chat-name-input` +
+  `chat-settings-dialog` + `chat-name-input` + the ID field `chat-id-input` with
+  `chat-rename` (disabled until the field says another folder name — the chat's
+  ID is its folder name, a new one is born `yyyy-mm-dd_hh-mm-ss`) +
   `chat-temp-input`/`chat-minp-input`/`chat-reppen-input`/
   `chat-sysprompt-input`/`chat-style-input` (the picture style of the whole chat) +
   `chat-settings-save`.

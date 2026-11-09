@@ -41,9 +41,12 @@ Stack: **Node.js / Express 5 / TypeScript** (backend) + **Angular 22 / SCSS** (f
   Generation always runs in the background: the chat stays usable, a spinner with Cancel shows
   while it runs and a failed picture keeps a Regenerate button. A click on a picture enlarges it
   and makes it a generation reference.
-- Per-chat settings (the ⋮ next to the chat date — "Chat settings…"): the sampling overrides of
-  this chat (temperature / min-P / repetition penalty, each unset = the provider default) and a
-  free-text addition to the system prompt of every reply here.
+- Per-chat settings (the ⋮ next to the chat date — "Chat settings…"): the chat's name, the chat's
+  ID with its own Rename button, the sampling overrides of
+  this chat (temperature / min-P / repetition penalty, each unset = the provider default), a
+  free-text addition to the system prompt of every reply here and one picture style for the whole
+  conversation. A new chat is named by its creation moment (`2026-02-08_14-03-22`) — that name is
+  its folder, and Rename moves it with the chat's messages and pictures.
 - Black theme, a centered chat column, responsive for both desktop and phone.
 - The header: the participant names open the characters menu (who is in the chat and in what order
   they answer, plus edit/new), the persona name opens the persona menu, the model chip picks the
@@ -262,7 +265,9 @@ resolved by `resolveApiKey()`: `envKey` (an environment variable) takes priority
 - Chats: `~/.config/sillytalk/chats/chats.db` — a SQLite database (`node:sqlite`) with the chat
   fields and the messages; the pictures stay plain files in
   `~/.config/sillytalk/chats/<chatId>/files/` (the old per-chat `chat.json` files are imported
-  into the database once and renamed to `chat.json.migrated`)
+  into the database once and renamed to `chat.json.migrated`). The `<chatId>` of a new chat is the
+  moment it was created (`2026-02-08_14-03-22`) and can be renamed in "Chat settings" — the folder
+  and the chat's pictures move with the new name
 - What is known about a picture: `~/.config/sillytalk/images.db` — one SQLite table with one row per
   picture of the data folder, keyed by its path relative to that folder: what the picture shows, the
   prompt it was drawn from, its references and the people on it. The single source the chat cards

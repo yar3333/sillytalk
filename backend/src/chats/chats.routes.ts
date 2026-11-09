@@ -159,6 +159,27 @@ export function createChatsRouter(
     res.json({ chat: copy });
   });
 
+  // Gives the chat a new ID — the same kind of move a character rename is: the
+  // ID is the key of the chat's rows AND the name of its folder chats/<id>/, so
+  // the folder, the cards and the picture ids of the chat follow it (the rules
+  // and the reason are in ChatsService.rename). The new ID is a path segment,
+  // so it travels in the body.
+  router.post("/:id/rename", (req, res) => {
+    const newId = typeof req.body?.newId === "string" ? req.body.newId.trim() : "";
+    if (!newId) {
+      res.status(400).json({ error: "Expected the new ID (newId field)" });
+      return;
+    }
+    try {
+      const chat = chats.rename(String(req.params.id), newId);
+      res.json({ id: newId, chat });
+    } catch (err) {
+      // The service says why the name is not usable (taken, malformed, a
+      // picture still drawing) — the banner can show it as it is.
+      res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
   // Imports a character photo into the chat files/ (a reference for the 🎨
   // mode); the answer is the new image id.
   router.post("/:id/import-photo", (req, res) => {

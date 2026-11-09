@@ -1001,3 +1001,112 @@ describe("setMessageImageStatus", () => {
     expect(() => chats.setMessageImageStatus(chat.id, "missing", "gen-1.png", "pending")).not.toThrow();
   });
 });
+
+describe("the chat ID (the date by default, the rename)", () => {
+  it("names a new chat by its creation moment, not by a UUID", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    expect(chat.id).toMatch(/^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$/);
+    expect(chats.isValidId(chat.id)).toBe(true);
+    // two chats born in the same second are still two chats
+    const second = chats.create(["a"], "m1", "me");
+    expect(second.id).not.toBe(chat.id);
+    expect(second.id).toMatch(/^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}-\d+$/);
+    expect(chats.list()).toHaveLength(2);
+  });
+
+  it("the clone of a chat gets a date id of its own", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    const copy = chats.clone(chat.id)!;
+    expect(copy.id).toMatch(/^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}/);
+    expect(copy.id).not.toBe(chat.id);
+    expect(chats.list()).toHaveLength(2);
+  });
+
+  it("isValidId takes the characters of a folder name only", () => {
+    expect(chats.isValidId("2026-02-08_14-03-22")).toBe(true);
+    expect(chats.isValidId("my-chat.1_2")).toBe(true);
+    expect(chats.isValidId("")).toBe(false);
+    expect(chats.isValidId("a/b")).toBe(false);
+    expect(chats.isValidId("a\\b")).toBe(false);
+    expect(chats.isValidId("..")).toBe(false);
+    expect(chats.isValidId(".hidden")).toBe(false);
+    expect(chats.isValidId("a b")).toBe(false);
+    expect(chats.isValidId(42)).toBe(false);
+  });
+
+  it("the rename moves the folder with its files, the rows and every picture id built on the old name", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    chats.addUserMessage(chat, "hello");
+    const id = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=", { nameHint: "a red boat" });
+    const card = chats.addImageMessage(chat, id, {
+      description: "a boat",
+      generation: { prompt: "a red boat", source: "manual" },
+    });
+    // another chat names this picture in the reference set of its own prompt —
+    // a picture id is a path, so it must follow the folder like the card does
+    const other = chats.create(["a"], "m1", "me");
+    const otherId = chats.saveImage(other.id, "data:image/png;base64,aGVsbG8=", { nameHint: "second" });
+    const otherCard = chats.addImageMessage(other, otherId, {
+      generation: { prompt: "like the first reference image", refs: [id], source: "manual" },
+    });
+    expect(fs.existsSync(path.join(root, chat.id, "files", path.basename(id)))).toBe(true);
+
+    const renamed = chats.rename(chat.id, "harbour-talk");
+
+    expect(renamed.id).toBe("harbour-talk");
+    // the folder moved with its file, the old name stands nowhere
+    expect(fs.existsSync(path.join(root, chat.id))).toBe(false);
+    expect(fs.existsSync(path.join(root, "harbour-talk", "files", path.basename(id)))).toBe(true);
+    expect(chats.exists(chat.id)).toBe(false);
+    expect(chats.exists("harbour-talk")).toBe(true);
+    // through a fresh service (a restart sees the move, not some memory)
+    const seen = peek("harbour-talk")!;
+    expect(seen.messages.map((m) => m.text)).toEqual(["hello", "a boat"]);
+    const seenCard = seen.messages.find((m) => m.id === card.id)!;
+    const newId = `harbour-talk/files/${path.basename(id)}`;
+    expect(seenCard.images).toEqual([newId]);
+    // the row of the picture moved with the file, so the card still reads its
+    // caption and its prompt from the table
+    expect(seenCard.text).toBe("a boat");
+    expect(seenCard.generation?.prompt).toBe("a red boat");
+    expect(imageMeta.get(id)).toBeNull();
+    expect(imageMeta.get(newId)?.description).toBe("a boat");
+    // and the reference set of the OTHER chat points at the new path — in the
+    // row (the one source) and through the card that reads it
+    expect(imageMeta.get(otherId)?.refs).toEqual([newId]);
+    expect(peek(other.id)!.messages.find((m) => m.id === otherCard.id)!.generation?.refs).toEqual([newId]);
+  });
+
+  it("the rename takes the orphan rows of the folder along (a file the user deleted by hand)", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    const gone = `${chat.id}/files/deleted-by-hand-1a2b3c.png`;
+    imageMeta.set(gone, { description: "a picture of nothing" });
+    chats.rename(chat.id, "cleaned");
+    expect(imageMeta.get(gone)).toBeNull();
+    expect(imageMeta.get("cleaned/files/deleted-by-hand-1a2b3c.png")?.description).toBe("a picture of nothing");
+  });
+
+  it("the rename refuses a name that is taken, a name that is not a folder name and a chat that is not there", () => {
+    const one = chats.create(["a"], "m1", "me");
+    const two = chats.create(["a"], "m1", "me");
+    expect(() => chats.rename(one.id, two.id)).toThrow(/already a chat/);
+    expect(() => chats.rename(one.id, "a/b")).toThrow(/not a valid ID/);
+    expect(() => chats.rename(one.id, ".hidden")).toThrow(/not a valid ID/);
+    expect(() => chats.rename("no-such-chat", "fine")).toThrow(/no chat/);
+    // a folder standing there without a row is taken too — a rename never lands
+    // on files that belong to nobody
+    fs.mkdirSync(path.join(root, "ghost-folder"), { recursive: true });
+    expect(() => chats.rename(one.id, "ghost-folder")).toThrow(/already a chat/);
+    // nothing was changed by the refusals
+    expect(chats.exists(one.id)).toBe(true);
+    expect(fs.existsSync(path.join(root, one.id))).toBe(false);
+  });
+
+  it("the rename refuses while a picture of the chat is still being drawn", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    const pending = chats.reservedImageId(chat.id, "a boat");
+    chats.addImageMessage(chat, pending, { status: "pending" });
+    expect(() => chats.rename(chat.id, "too-soon")).toThrow(/still being generated/);
+    expect(chats.exists(chat.id)).toBe(true);
+  });
+});
