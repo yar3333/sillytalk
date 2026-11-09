@@ -1645,6 +1645,67 @@ describe('PictureLibrary — the picture browser', () => {
     await tick();
     expect(el.querySelectorAll('[data-testid=picture-row]')).toHaveLength(3);
   });
+
+  it('the filter is an AND over its words, each found in the id or the description', async () => {
+    const { el } = await render();
+    const filter = el.querySelector('[data-testid=picture-filter]') as HTMLInputElement;
+    const show = (value: string) => {
+      filter.value = value;
+      filter.dispatchEvent(new Event('input'));
+    };
+    const visible = () => [...el.querySelectorAll('[data-testid=picture-row]')];
+
+    // one word of the id and one of the description of the SAME picture
+    show('boat calm');
+    await tick();
+    expect(visible()).toHaveLength(1);
+    expect(visible()[0].textContent).toContain('a-red-boat');
+
+    // a word of the path filters by folder: only the picture of chat-9 is left
+    show('chat-9');
+    await tick();
+    expect(visible()).toHaveLength(1);
+    expect(visible()[0].getAttribute('title')).toBe('chat-9/files/gone-1a2b3c.png');
+
+    // words that belong to two different pictures match NOTHING — every word has
+    // to be found on one picture, or a filter would answer "and" with an "or"
+    // ("calm" is the boat's caption, "gone" is a word of the other row's id)
+    show('calm gone');
+    await tick();
+    expect(visible()).toHaveLength(0);
+    expect(el.querySelector('[data-testid=picture-empty]')).not.toBeNull();
+
+    // spaces around and between the words do not make an empty word that would
+    // match every row
+    show('   calm    lake  ');
+    await tick();
+    expect(visible()).toHaveLength(1);
+  });
+
+  it('the row shows the id of the picture, its file-name end kept', async () => {
+    const { fixture, el } = await render();
+    const rows = [...el.querySelectorAll('[data-testid=picture-row]')];
+    const idLine = rows[0].querySelector('.lib-id')!.textContent!.trim();
+    // the beginning of a path says the least (a chat id sits in it), so the tail
+    // is what survives — the file name has to stay readable
+    expect(idLine).toContain('a-red-boat-1a2b3c.png');
+    expect(idLine.startsWith('…')).toBe(true);
+    // the full path is where it always was: the hover hint and the ID field
+    expect(rows[0].getAttribute('title')).toBe(boat);
+
+    // an id that fits is shown whole, and a long one is cut on a "/" so the tail
+    // keeps whole path segments; only when a segment cannot fit at all is it
+    // split
+    const dialog = fixture.componentInstance;
+    expect(dialog.idTail('alice/photos/p1.jpg')).toBe('alice/photos/p1.jpg');
+    expect(dialog.idTail('chat-1/files/a-red-boat-1a2b3c.png', 28)).toBe(
+      '…files/a-red-boat-1a2b3c.png',
+    );
+    // no "/" is left inside what fits, so the one segment that remains is cut
+    expect(dialog.idTail('chat-1/files/a-red-boat-1a2b3c.png', 20)).toBe(
+      '…-red-boat-1a2b3c.png',
+    );
+  });
 });
 
 // Toggling a character out of a chat is a reply-queue decision: it must not

@@ -357,11 +357,12 @@ frontend/              Angular app
                        Save only edits the card (drawing stays the card's ↻)
     picture-library/   the picture browser (the ⋮ menu → Pictures): every
                        picture of the data folder with its row of the images
-                       table — the filterable thumbnail list beside the editor
-                       of the selected one (description, prompt, the reference
-                       list the prompt names, the ID field with its Rename
-                       action — a rename moves the file and the cards follow);
-                       state/actions in PictureLibraryStore
+                       table — the filterable thumbnail list (a row shows the
+                       file name, the description and the tail of the id) beside
+                       the editor of the selected one (description, prompt, the
+                       reference list the prompt names, the ID field with its
+                       Rename action — a rename moves the file and the cards
+                       follow); state/actions in PictureLibraryStore
     input-panel/       input: error banner, gen-mode bar, 📎 attachments, the 📷
                        "picture of my turn" button, send;
                        orchestrates the "what to send" decision (edit/gen/text)
@@ -1088,8 +1089,17 @@ that needs the databases resolves them here — the one place allowed to.
 - **The picture browser (the ⋮ menu → "Pictures")** is the chat-independent view of every picture of
   the data folder (`PictureLibraryStore` + `picture-library` component, a wide two-pane modal). The
   left pane is a filterable thumbnail list of all pictures (`GET /api/pictures`, newest file first; a
-  row whose file is gone shows a ✕ and is dimmed, not hidden — it is a record the user can still
-  clear). The right pane edits the SELECTED picture's row: its **description** and **prompt** (Save
+  row shows the file name, the description and — under them — the **id** of the picture, and a row
+  whose file is gone shows a ✕ and is dimmed, not hidden: it is a record the user can still clear).
+  The id line shows the TAIL of the path (`PictureLibraryComponent.idTail`, cut on a "/" so the
+  segments it keeps are whole): the beginning of an id is the half that says the least (a chat's
+  uuid sits in it) and the file name is what tells two rows apart. The full id stays the row's hover
+  hint and the ID field of the editor. The **filter** is an AND over its space-separated words —
+  every word has to be found in the picture's id or in its description, so "alice sunset" keeps the
+  pictures of alice that say sunset and not the union of the two words (matching the id too is what
+  makes "chats", a chat id or a file-name part a filter word); `picture-empty` is the "nothing
+  matched" state. The right pane edits the SELECTED picture's row: its **description** and **prompt**
+  (Save
   writes them to the images table, which is the SAME row every chat card of that picture reads — so a
   caption written here is what the chat shows, and the current chat is re-read after the save), the
   **reference list** the prompt names (added from the catalog, minus the picture itself and minus any

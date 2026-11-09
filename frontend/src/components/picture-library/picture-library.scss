@@ -111,6 +111,19 @@
   text-overflow: ellipsis;
 }
 
+/* the id is the path of the file — shown so it can be read and matched against
+   the filter without opening the picture; the path is long and its beginning is
+   the low-information half (a chat's id sits in it), so the row shows its tail
+   (idTail()) and the full path stays in the row's hover hint */
+.lib-id {
+  font-size: 10px;
+  font-family: ui-monospace, Consolas, monospace;
+  color: var(--fg-dim, #777);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .lib-empty,
 .lib-none,
 .lib-count {

@@ -26,7 +26,7 @@ import { PictureLibraryStore } from '../../services/picture-library-store';
         <input
           class="lib-filter"
           type="search"
-          placeholder="Filter by name or description"
+          placeholder="Filter by id or description (words match all)"
           data-testid="picture-filter"
           [value]="filter()"
           (input)="setFilter($event)"
@@ -49,6 +49,7 @@ import { PictureLibraryStore } from '../../services/picture-library-store';
               <span class="lib-meta">
                 <span class="lib-name">{{ baseName(p.id) }}</span>
                 <span class="lib-desc">{{ p.description || 'no description' }}</span>
+                <span class="lib-id">{{ idTail(p.id) }}</span>
               </span>
             </button>
           } @empty {
@@ -188,13 +189,19 @@ export class PictureLibraryComponent {
     this.idField.set(picture?.id ?? '');
   }
 
+  // Every space-separated word must be found — in the id or in the description —
+  // for the picture to stay: "alice sunset" keeps the pictures of alice that
+  // say sunset, not the ones matching either word. The id is matched too, so a
+  // word of the path ("chats", a chat id, a file-name part) filters the list.
   filtered(): Picture[] {
-    const needle = this.filter().trim().toLowerCase();
+    const words = this.filter().trim().toLowerCase().split(/\s+/).filter((w) => w.length > 0);
     const all = this.store.pictures();
-    if (!needle) return all;
-    return all.filter(
-      (p) => p.id.toLowerCase().includes(needle) || (p.description ?? '').toLowerCase().includes(needle),
-    );
+    if (words.length === 0) return all;
+    return all.filter((p) => {
+      const id = p.id.toLowerCase();
+      const description = (p.description ?? '').toLowerCase();
+      return words.every((word) => id.includes(word) || description.includes(word));
+    });
   }
 
   // The catalog minus the picture being edited (a picture is never its own
@@ -213,6 +220,19 @@ export class PictureLibraryComponent {
 
   baseName(id: string): string {
     return id.slice(id.lastIndexOf('/') + 1);
+  }
+
+  // The id of a row is the whole path, and the beginning of a path is the half
+  // that says the least (a chat's id sits in it), so the row shows its TAIL. The
+  // cut is the FIRST "/" whose remainder still fits, so the tail keeps as many
+  // whole path segments as the width allows and a segment is split only when
+  // even one of them does not fit. The full id is the row's hover hint and the
+  // editor's ID field.
+  idTail(id: string, max = 32): string {
+    if (id.length <= max) return id;
+    const cut = id.indexOf('/', Math.max(0, id.length - max - 1));
+    if (cut >= 0 && cut + 1 < id.length) return `…${id.slice(cut + 1)}`;
+    return `…${id.slice(id.length - max)}`;
   }
 
   setFilter(e: Event): void {
