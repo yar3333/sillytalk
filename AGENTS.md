@@ -1091,14 +1091,16 @@ that needs the databases resolves them here — the one place allowed to.
   left pane is a filterable thumbnail list of all pictures (`GET /api/pictures`, newest file first; a
   row shows the file name, the description and — under them — the **id** of the picture, and a row
   whose file is gone shows a ✕ and is dimmed, not hidden: it is a record the user can still clear).
-  The id line shows the TAIL of the path (`PictureLibraryComponent.idTail`, cut on a "/" so the
-  segments it keeps are whole): the beginning of an id is the half that says the least (a chat's
-  uuid sits in it) and the file name is what tells two rows apart. The full id stays the row's hover
-  hint and the ID field of the editor. The **filter** is an AND over its space-separated words —
-  every word has to be found in the picture's id or in its description, so "alice sunset" keeps the
-  pictures of alice that say sunset and not the union of the two words (matching the id too is what
-  makes "chats", a chat id or a file-name part a filter word); `picture-empty` is the "nothing
-  matched" state. The right pane edits the SELECTED picture's row: its **description** and **prompt**
+  The id line shows the **whole path** in full (`.lib-id`, wrapping onto more lines when the column
+  is narrower than the path — `overflow-wrap: anywhere`, because a long path has no word to break
+  on): the id is where the file lives, what the ID field edits and what the filter matches, so the
+  row hides none of it; the row's hover hint repeats it. This is why the window and the side column
+  are wide (`.modal-library` 1180px, `.lib-side` 360px). The **filter** is an AND over its
+  space-separated words — every word has to be found in the picture's id or in its description, so
+  "alice sunset" keeps the pictures of alice that say sunset and not the union of the two words
+  (matching the id too is what makes "chats", a chat id or a file-name part a filter word);
+  `picture-empty` is the "nothing matched" state. The right pane edits the SELECTED picture's row:
+  its **description** and **prompt**
   (Save
   writes them to the images table, which is the SAME row every chat card of that picture reads — so a
   caption written here is what the chat shows, and the current chat is re-read after the save), the

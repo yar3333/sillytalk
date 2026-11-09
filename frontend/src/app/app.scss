@@ -101,9 +101,10 @@
 }
 
 /* The picture browser: a list of thumbnails beside the editor of one picture,
-   so it needs the whole width the shell can give it. */
+   and the list rows carry the full id (the whole path of the file), so the side
+   column and the window are as wide as the shell can give them. */
 .modal-library {
-  max-width: 980px;
+  max-width: 1180px;
 }
 
 /* The close button in the modal headers (the same class as in input-panel —

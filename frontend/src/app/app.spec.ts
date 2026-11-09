@@ -1682,29 +1682,18 @@ describe('PictureLibrary — the picture browser', () => {
     expect(visible()).toHaveLength(1);
   });
 
-  it('the row shows the id of the picture, its file-name end kept', async () => {
-    const { fixture, el } = await render();
+  it('the row shows the full id of the picture — the whole path it lives at', async () => {
+    const { el } = await render();
     const rows = [...el.querySelectorAll('[data-testid=picture-row]')];
     const idLine = rows[0].querySelector('.lib-id')!.textContent!.trim();
-    // the beginning of a path says the least (a chat id sits in it), so the tail
-    // is what survives — the file name has to stay readable
-    expect(idLine).toContain('a-red-boat-1a2b3c.png');
-    expect(idLine.startsWith('…')).toBe(true);
-    // the full path is where it always was: the hover hint and the ID field
+    // the whole path, not a tail: the id is where the file lives, what the ID
+    // field edits and what the filter matches, so the row hides nothing of it —
+    // a long path wraps, it is never cut
+    expect(idLine).toBe(boat);
+    expect(idLine).not.toContain('…');
     expect(rows[0].getAttribute('title')).toBe(boat);
-
-    // an id that fits is shown whole, and a long one is cut on a "/" so the tail
-    // keeps whole path segments; only when a segment cannot fit at all is it
-    // split
-    const dialog = fixture.componentInstance;
-    expect(dialog.idTail('alice/photos/p1.jpg')).toBe('alice/photos/p1.jpg');
-    expect(dialog.idTail('chat-1/files/a-red-boat-1a2b3c.png', 28)).toBe(
-      '…files/a-red-boat-1a2b3c.png',
-    );
-    // no "/" is left inside what fits, so the one segment that remains is cut
-    expect(dialog.idTail('chat-1/files/a-red-boat-1a2b3c.png', 20)).toBe(
-      '…-red-boat-1a2b3c.png',
-    );
+    // a character photo shows its full path too (the same row shape)
+    expect(rows[1].querySelector('.lib-id')!.textContent!.trim()).toBe(anchor);
   });
 });
 

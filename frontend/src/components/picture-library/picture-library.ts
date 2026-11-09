@@ -49,7 +49,7 @@ import { PictureLibraryStore } from '../../services/picture-library-store';
               <span class="lib-meta">
                 <span class="lib-name">{{ baseName(p.id) }}</span>
                 <span class="lib-desc">{{ p.description || 'no description' }}</span>
-                <span class="lib-id">{{ idTail(p.id) }}</span>
+                <span class="lib-id">{{ p.id }}</span>
               </span>
             </button>
           } @empty {
@@ -220,19 +220,6 @@ export class PictureLibraryComponent {
 
   baseName(id: string): string {
     return id.slice(id.lastIndexOf('/') + 1);
-  }
-
-  // The id of a row is the whole path, and the beginning of a path is the half
-  // that says the least (a chat's id sits in it), so the row shows its TAIL. The
-  // cut is the FIRST "/" whose remainder still fits, so the tail keeps as many
-  // whole path segments as the width allows and a segment is split only when
-  // even one of them does not fit. The full id is the row's hover hint and the
-  // editor's ID field.
-  idTail(id: string, max = 32): string {
-    if (id.length <= max) return id;
-    const cut = id.indexOf('/', Math.max(0, id.length - max - 1));
-    if (cut >= 0 && cut + 1 < id.length) return `…${id.slice(cut + 1)}`;
-    return `…${id.slice(id.length - max)}`;
   }
 
   setFilter(e: Event): void {

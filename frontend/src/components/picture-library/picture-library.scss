@@ -15,8 +15,8 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  width: 260px;
-  flex: 0 0 260px;
+  width: 360px;
+  flex: 0 0 360px;
   min-height: 0;
 }
 
@@ -111,17 +111,18 @@
   text-overflow: ellipsis;
 }
 
-/* the id is the path of the file — shown so it can be read and matched against
-   the filter without opening the picture; the path is long and its beginning is
-   the low-information half (a chat's id sits in it), so the row shows its tail
-   (idTail()) and the full path stays in the row's hover hint */
+/* the id is the whole path of the file — shown in full, not a tail: the id is
+   where the file lives, what the ID field edits and what the filter matches, so
+   the row shows all of it and wraps it onto more lines when the column is
+   narrower than the path (a path breaks at any character, its long middle has
+   no word to break on). The row's hover hint repeats it for one-line reading. */
 .lib-id {
   font-size: 10px;
   font-family: ui-monospace, Consolas, monospace;
   color: var(--fg-dim, #777);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .lib-empty,
@@ -349,7 +350,7 @@ select {
 
   .lib-row {
     flex: 0 0 auto;
-    max-width: 150px;
+    max-width: 190px;
   }
 
   .lib-meta {
