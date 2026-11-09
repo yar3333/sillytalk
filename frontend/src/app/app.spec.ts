@@ -1695,6 +1695,45 @@ describe('PictureLibrary — the picture browser', () => {
     // a character photo shows its full path too (the same row shape)
     expect(rows[1].querySelector('.lib-id')!.textContent!.trim()).toBe(anchor);
   });
+
+  it('the list can be ordered by ID as well as by the file date', async () => {
+    const { fixture, el } = await render();
+    const order = () =>
+      [...el.querySelectorAll('[data-testid=picture-row]')].map((r) => r.getAttribute('title'));
+    // by default the order the server sends: newest file first, an orphan row last
+    expect(order()).toEqual([boat, anchor, 'chat-9/files/gone-1a2b3c.png']);
+
+    const sort = el.querySelector('[data-testid=picture-sort]') as HTMLSelectElement;
+    sort.value = 'id';
+    sort.dispatchEvent(new Event('change'));
+    fixture.detectChanges();
+    // by ID the list reads alphabetically by the path — finding a picture by
+    // reading its way through the folders; the orphan row sorts with the rest,
+    // because the user looking for a path cannot know it lost its file
+    expect(order()).toEqual([anchor, boat, 'chat-9/files/gone-1a2b3c.png']);
+
+    sort.value = 'newest';
+    sort.dispatchEvent(new Event('change'));
+    fixture.detectChanges();
+    expect(order()).toEqual([boat, anchor, 'chat-9/files/gone-1a2b3c.png']);
+  });
+
+  it('a picture used as a reference shows the count in the row and under the ID field', async () => {
+    // the count is the server's (it counts the other rows' refs on every read) —
+    // the browser only says the number it was given
+    listed = listed.map((p) =>
+      p.id === anchor ? { ...p, referencedBy: 2 } : p.id === boat ? { ...p, referencedBy: 1 } : p,
+    );
+    const { el } = await render();
+    const rows = [...el.querySelectorAll('[data-testid=picture-row]')];
+    expect(rows[0].querySelector('.lib-refs')!.textContent).toContain('1 ref');
+    expect(rows[0].querySelector('.lib-refs')!.textContent).not.toContain('refs');
+    expect(rows[1].querySelector('.lib-refs')!.textContent).toContain('2 refs');
+    // the orphan row names nothing and is named by nobody — no badge
+    expect(rows[2].querySelector('.lib-refs')).toBeNull();
+    // and the editor of the selected picture states the same number in words
+    expect(el.querySelector('[data-testid=picture-used-by]')!.textContent).toContain('by 1 other');
+  });
 });
 
 // Toggling a character out of a chat is a reply-queue decision: it must not

@@ -31,7 +31,10 @@ Stack: **Node.js / Express 5 / TypeScript** (backend) + **Angular 22 / SCSS** (f
   keyed by that path) — the single source the chat cards, the planner and the browser all read.
 - **Pictures library** (the ⋮ menu — "Pictures") — every picture of the data folder in one chat-
   independent browser: edit any picture's description and prompt, change its references, and rename
-  it (the file moves and the cards and the stored references follow the new path).
+  it (the file moves and the cards and the stored references follow the new path — the Rename button
+  sits right of the ID field and the line under it says how many other pictures use this one as
+  their reference; the list is counted by that number too and can be sorted by ID as well as by the
+  file date).
 - Image generation by several backends (all the enabled and available ones are used; the jobs of one
   generator are queued, different generators run in parallel):
   - **ComfyUI** — a generator is a ComfyUI URL plus one of the models the app ships workflows for

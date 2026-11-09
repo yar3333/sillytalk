@@ -135,7 +135,10 @@ backend/               Express API; also serves the built frontend
                        close() is final; DI token DI_IMAGE_META_SERVICE) and
                        PictureLibraryService.ts (the picture browser's service:
                        browse() = the files of the picture folders with their
-                       rows + the orphan rows last, edit() = the description/
+                       rows + the orphan rows last, every entry with its
+                       referencedBy count — how many other rows' refs name it,
+                       computed on every read, never stored, edit() = the
+                       description/
                        prompt/refs of any picture of the data folder, rename()
                        = the file move whose new id the chat cards and the
                        stored reference lists follow through
@@ -366,10 +369,14 @@ frontend/              Angular app
     picture-library/   the picture browser (the ⋮ menu → Pictures): every
                        picture of the data folder with its row of the images
                        table — the filterable thumbnail list (a row shows the
-                       file name, the description and the tail of the id) beside
+                       file name, the description, the "N refs" count and the
+                       id) with its sort pick (newest / by ID) beside the
+                       filter, beside
                        the editor of the selected one (description, prompt, the
                        reference list the prompt names, the ID field with its
-                       Rename action — a rename moves the file and the cards
+                       Rename action right of the field and the "used as a
+                       reference by N" hint under it — a rename moves the file
+                       and the cards
                        follow); state/actions in PictureLibraryStore
     input-panel/       input: error banner, gen-mode bar, 📎 attachments, the 📷
                        "picture of my turn" button, send;
@@ -758,6 +765,11 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   `ChatsService.repointImageId`). A name that is taken, outside the picture folders or not a
   picture format is a 400 with the reason — a rename must never overwrite a picture. The id
   travels in the body, never in the URL (it is a path).
+  Every entry also carries `referencedBy` — how many OTHER pictures name it in the reference set
+  of their prompt. The number is **computed on every read, never stored**: a reference is a fact
+  about another row and a stored counter would be a second copy that could disagree.
+  `PictureLibraryService.browse` counts with one pass over the table (`refCounts` over all rows),
+  `get` scans once per read; a row naming itself (a hand-edited table) does not count itself.
 - **Image generation runs in the BACKGROUND.** Each generation (a gen-mode draw, the picture of the
   user's turn, or a regeneration) is started with the TARGET IMAGE ID already stored in the card with
   `ChatMessage.imageStatus[id] = 'pending'`, the message is saved and returned without waiting, and
@@ -1120,8 +1132,14 @@ that needs the databases resolves them here — the one place allowed to.
 - **The picture browser (the ⋮ menu → "Pictures")** is the chat-independent view of every picture of
   the data folder (`PictureLibraryStore` + `picture-library` component, a wide two-pane modal). The
   left pane is a filterable thumbnail list of all pictures (`GET /api/pictures`, newest file first; a
-  row shows the file name, the description and — under them — the **id** of the picture, and a row
+  row shows the file name, the description, the **"N refs" badge** when the picture is named by
+  other pictures as their reference (`referencedBy`, the server's number — no badge for zero, so the
+  common case stays clean), and — under them — the **id** of the picture, and a row
   whose file is gone shows a ✕ and is dimmed, not hidden: it is a record the user can still clear).
+  Beside the filter sits a **sort pick** (`picture-sort`): "Newest first" keeps the server order
+  (orphan row last, where the server put it), "By ID" sorts the whole list alphabetically by the
+  path — finding "that one boat picture of the harbour chat" by reading is an alphabetical job, and
+  there the orphan rows sort with the rest, because the reader cannot know a row lost its file.
   The id line shows the **whole path** in full (`.lib-id`, wrapping onto more lines when the column
   is narrower than the path — `overflow-wrap: anywhere`, because a long path has no word to break
   on): the id is where the file lives, what the ID field edits and what the filter matches, so the
@@ -1136,7 +1154,11 @@ that needs the databases resolves them here — the one place allowed to.
   writes them to the images table, which is the SAME row every chat card of that picture reads — so a
   caption written here is what the chat shows, and the current chat is re-read after the save), the
   **reference list** the prompt names (added from the catalog, minus the picture itself and minus any
-  row whose file is gone), and its **ID** with a separate **Rename** action. Renaming is not a label:
+  row whose file is gone), and its **ID** with a separate **Rename** action sitting right of the ID
+  field (`.id-row`), not at the bottom of the dialog — a rename is the field's own action. Under the
+  field the hint line states **"Used as a reference by N other picture(s)"** (`picture-used-by`,
+  the same `referencedBy` number as the row badge) — it is what tells the user whether a rename has
+  followers. Renaming is not a label:
   an id is a path, so it moves the file and the server repoints every chat card and stored reference
   list at the new path; a name that is taken or points outside the picture folders comes back as a
   visible error (the banner) and changes nothing. This dialog edits the picture, not a message — the
@@ -1419,11 +1441,15 @@ that needs the databases resolves them here — the one place allowed to.
   `.on` = chosen), the reference set the prompt names (`.refs` / `.ref-thumb`, no testid — it is
   read-only) and `picture-save` / `picture-cancel`. The picture BROWSER (the ⋮ menu → `picture-library`
   opens the `picture-library` modal, closed by `picture-library-close`): `picture-filter` (the search),
+  `picture-sort` (the order pick: `newest` / `id`),
   `picture-row` (one picture in the list, `.on` = selected, `.gone` = its file is gone, with a
-  `.lib-thumb-gone` ✕ inside), `picture-empty`, `picture-preview`, then the editor of the selected
+  `.lib-thumb-gone` ✕ inside and a `.lib-refs` "N ref(s)" badge when other pictures use it),
+  `picture-empty`, `picture-preview`, then the editor of the selected
   picture — `picture-description`, `picture-prompt`, the reference chips (`picture-ref-remove` per
   chip) and `picture-ref-add` (the `<select>` of catalog ids), the `picture-id-input` with
-  `picture-rename` (disabled until the id differs) / `picture-reset` / `picture-save`. The entity dialogs: `character-dialog`/`user-dialog`/
+  `picture-rename` right of the field (disabled until the id differs), the
+  `picture-used-by` hint line under it and `picture-reset` / `picture-save` at its bottom.
+  The entity dialogs: `character-dialog`/`user-dialog`/
   `model-dialog` + `char-name-input`/`user-name-input`/`model-name-input`/`model-id-input` and
   `char-save`/`char-clone`/`char-delete` (the `user-*`/`model-*` analogues); the entity dialogs also
   carry the ID field — `char-id-input` with `char-rename` and `user-id-input` with `user-rename`

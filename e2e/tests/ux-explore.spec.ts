@@ -951,6 +951,47 @@ test('UX 20: the picture browser edits the picture, not a message', async ({ pag
   expect(repointed.messages.find((m) => m.kind === 'image')?.images).toEqual([newId]);
   await page.screenshot({ path: `${SHOTS}/ux-20c-renamed.png` });
 
+  // The reference count: a second picture whose saved prompt names this one
+  // makes the row and the line under the ID field say so — the number is counted
+  // from the other rows on every read, so the browser shows it as soon as the
+  // catalog is read again.
+  const drawn = (await api('/image', 'POST', { chatId, prompt: 'a blue square' })) as {
+    message: { images?: string[] };
+  };
+  const secondId = drawn.message.images?.[0];
+  expect(secondId).toBeTruthy();
+  await expect(async () => {
+    const list = (await api('/pictures')) as { pictures: Array<{ id: string; exists: boolean }> };
+    expect(list.pictures.some((p) => p.id === secondId && p.exists)).toBe(true);
+  }).toPass({ timeout: 30000 });
+  await api('/pictures', 'PATCH', { id: secondId, refs: [newId] });
+
+  // Re-open the browser: the catalog is read again and the count is there.
+  await page.getByTestId('picture-library-close').click();
+  await page.getByTestId('menu').click();
+  await page.getByTestId('picture-library').click();
+  const circleRow = page.locator(`[data-testid=picture-row][title="${newId}"]`);
+  await expect(circleRow.locator('.lib-refs')).toContainText('1 ref');
+  // the picture used by nobody carries no badge
+  await expect(page.locator(`[data-testid=picture-row][title="${secondId}"]`).locator('.lib-refs')).toHaveCount(0);
+  await circleRow.click();
+  await expect(page.getByTestId('picture-used-by')).toContainText('by 1 other');
+
+  // The sort pick: "By ID" orders the list by the path — both pictures live in
+  // this chat's files/, so the a-blue-square name sorts before the renamed one.
+  // The filter narrows the list to this chat first: the shared test data of the
+  // suite holds pictures of earlier runs, and the order is read among these two.
+  await page.getByTestId('picture-filter').fill(chatId);
+  await expect(page.getByTestId('picture-row')).toHaveCount(2);
+  await page.getByTestId('picture-sort').selectOption('id');
+  const order = await page.getByTestId('picture-row').evaluateAll((rows) =>
+    rows.map((r) => r.getAttribute('title')),
+  );
+  expect(order).toEqual([secondId, newId]);
+  await page.screenshot({ path: `${SHOTS}/ux-20d-sorted-by-id.png` });
+  await page.getByTestId('picture-sort').selectOption('newest');
+  await page.getByTestId('picture-filter').fill('');
+
   // A name that is not a picture path is refused, and changes nothing.
   await page.getByTestId('picture-id-input').fill('config.json');
   await page.getByTestId('picture-rename').click();

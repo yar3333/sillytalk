@@ -20,7 +20,17 @@
   min-height: 0;
 }
 
+/* the filter and the sort order share one row above the list: the filter takes
+   the room, the sort pick is as wide as its words need */
+.lib-tools {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
 .lib-filter {
+  flex: 1;
+  min-width: 0;
   background: var(--panel-2);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -33,6 +43,12 @@
     outline: none;
     border-color: var(--accent);
   }
+}
+
+.lib-sort {
+  flex: 0 0 auto;
+  font-size: 12px;
+  padding: 7px 8px;
 }
 
 .lib-list {
@@ -109,6 +125,14 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* how many other pictures name this one in their reference set — a small dim
+   badge; only pictures used by something carry it, so the common case stays clean */
+.lib-refs {
+  font-size: 10px;
+  color: var(--fg-dim, #9a9);
+  white-space: nowrap;
 }
 
 /* the id is the whole path of the file — shown in full, not a tail: the id is
@@ -252,6 +276,25 @@ select {
   }
 }
 
+/* the ID field with its Rename button beside it — a rename is the field's own
+   action, not a Save, so it sits where the name is written, not at the bottom
+   of the dialog */
+.id-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+
+  input.grow {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
+  }
+
+  .btn {
+    flex: 0 0 auto;
+  }
+}
+
 /* the reference set the saved prompt names, in the order the prompt counts them
    (the same read of "the first reference image…" the chat card shows) */
 .refs {
@@ -313,6 +356,13 @@ select {
   color: var(--fg-dim, #888);
   font-size: 12px;
   line-height: 1.4;
+}
+
+/* how many pictures use this one as a reference — the number the server counts
+   on every read; it is what tells the user whether a rename has followers */
+.lib-usedby {
+  margin-top: 5px;
+  color: var(--fg-dim, #9a9);
 }
 
 .dialog-actions {

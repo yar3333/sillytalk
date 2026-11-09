@@ -19,6 +19,11 @@ export type PictureEntry = ImageMeta & {
   // When the file was last written (ms) — the browser sorts by it, so the
   // picture the user just made sits on top.
   modifiedAt?: number;
+  // How many OTHER pictures name this one in the reference set of their prompt
+  // (their rows' refs). Computed on every read, never stored — a reference is
+  // a fact about another row, and a stored counter would be a second copy of
+  // it that could disagree.
+  referencedBy?: number;
 };
 
 // The picture library: the browser and the editor of every picture of the data
@@ -39,13 +44,22 @@ export class PictureLibraryService {
   // to see (and delete) rather than something silently hidden.
   browse(): PictureEntry[] {
     const rows = new Map(this.meta.list().map((row) => [row.id, row]));
+    const counts = PictureLibraryService.refCounts(rows.values());
     const entries: PictureEntry[] = [];
     for (const id of PathHelper.listPictureIds()) {
       const row = rows.get(id);
       if (row) rows.delete(id);
-      entries.push({ ...(row ?? {}), id, exists: true, modifiedAt: PictureLibraryService.mtimeOf(id) });
+      entries.push({
+        ...(row ?? {}),
+        id,
+        exists: true,
+        modifiedAt: PictureLibraryService.mtimeOf(id),
+        referencedBy: counts.get(id) ?? 0,
+      });
     }
-    for (const row of rows.values()) entries.push({ ...row, exists: false });
+    for (const row of rows.values()) {
+      entries.push({ ...row, exists: false, referencedBy: counts.get(row.id) ?? 0 });
+    }
     return entries;
   }
 
@@ -54,7 +68,26 @@ export class PictureLibraryService {
     const row = this.meta.get(id);
     const exists = PictureLibraryService.fileOf(id) !== null;
     if (!row && !exists) return null;
-    return { ...(row ?? {}), id, exists, modifiedAt: PictureLibraryService.mtimeOf(id) };
+    let referencedBy = 0;
+    for (const other of this.meta.list()) {
+      if (other.id === id) continue;
+      if (ImageMetaService.listField(other, "refs").includes(id)) referencedBy += 1;
+    }
+    return { ...(row ?? {}), id, exists, modifiedAt: PictureLibraryService.mtimeOf(id), referencedBy };
+  }
+
+  // How many rows name each picture in their refs. One pass over the table for
+  // the whole browse — the per-picture alternative was one scan per row. A row
+  // naming itself (a hand-edited table) does not count itself as a user.
+  private static refCounts(rows: Iterable<ImageMeta & { id: string }>): Map<string, number> {
+    const counts = new Map<string, number>();
+    for (const row of rows) {
+      for (const ref of ImageMetaService.listField(row, "refs")) {
+        if (ref === row.id) continue;
+        counts.set(ref, (counts.get(ref) ?? 0) + 1);
+      }
+    }
+    return counts;
   }
 
   // Edits what the images table says about a picture: its description, its

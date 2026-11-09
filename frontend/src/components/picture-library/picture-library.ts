@@ -23,14 +23,25 @@ import { PictureLibraryStore } from '../../services/picture-library-store';
   template: `
     <div class="library" data-testid="picture-library">
       <div class="lib-side">
-        <input
-          class="lib-filter"
-          type="search"
-          placeholder="Filter by id or description (words match all)"
-          data-testid="picture-filter"
-          [value]="filter()"
-          (input)="setFilter($event)"
-        />
+        <div class="lib-tools">
+          <input
+            class="lib-filter"
+            type="search"
+            placeholder="Filter by id or description (words match all)"
+            data-testid="picture-filter"
+            [value]="filter()"
+            (input)="setFilter($event)"
+          />
+          <select
+            class="lib-sort"
+            data-testid="picture-sort"
+            [value]="sortBy()"
+            (change)="setSortBy($event)"
+          >
+            <option value="newest">Newest first</option>
+            <option value="id">By ID</option>
+          </select>
+        </div>
         <div class="lib-list">
           @for (p of filtered(); track p.id) {
             <button
@@ -49,6 +60,13 @@ import { PictureLibraryStore } from '../../services/picture-library-store';
               <span class="lib-meta">
                 <span class="lib-name">{{ baseName(p.id) }}</span>
                 <span class="lib-desc">{{ p.description || 'no description' }}</span>
+                @if (p.referencedBy) {
+                  <span
+                    class="lib-refs"
+                    [title]="'Used as a reference by ' + p.referencedBy + ' other picture(s)'"
+                    >{{ p.referencedBy }} ref{{ p.referencedBy === 1 ? '' : 's' }}</span
+                  >
+                }
                 <span class="lib-id">{{ p.id }}</span>
               </span>
             </button>
@@ -122,30 +140,35 @@ import { PictureLibraryStore } from '../../services/picture-library-store';
             </select>
           </div>
 
-          <label class="field col">
+          <div class="field col">
             <span>ID (the path of the file)</span>
-            <input
-              class="grow"
-              type="text"
-              spellcheck="false"
-              data-testid="picture-id-input"
-              [value]="idField()"
-              (input)="setIdField($event)"
-            />
-          </label>
+            <div class="id-row">
+              <input
+                class="grow"
+                type="text"
+                spellcheck="false"
+                data-testid="picture-id-input"
+                [value]="idField()"
+                (input)="setIdField($event)"
+              />
+              <button
+                class="btn"
+                data-testid="picture-rename"
+                [disabled]="!idChanged()"
+                (click)="rename()">Rename</button>
+            </div>
+          </div>
           <div class="dialog-hint">
             The ID is where the file lives, relative to the data folder. Renaming moves the file —
             the chat cards and the reference lists that name it follow the new path. The folders
             pictures live in (a chat's files/, a character's photos/, a persona's folder) stay the
             same; only the name changes.
+            <div class="lib-usedby" data-testid="picture-used-by">
+              Used as a reference by {{ usedBy() }} other picture(s).
+            </div>
           </div>
 
           <div class="dialog-actions">
-            <button
-              class="btn"
-              data-testid="picture-rename"
-              [disabled]="!idChanged()"
-              (click)="rename()">Rename</button>
             <span class="spacer"></span>
             <button class="btn" data-testid="picture-reset" (click)="reset()">Discard</button>
             <button class="btn primary" data-testid="picture-save" (click)="save()">Save</button>
@@ -163,6 +186,11 @@ export class PictureLibraryComponent {
   private readonly api = inject(ApiService);
 
   readonly filter = signal('');
+  // The order of the list: the server sends it newest file first (an orphan row
+  // last); "By ID" sorts the whole list by the path, which is what the id column
+  // and the filter speak — finding "that one boat picture of the harbour chat"
+  // by reading is an alphabetical job.
+  readonly sortBy = signal<'newest' | 'id'>('newest');
   readonly description = signal('');
   readonly prompt = signal('');
   readonly refs = signal<string[]>([]);
@@ -195,13 +223,24 @@ export class PictureLibraryComponent {
   // word of the path ("chats", a chat id, a file-name part) filters the list.
   filtered(): Picture[] {
     const words = this.filter().trim().toLowerCase().split(/\s+/).filter((w) => w.length > 0);
-    const all = this.store.pictures();
-    if (words.length === 0) return all;
-    return all.filter((p) => {
-      const id = p.id.toLowerCase();
-      const description = (p.description ?? '').toLowerCase();
-      return words.every((word) => id.includes(word) || description.includes(word));
-    });
+    let all = this.store.pictures();
+    if (words.length > 0) {
+      all = all.filter((p) => {
+        const id = p.id.toLowerCase();
+        const description = (p.description ?? '').toLowerCase();
+        return words.every((word) => id.includes(word) || description.includes(word));
+      });
+    }
+    if (this.sortBy() === 'id') {
+      return [...all].sort((a, b) => a.id.localeCompare(b.id, 'en'));
+    }
+    return all;
+  }
+
+  // How many pictures name the selected one in their reference set — the server
+  // counts them on every read, the browser only says the number.
+  usedBy(): number {
+    return this.store.selected()?.referencedBy ?? 0;
   }
 
   // The catalog minus the picture being edited (a picture is never its own
@@ -224,6 +263,9 @@ export class PictureLibraryComponent {
 
   setFilter(e: Event): void {
     this.filter.set((e.target as HTMLInputElement).value);
+  }
+  setSortBy(e: Event): void {
+    this.sortBy.set((e.target as HTMLSelectElement).value === 'id' ? 'id' : 'newest');
   }
   setDescription(e: Event): void {
     this.description.set((e.target as HTMLTextAreaElement).value);

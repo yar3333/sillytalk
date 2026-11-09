@@ -138,6 +138,30 @@ describe("browsing the pictures", () => {
     expect(library.get(id)).toMatchObject({ id, description: "a boat", exists: true });
     expect(library.get("chats/c1/files/nowhere-1a2b3c.png")).toBeNull();
   });
+
+  it("counts the pictures that name a picture in their reference set (browse and get, computed on read)", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    const anchor = chats.saveImage(chat.id, PNG, { nameHint: "the anchor face" });
+    const first = chats.saveImage(chat.id, PNG, { nameHint: "first scene" });
+    const second = chats.saveImage(chat.id, PNG, { nameHint: "second scene" });
+    const lonely = chats.saveImage(chat.id, PNG, { nameHint: "nothing refers to me" });
+    meta.set(first, { refs: [anchor] });
+    meta.set(second, { refs: [anchor, lonely] });
+
+    const seen = library.browse();
+    expect(seen.find((p) => p.id === anchor)!.referencedBy).toBe(2);
+    // lonely is named by second; the scene rows themselves are named by nobody
+    expect(seen.find((p) => p.id === lonely)!.referencedBy).toBe(1);
+    expect(seen.find((p) => p.id === first)!.referencedBy).toBe(0);
+    expect(seen.find((p) => p.id === second)!.referencedBy).toBe(0);
+    expect(library.get(anchor)!.referencedBy).toBe(2);
+
+    // dynamic: dropping the reference from a saved prompt lowers the count on
+    // the next read — the count is not stored anywhere
+    library.edit(first, { refs: [] });
+    expect(library.get(anchor)!.referencedBy).toBe(1);
+    expect(library.browse().find((p) => p.id === anchor)!.referencedBy).toBe(1);
+  });
 });
 
 describe("editing a picture from the browser", () => {

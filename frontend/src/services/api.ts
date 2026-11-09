@@ -153,6 +153,10 @@ export interface Picture extends ImageGenerationData {
   exists: boolean;
   // When the file was last written (ms) — the browser's order.
   modifiedAt?: number;
+  // How many OTHER pictures name this one in the reference set of their prompt
+  // (their rows' refs) — the browser shows it, so the user sees what depends
+  // on the picture before renaming it. Computed on every read.
+  referencedBy?: number;
 }
 
 export interface Chat {
