@@ -253,6 +253,45 @@ export class ConfigStore {
       .catch((e) => this.ui.error.set(String((e as Error).message)));
   }
 
+  // ---- the avatar (an image id kept in the entity's row) ----
+  // Picks the avatar from a disk file (`data` — a data URL) or an existing
+  // picture id (`image`). The server de-duplicates a disk pick (a byte-identical
+  // picture already in the data folders is reused, not copied) and answers with
+  // the avatar's image id; that id is mirrored into the local row so the header
+  // and the message avatars show the picture without a catalog reload.
+  setAvatar(
+    kind: 'user' | 'character',
+    id: string,
+    source: { data?: string; image?: string },
+  ): Promise<string | null> {
+    return this.api
+      .setAvatar(kind, id, source)
+      .then((res) => {
+        this.applyAvatar(kind, id, res.id);
+        return res.id;
+      })
+      .catch((e) => {
+        this.ui.error.set(String((e as Error).message));
+        return null;
+      });
+  }
+
+  // Drops the avatar designation (the picture file itself stays on disk).
+  clearAvatar(kind: 'user' | 'character', id: string): Promise<void> {
+    return this.api
+      .clearAvatar(kind, id)
+      .then(() => this.applyAvatar(kind, id, null))
+      .catch((e) => void this.ui.error.set(String((e as Error).message)));
+  }
+
+  private applyAvatar(kind: 'user' | 'character', id: string, avatar: string | null): void {
+    if (kind === 'user') {
+      this.users.update((list) => list.map((u) => (u.id === id ? { ...u, avatar } : u)));
+    } else {
+      this.characters.update((list) => list.map((c) => (c.id === id ? { ...c, avatar } : c)));
+    }
+  }
+
   // The settings dialog saves the listen address and the image generators
   // only — the models/characters/personas have their own dialogs now.
   saveSettings(config: AppConfig): void {

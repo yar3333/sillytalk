@@ -1,6 +1,7 @@
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { createHash } from "crypto";
 import { ChatsService } from "./ChatsService";
 import { ConfigurationService } from "../configuration/ConfigurationService";
 import { ImageMetaService } from "../images/ImageMetaService";
@@ -253,7 +254,7 @@ describe("the model fallback", () => {
 describe("delete", () => {
   it("deletes the chat with its folder and files", () => {
     const chat = chats.create(["a"], "m1", "me");
-    const filesDir = path.join(root, chat.id, "files");
+    const filesDir = path.join(root, chat.id);
     fs.mkdirSync(filesDir, { recursive: true });
     fs.writeFileSync(path.join(filesDir, "img.png"), "x");
     expect(chats.delete(chat.id)).toBe(true);
@@ -324,7 +325,7 @@ describe("the chat name and its creation date", () => {
     withName.name = "Важный чат";
     chats.save(withName);
     const image = chats.saveImage(chat.id, PNG, { nameHint: "a red boat" });
-    expect(image).toMatch(new RegExp(`^${chat.id}/files/a-red-boat-[0-9a-f]{6}\\.png$`));
+    expect(image).toMatch(new RegExp(`^${chat.id}/a-red-boat-[0-9a-f]{6}\\.png$`));
     expect(chats.get(chat.id)?.name).toBe("Важный чат");
   });
 });
@@ -438,8 +439,8 @@ describe("clone", () => {
     const copiedCard = copy.messages[0];
     const copiedRef = copiedCard.generation!.refs![0];
     expect(copiedCard.images[0]).not.toBe(card);
-    expect(copiedCard.images[0]).toMatch(new RegExp(`^${copy.id}/files/a-fox-[0-9a-f]{6}\\.png$`));
-    expect(copiedRef).toMatch(new RegExp(`^${copy.id}/files/a-red-boat-[0-9a-f]{6}\\.png$`));
+    expect(copiedCard.images[0]).toMatch(new RegExp(`^${copy.id}/a-fox-[0-9a-f]{6}\\.png$`));
+    expect(copiedRef).toMatch(new RegExp(`^${copy.id}/a-red-boat-[0-9a-f]{6}\\.png$`));
     expect(copiedCard.text).toBe("a fox in the snow");
 
     // both files of the copy exist on disk, each with a row of the images table
@@ -590,9 +591,9 @@ describe("the message primitives", () => {
     // picture nobody described reads as undescribed, and the user writes its
     // caption again in the picture browser.
     const legacyId = "legacy-card";
-    const image = `${legacyId}/files/fox.png`;
-    fs.mkdirSync(path.join(root, legacyId, "files"), { recursive: true });
-    fs.writeFileSync(path.join(root, legacyId, "files", "fox.png"), "img");
+    const image = `${legacyId}/fox.png`;
+    fs.mkdirSync(path.join(root, legacyId), { recursive: true });
+    fs.writeFileSync(path.join(root, legacyId, "fox.png"), "img");
     fs.writeFileSync(
       path.join(root, legacyId, "chat.json"),
       JSON.stringify({
@@ -750,7 +751,7 @@ describe("saveImage / reservedImageId", () => {
   it("saves a data URL into the chat files/ and returns its id (a path relative to the data folder)", () => {
     const chat = chats.create(["a"], "m1", "me");
     const id = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=");
-    expect(id).toMatch(new RegExp(`^${chat.id}/files/img-[0-9a-f]{6}\\.png$`));
+    expect(id).toMatch(new RegExp(`^${chat.id}/img-[0-9a-f]{6}\\.png$`));
     expect(fs.readFileSync(path.join(root, id))).toEqual(Buffer.from("aGVsbG8=", "base64"));
   });
 
@@ -760,13 +761,13 @@ describe("saveImage / reservedImageId", () => {
       nameHint: "A sunset over the sea",
       meta: { description: "the bay in the evening", prompt: "a sunset over the sea" },
     });
-    expect(id).toMatch(new RegExp(`^${chat.id}/files/a-sunset-over-the-sea-[0-9a-f]{6}\\.jpg$`));
+    expect(id).toMatch(new RegExp(`^${chat.id}/a-sunset-over-the-sea-[0-9a-f]{6}\\.jpg$`));
     expect(imageMeta.get(id)).toMatchObject({
       description: "the bay in the evening",
       prompt: "a sunset over the sea",
     });
     // nothing but the picture is written into the folder
-    expect(fs.readdirSync(path.join(root, chat.id, "files"))).toEqual([path.basename(id)]);
+    expect(fs.readdirSync(path.join(root, chat.id))).toEqual([path.basename(id)]);
   });
 
   it("two saves of the same picture never share a file", () => {
@@ -784,7 +785,7 @@ describe("saveImage / reservedImageId", () => {
   it("reservedImageId reserves a readable id without creating the file", () => {
     const chat = chats.create(["a"], "m1", "me");
     const id = chats.reservedImageId(chat.id, "A red boat at dusk, finally");
-    expect(id).toMatch(new RegExp(`^${chat.id}/files/a-red-boat-at-dusk-[0-9a-f]{6}\\.png$`));
+    expect(id).toMatch(new RegExp(`^${chat.id}/a-red-boat-at-dusk-[0-9a-f]{6}\\.png$`));
     expect(fs.existsSync(path.join(root, id))).toBe(false);
     // the reservation is unique — two placeholders never collide
     expect(chats.reservedImageId(chat.id, "A red boat at dusk, finally")).not.toBe(id);
@@ -846,7 +847,7 @@ describe("importImage / importCharacterPhoto", () => {
     fs.mkdirSync(path.dirname(photo), { recursive: true });
     fs.writeFileSync(photo, "img");
     const id = chats.importCharacterPhoto(chat.id, photo);
-    expect(id).toMatch(new RegExp(`^${chat.id}/files/alisa-portrait-[0-9a-f]{6}\\.png$`));
+    expect(id).toMatch(new RegExp(`^${chat.id}/alisa-portrait-[0-9a-f]{6}\\.png$`));
     expect(fs.readFileSync(path.join(root, id!))).toEqual(Buffer.from("img"));
   });
 
@@ -882,7 +883,7 @@ describe("normalizeImages", () => {
 
   it("drops a picture whose file is missing and anything outside the data folders", () => {
     const chat = chats.create(["a"], "m1", "me");
-    expect(chats.normalizeImages(chat.id, [`${chat.id}/files/missing.png`])).toEqual([]);
+    expect(chats.normalizeImages(chat.id, [`${chat.id}/missing.png`])).toEqual([]);
     // these files exist — they simply are not the app's pictures
     expect(chats.normalizeImages(chat.id, ["/etc/passwd", "../../etc/passwd", path.join(os.tmpdir(), "x.png")])).toEqual(
       [],
@@ -1049,21 +1050,21 @@ describe("the chat ID (the date by default, the rename)", () => {
     const otherCard = chats.addImageMessage(other, otherId, {
       generation: { prompt: "like the first reference image", refs: [id], source: "manual" },
     });
-    expect(fs.existsSync(path.join(root, chat.id, "files", path.basename(id)))).toBe(true);
+    expect(fs.existsSync(path.join(root, chat.id, path.basename(id)))).toBe(true);
 
     const renamed = chats.rename(chat.id, "harbour-talk");
 
     expect(renamed.id).toBe("harbour-talk");
     // the folder moved with its file, the old name stands nowhere
     expect(fs.existsSync(path.join(root, chat.id))).toBe(false);
-    expect(fs.existsSync(path.join(root, "harbour-talk", "files", path.basename(id)))).toBe(true);
+    expect(fs.existsSync(path.join(root, "harbour-talk", path.basename(id)))).toBe(true);
     expect(chats.exists(chat.id)).toBe(false);
     expect(chats.exists("harbour-talk")).toBe(true);
     // through a fresh service (a restart sees the move, not some memory)
     const seen = peek("harbour-talk")!;
     expect(seen.messages.map((m) => m.text)).toEqual(["hello", "a boat"]);
     const seenCard = seen.messages.find((m) => m.id === card.id)!;
-    const newId = `harbour-talk/files/${path.basename(id)}`;
+    const newId = `harbour-talk/${path.basename(id)}`;
     expect(seenCard.images).toEqual([newId]);
     // the row of the picture moved with the file, so the card still reads its
     // caption and its prompt from the table
@@ -1079,11 +1080,11 @@ describe("the chat ID (the date by default, the rename)", () => {
 
   it("the rename takes the orphan rows of the folder along (a file the user deleted by hand)", () => {
     const chat = chats.create(["a"], "m1", "me");
-    const gone = `${chat.id}/files/deleted-by-hand-1a2b3c.png`;
+    const gone = `${chat.id}/deleted-by-hand-1a2b3c.png`;
     imageMeta.set(gone, { description: "a picture of nothing" });
     chats.rename(chat.id, "cleaned");
     expect(imageMeta.get(gone)).toBeNull();
-    expect(imageMeta.get("cleaned/files/deleted-by-hand-1a2b3c.png")?.description).toBe("a picture of nothing");
+    expect(imageMeta.get("cleaned/deleted-by-hand-1a2b3c.png")?.description).toBe("a picture of nothing");
   });
 
   it("the rename refuses a name that is taken, a name that is not a folder name and a chat that is not there", () => {
@@ -1108,5 +1109,41 @@ describe("the chat ID (the date by default, the rename)", () => {
     chats.addImageMessage(chat, pending, { status: "pending" });
     expect(() => chats.rename(chat.id, "too-soon")).toThrow(/still being generated/);
     expect(chats.exists(chat.id)).toBe(true);
+  });
+});
+
+describe("saveImage de-duplication", () => {
+  it("reuses the id of a picture already in the data folders (no second copy)", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    const bytes = Buffer.from("the very same picture bytes");
+    const dataUrl = "data:image/png;base64," + bytes.toString("base64");
+    // a picture the user already owns, with its facts in the row (what the disk
+    // sync would have written)
+    const owned = "characters/alice/a-photo-1a2b3c.png";
+    const abs = path.join(root, "characters", "alice", "a-photo-1a2b3c.png");
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, bytes);
+    imageMeta.set(owned, {
+      fileSize: bytes.length,
+      fileModifiedAt: 1,
+      fileHash: createHash("sha256").update(bytes).digest("hex"),
+      description: "the original",
+    });
+
+    const id = chats.saveImage(chat.id, dataUrl);
+    // the existing picture is used, not copied into the chat (the chat folder
+    // is not even created — nothing was written there)
+    expect(id).toBe(owned);
+    const chatDir = path.join(root, chat.id);
+    const written = fs.existsSync(chatDir) ? fs.readdirSync(chatDir).filter((f) => f.endsWith(".png")) : [];
+    expect(written).toHaveLength(0);
+  });
+
+  it("writes a new file when no picture matches the bytes", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    const dataUrl = "data:image/png;base64," + Buffer.from("a brand new picture").toString("base64");
+    const id = chats.saveImage(chat.id, dataUrl);
+    expect(id).toMatch(new RegExp(`^${chat.id}/img-[0-9a-f]{6}\\.png$`));
+    expect(fs.existsSync(PathHelper.resolveImageId(id)!)).toBe(true);
   });
 });

@@ -26,18 +26,29 @@ container.register(
   DI_TEXT_GENERATION_SERVICE,
   (c) => new TextGenerationService(c.resolve(DI_CONFIGURATION_SERVICE)),
 );
+// The images table comes first among the consumers of the data layout: the
+// catalogs, the chat store and the generator all write through it, so it is the
+// one place a picture's description, facts and avatar-de-dup live. The catalogs
+// take it only to de-duplicate a picture picked from disk for an avatar.
+container.register(DI_IMAGE_META_SERVICE, () => new ImageMetaService(() => PathHelper.configDir()));
 container.register(
   DI_CHARACTERS_SERVICE,
-  () => new CharactersService(() => PathHelper.charactersDir(), () => PathHelper.catalogsDatabaseFile()),
+  (c) =>
+    new CharactersService(
+      () => PathHelper.charactersDir(),
+      () => PathHelper.catalogsDatabaseFile(),
+      c.resolve(DI_IMAGE_META_SERVICE),
+    ),
 );
 container.register(
   DI_PERSONS_SERVICE,
-  () => new PersonsService(() => PathHelper.personsDir(), () => PathHelper.catalogsDatabaseFile()),
+  (c) =>
+    new PersonsService(
+      () => PathHelper.personsDir(),
+      () => PathHelper.catalogsDatabaseFile(),
+      c.resolve(DI_IMAGE_META_SERVICE),
+    ),
 );
-// The images table comes first among the consumers of the data layout: the chat
-// store and the generator both write through it, so it is the one place a
-// picture's description and prompt are kept.
-container.register(DI_IMAGE_META_SERVICE, () => new ImageMetaService(() => PathHelper.configDir()));
 container.register(
   DI_CHATS_SERVICE,
   (c) =>

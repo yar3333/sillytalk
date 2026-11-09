@@ -1,7 +1,9 @@
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { createHash } from "crypto";
 import { CharactersService } from "./CharactersService";
+import { ImageMetaService } from "../images/ImageMetaService";
 
 let root: string;
 let dir: string; // the characters folder (the home of the picture folders)
@@ -9,6 +11,9 @@ let characters: CharactersService;
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "sillytalk-chars-"));
+  // The picture ids are paths relative to the DATA folder, so the data root has
+  // to be the temp folder (otherwise an id of a test would escape it).
+  process.env.SILLYTALK_DATA_DIR = root;
   dir = path.join(root, "characters");
   characters = new CharactersService(() => dir, () => path.join(root, "catalogs.db"));
 });
@@ -62,9 +67,9 @@ describe("save / get / list", () => {
     expect(characters.list()).toEqual([{ id: "alisa", name: "Alice", description: "second" }]);
   });
 
-  it("creates the folder with the photos subfolder", () => {
+  it("creates the character's folder", () => {
     characters.save({ id: "a", name: "A", description: "" });
-    expect(fs.existsSync(path.join(dir, "a", "photos"))).toBe(true);
+    expect(fs.existsSync(path.join(dir, "a"))).toBe(true);
   });
 
   it("the table is the catalog: folders are not read, old character.json files are ignored", () => {
@@ -83,18 +88,21 @@ describe("save / get / list", () => {
   });
 });
 
-describe("photoFile", () => {
-  it("answers the path of the starter-set photo (the name reduced to its basename)", () => {
+describe("pictureIdsOf", () => {
+  it("lists the character's folder images as ids, sorted", () => {
     characters.save({ id: "alice", name: "Alice", description: "" });
-    expect(characters.photoFile("alice", "p1.png")).toBe(path.join(dir, "alice", "photos", "p1.png"));
-    expect(characters.photoFile("alice", path.join("/elsewhere", "p1.png"))).toBe(
-      path.join(dir, "alice", "photos", "p1.png"),
-    );
+    fs.writeFileSync(path.join(dir, "alice", "p2.png"), "x");
+    fs.writeFileSync(path.join(dir, "alice", "p1.jpg"), "x");
+    fs.writeFileSync(path.join(dir, "alice", "notes.txt"), "x"); // not a picture
+    expect(characters.pictureIdsOf("alice")).toEqual([
+      "characters/alice/p1.jpg",
+      "characters/alice/p2.png",
+    ]);
   });
 
-  it("returns null for an invalid id", () => {
-    characters.save({ id: "alice", name: "Alice", description: "" });
-    expect(characters.photoFile("a b", "p1.png")).toBeNull();
+  it("is empty for a character without a folder or an invalid id", () => {
+    expect(characters.pictureIdsOf("ghost")).toEqual([]);
+    expect(characters.pictureIdsOf("a b")).toEqual([]);
   });
 });
 
@@ -117,7 +125,7 @@ describe("sync", () => {
 
   it("deletes the character together with the photos", () => {
     characters.save({ id: "one", name: "One", description: "" });
-    fs.writeFileSync(path.join(dir, "one", "photos", "a.png"), "x");
+    fs.writeFileSync(path.join(dir, "one", "a.png"), "x");
     characters.sync([]);
     expect(fs.existsSync(path.join(dir, "one"))).toBe(false);
   });
@@ -133,7 +141,7 @@ describe("sync", () => {
 describe("rename", () => {
   it("moves the row and the folder with everything in it", () => {
     characters.save({ id: "alice", name: "Alice", description: "a kind fairy" });
-    fs.writeFileSync(path.join(dir, "alice", "photos", "a.png"), "x");
+    fs.writeFileSync(path.join(dir, "alice", "a.png"), "x");
     fs.writeFileSync(path.join(dir, "alice", "avatar.jpg"), "y");
 
     expect(characters.rename("alice", "elf")).toBe(true);
@@ -141,8 +149,8 @@ describe("rename", () => {
     expect(fs.existsSync(path.join(dir, "alice"))).toBe(false);
     expect(characters.get("elf")).toEqual({ id: "elf", name: "Alice", description: "a kind fairy" });
     expect(characters.get("alice")).toBeNull();
-    expect(fs.existsSync(path.join(dir, "elf", "photos", "a.png"))).toBe(true);
-    expect(characters.findAvatar("elf")).toBeTruthy();
+    expect(fs.existsSync(path.join(dir, "elf", "a.png"))).toBe(true);
+    expect(fs.existsSync(path.join(dir, "elf", "avatar.jpg"))).toBe(true);
   });
 
   it("refuses a name that is taken and a character that is not there", () => {
@@ -196,7 +204,7 @@ describe("migrate", () => {
 describe("delete", () => {
   it("deletes the row and the character folder", () => {
     characters.save({ id: "a", name: "A", description: "" });
-    fs.writeFileSync(path.join(dir, "a", "photos", "p.png"), "x");
+    fs.writeFileSync(path.join(dir, "a", "p.png"), "x");
     expect(characters.delete("a")).toBe(true);
     expect(characters.get("a")).toBeNull();
     expect(fs.existsSync(path.join(dir, "a"))).toBe(false);
@@ -208,7 +216,7 @@ describe("delete", () => {
 describe("clone", () => {
   it("copies the row and the folder (photos and avatar go along) with the (copy) name", () => {
     characters.save({ id: "alice", name: "Alice", description: "a friend" });
-    fs.writeFileSync(path.join(dir, "alice", "photos", "p1.png"), "img");
+    fs.writeFileSync(path.join(dir, "alice", "p1.png"), "img");
     fs.writeFileSync(path.join(dir, "alice", "avatar.jpg"), "av");
     const newId = characters.clone("alice");
     expect(newId).toBe("alice-copy");
@@ -217,7 +225,7 @@ describe("clone", () => {
       name: "Alice (copy)",
       description: "a friend",
     });
-    expect(fs.existsSync(path.join(dir, "alice-copy", "photos", "p1.png"))).toBe(true);
+    expect(fs.existsSync(path.join(dir, "alice-copy", "p1.png"))).toBe(true);
     expect(fs.existsSync(path.join(dir, "alice-copy", "avatar.jpg"))).toBe(true);
     // the source is left untouched
     expect(characters.get("alice")?.name).toBe("Alice");
@@ -232,5 +240,66 @@ describe("clone", () => {
   it("returns null for a missing or invalid source", () => {
     expect(characters.clone("nope")).toBeNull();
     expect(characters.clone("a b")).toBeNull();
+  });
+});
+
+describe("avatar (an image id in the row)", () => {
+  let meta: ImageMetaService;
+  let svc: CharactersService;
+  const PNG = "data:image/png;base64,aGVsbG8=";
+  const pngBytes = Buffer.from("aGVsbG8=", "base64");
+
+  beforeEach(() => {
+    meta = new ImageMetaService(() => root);
+    svc = new CharactersService(() => dir, () => path.join(root, "catalogs.db"), meta);
+    svc.save({ id: "alice", name: "Alice", description: "" });
+  });
+  afterEach(() => {
+    svc.close();
+    meta.close();
+  });
+
+  it("picks an avatar from a disk file: it lands in the folder and the row keeps its id", () => {
+    const id = svc.setAvatarImage("alice", { dataUrl: PNG });
+    expect(id).toMatch(/^characters\/alice\/avatar-[0-9a-f]{6}\.png$/);
+    expect(fs.existsSync(path.join(root, id.split("/").join(path.sep)))).toBe(true);
+    expect(svc.getAvatarId("alice")).toBe(id);
+    // the new file got a row carrying its facts, so a later dedup sees it
+    expect(meta.get(id)?.fileHash).toBe(createHash("sha256").update(pngBytes).digest("hex"));
+  });
+
+  it("reuses a picture that is already in the data folders instead of writing a copy", () => {
+    // a chat picture the user already owns, described by a row with its facts
+    const existing = "chats/room/a-boat-1a2b3c.png";
+    const abs = path.join(root, "chats", "room", "a-boat-1a2b3c.png");
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, pngBytes);
+    meta.set(existing, {
+      fileSize: pngBytes.length,
+      fileModifiedAt: 1,
+      fileHash: createHash("sha256").update(pngBytes).digest("hex"),
+    });
+    const id = svc.setAvatarImage("alice", { dataUrl: PNG });
+    expect(id).toBe(existing);
+    expect(svc.getAvatarId("alice")).toBe(existing);
+    // no avatar file was created in the character folder — the existing one is used
+    expect(svc.pictureIdsOf("alice")).toEqual([]);
+  });
+
+  it("points the avatar at an existing picture id directly (no copy)", () => {
+    const abs = path.join(root, "characters", "alice", "face.png");
+    fs.writeFileSync(abs, "img");
+    const id = svc.setAvatarImage("alice", { imageId: "characters/alice/face.png" });
+    expect(id).toBe("characters/alice/face.png");
+    expect(svc.getAvatarId("alice")).toBe("characters/alice/face.png");
+  });
+
+  it("clearing drops the designation but keeps the file", () => {
+    const id = svc.setAvatarImage("alice", { dataUrl: PNG });
+    expect(svc.clearAvatar("alice")).toBe(true);
+    expect(svc.getAvatarId("alice")).toBeNull();
+    expect(fs.existsSync(path.join(root, id.split("/").join(path.sep)))).toBe(true);
+    // clearing an avatar that is not there is a no-op
+    expect(svc.clearAvatar("alice")).toBe(false);
   });
 });

@@ -80,7 +80,7 @@ describe("HttpHelper.sendImage", () => {
   });
 
   it("404s a picture that is not there", async () => {
-    const res = await send(path.join(PathHelper.chatFilesDir("c1"), "gone.png"));
+    const res = await send(path.join(PathHelper.chatDir("c1"), "gone.png"));
     expect(res.code).toBe(404);
     expect(res.chunks).toHaveLength(0);
   });

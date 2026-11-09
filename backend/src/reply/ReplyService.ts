@@ -1,4 +1,3 @@
-import path from "path";
 import fs from "fs";
 import { Character } from "../characters/Character";
 import { CharactersService } from "../characters/CharactersService";
@@ -7,7 +6,6 @@ import { ChatMessage, ImageGenerationData, isImageMessage } from "../chats/ChatM
 import { ChatsService } from "../chats/ChatsService";
 import { ConfigurationService } from "../configuration/ConfigurationService";
 import { Model } from "../configuration/Model";
-import { HttpHelper } from "../shared/HttpHelper";
 import { PathHelper } from "../shared/PathHelper";
 import { createToken } from "../di";
 import { ImageBrief, ImageCastMember, ImagePromptPlan, TextGenerationService } from "../text_generation/TextGenerationService";
@@ -57,6 +55,13 @@ export class ReplyService {
   // the config that can. Null when nothing in the config has vision.
   resolveVisionModel(chat: Chat): Model | null {
     return this.textGeneration.resolveVisionModel(this.configuration.loadConfig(), chat);
+  }
+
+  // The model that writes the picture prompts (the 📷 planner and "From the
+  // chat"): the global Settings pick when it names a model, else the chat's own
+  // model. The rule lives in TextGenerationService; this is the chat-aware entry.
+  resolveImagePromptModel(chat: Chat): Model | null {
+    return this.textGeneration.resolveImagePromptModel(this.configuration.loadConfig(), chat);
   }
 
   // The in-flight reply per chat: the controller is registered here so the
@@ -296,7 +301,7 @@ export class ReplyService {
     try {
       const chat = this.chats.get(chatId);
       if (!chat) return;
-      const model = this.resolveChatModel(chat);
+      const model = this.resolveImagePromptModel(chat);
       if (!model) {
         giveUp("No model configured for the chat");
         return;
@@ -471,31 +476,28 @@ export class ReplyService {
     return text.length > 400 ? `${text.slice(0, 400)}…` : text;
   }
 
-  // The person's own picture files: a character's photos/ set and avatar, a
-  // persona's avatar. Their look references — the faces the generator should
-  // copy instead of inventing.
+  // The person's own pictures — the faces the generator should copy instead of
+  // inventing. Their avatar first (the one picture the user picked to BE their
+  // face), then the rest of their folder; a persona has only the avatar. The
+  // ids are data-root-relative picture ids, so they reach the generator the
+  // same way as any reference.
   private lookPhotoIds(person: { id: string; kind: "char" | "user" }): string[] {
-    const files: string[] = [];
-    if (person.kind === "char") {
-      const photos = PathHelper.characterPhotosDir(person.id);
-      try {
-        files.push(
-          ...fs
-            .readdirSync(photos)
-            .filter((f) => HttpHelper.isImage(f))
-            .sort()
-            .map((f) => path.join(photos, f)),
-        );
-      } catch {
-        // the character has no photo set
-      }
-    }
-    const avatar = person.kind === "char" ? this.characters.findAvatar(person.id) : this.persons.findAvatar(person.id);
-    if (avatar) files.push(avatar);
+    const ids: string[] = [];
+    const avatar =
+      person.kind === "char" ? this.characters.getAvatarId(person.id) : this.persons.getAvatarId(person.id);
+    if (avatar) ids.push(avatar);
+    if (person.kind === "char") ids.push(...this.characters.pictureIdsOf(person.id));
     // Two is plenty for one person and the reference budget is smaller than the
     // number of people in a group chat — every slot a spare photo takes is a
     // face another character does not get.
-    return files.filter((f) => fs.existsSync(f)).slice(0, 2).map((f) => PathHelper.imageIdOf(f));
+    const seen = new Set<string>();
+    return ids
+      .filter((id) => (seen.has(id) ? false : (seen.add(id), true)))
+      .filter((id) => {
+        const file = PathHelper.resolvePictureId(id);
+        return file !== null && fs.existsSync(file);
+      })
+      .slice(0, 2);
   }
 
   // The pictures the chat itself produced, in the order of the conversation:
@@ -821,7 +823,7 @@ export class ReplyService {
   ): Promise<{ prompt: string; description: string; refs: string[] } | null> {
     const chat = this.chats.get(chatId);
     if (!chat) return null;
-    const model = this.resolveChatModel(chat);
+    const model = this.resolveImagePromptModel(chat);
     if (!model) return null;
     const maxRefs = this.imageGeneration.maxReferenceCount();
     const material = this.pictureMaterial(chat, messageId, maxRefs);

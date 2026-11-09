@@ -767,7 +767,7 @@ test('the ID of a character: written at creation, renamed with the chat followin
 });
 
 // The ID of a chat names its folder AND prefixes every picture id of the chat
-// (chats/<id>/files/…), so a new chat is born under a name that reads — its
+// (chats/<id>/…), so a new chat is born under a name that reads — its
 // creation moment, not a UUID — and the Rename in the chat settings is the same
 // kind of move a character rename is: the folder and the picture ids of the
 // chat follow the new name.
@@ -793,7 +793,7 @@ test('the ID of a chat: the creation date by default, renamed with its pictures 
     messages: Array<{ kind: string; images: string[] }>;
   };
   const cardBefore = before.messages.find((m) => m.kind === 'image')!;
-  expect(cardBefore.images[0].startsWith(`chats/${oldId}/files/`)).toBe(true);
+  expect(cardBefore.images[0].startsWith(`chats/${oldId}/`)).toBe(true);
   const fileName = cardBefore.images[0].split('/').pop()!;
 
   // ---- the chat settings dialog carries the ID; Rename is dead until the
@@ -830,7 +830,7 @@ test('the ID of a chat: the creation date by default, renamed with its pictures 
     messages: Array<{ kind: string; images: string[] }>;
   };
   const cardAfter = after.messages.find((m) => m.kind === 'image')!;
-  expect(cardAfter.images[0]).toBe(`chats/harbour-talk/files/${fileName}`);
+  expect(cardAfter.images[0]).toBe(`chats/harbour-talk/${fileName}`);
   // the file itself travels: the media route serves it at the new id
   const media = await fetch(`${API}/media?path=${encodeURIComponent(cardAfter.images[0])}`);
   expect(media.status).toBe(200);

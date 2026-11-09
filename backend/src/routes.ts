@@ -64,7 +64,7 @@ export function createApiRouter(
   apiRouter.use("/config", createConfigRouter(configuration, characters, imageGeneration));
   apiRouter.use("/characters", createCharactersRouter(characters, entityIds));
   apiRouter.use("/persons", createPersonsRouter(persons, entityIds));
-  apiRouter.use("/chats", createChatsRouter(chats, reply, characters, imageGeneration));
+  apiRouter.use("/chats", createChatsRouter(chats, reply, imageGeneration));
   apiRouter.use("/image", createImageRouter(imageGeneration, reply, chats));
   // The picture browser: every picture of the data folder with its row of the
   // images table, and the edit/rename of one of them.

@@ -29,20 +29,20 @@ export class PathHelper {
     return process.env.SILLYTALK_CHARACTERS_DIR || path.join(PathHelper.configDir(), "characters");
   }
 
+  // The character's pictures (the starter set and the avatar) lie directly in
+  // this folder — there is no photos/ subfolder any more. The folder is the
+  // picture; a picture in it is addressed by its id (characters/<id>/<name>).
   static characterDir(id: string, root: string = PathHelper.charactersDir()): string {
     return path.join(root, id);
   }
 
-  // The path to a character's photo folder is always fixed: ~/.config/sillytalk/characters/<id>/photos
-  static characterPhotosDir(id: string, root: string = PathHelper.charactersDir()): string {
-    return path.join(PathHelper.characterDir(id, root), "photos");
-  }
-
-  // A person's pictures (the avatar) live in a ~/.config/sillytalk/users/<id>/
-  // folder: the folder name is the person ID (the primary key of its row in
-  // the catalogs database, which holds the card itself). The on-disk layout
-  // (users/) and the SILLYTALK_USERS_DIR env var are historical — the domain
-  // concept in the code is person/persons.
+  // A person's pictures (its avatar, and any picture the user drops in) live
+  // directly in a ~/.config/sillytalk/users/<id>/ folder: the folder name is
+  // the person ID (the primary key of its row in the catalogs database, which
+  // holds the card itself). There is no subfolder — a picture is addressed by
+  // its id (users/<id>/<name>). The on-disk layout (users/) and the
+  // SILLYTALK_USERS_DIR env var are historical — the domain concept in the
+  // code is person/persons.
   static personsDir(): string {
     return process.env.SILLYTALK_USERS_DIR || path.join(PathHelper.configDir(), "users");
   }
@@ -63,6 +63,9 @@ export class PathHelper {
     return process.env.SILLYTALK_CHATS_DIR || path.join(PathHelper.configDir(), "chats");
   }
 
+  // A chat's pictures lie directly in this folder (chats/<id>/<name>) — there
+  // is no files/ subfolder any more. The chat's own database row lives in the
+  // shared chats.db, not here; the folder holds only the picture files.
   static chatDir(chatId: string, root: string = PathHelper.chatsDir()): string {
     return path.join(root, chatId);
   }
@@ -76,8 +79,8 @@ export class PathHelper {
 
   // The chats database (node:sqlite): the chat fields and the messages live
   // here since the move away from the per-chat chat.json files. The
-  // chats/<id>/ folders survive as the homes of the chat image files
-  // (chats/<id>/files/).
+  // chats/<id>/ folders survive as the homes of the chat picture files
+  // (chats/<id>/<name>, no subfolder).
   static chatsDatabaseFile(root: string = PathHelper.chatsDir()): string {
     return path.join(root, "chats.db");
   }
@@ -91,21 +94,17 @@ export class PathHelper {
 
   // The catalogs database (node:sqlite): the character and the persona cards —
   // one `characters` and one `persons` table, each keyed by the id that is
-  // also the name of the folder where that entity's pictures (photos/, the
-  // avatar) live. The card is the row: character.json / user.json are not read
-  // and not written.
+  // also the name of the folder where that entity's pictures lie (directly in
+  // it, the avatar included). The card is the row: character.json / user.json
+  // are not read and not written.
   static catalogsDatabaseFile(root: string = PathHelper.configDir()): string {
     return path.join(root, "catalogs.db");
-  }
-
-  static chatFilesDir(chatId: string, root: string = PathHelper.chatsDir()): string {
-    return path.join(PathHelper.chatDir(chatId, root), "files");
   }
 
   // ---- image identifiers ----
   //
   // An image is identified by its path RELATIVE TO THE DATA ROOT, with "/" as
-  // the separator — "chats/<chatId>/files/a-sunset-over-the-sea-3f2a1c.png".
+  // the separator — "chats/<chatId>/a-sunset-over-the-sea-3f2a1c.png".
   // The id is what the chat messages store, what the API carries and what an
   // images-table row lists as a generation reference, so a chat folder stays
   // portable and a hand-edited row can point at any image of the data

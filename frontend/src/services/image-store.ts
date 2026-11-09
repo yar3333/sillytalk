@@ -44,7 +44,8 @@ export class ImageStore {
   }
 
   // ---- derived ----
-  // The first participant's photos (reference candidates in the gen bar).
+  // The first participant's pictures (reference candidates in the gen bar) —
+  // image ids, so a pick references the file in the character folder directly.
   readonly characterPhotos = computed<string[]>(() => this.chatStore.character()?.photos ?? []);
   // The 🎨 toggle is shown only when a generator is available.
   readonly canGen = computed(() => this.configStore.imageGenAvailable());
@@ -91,16 +92,10 @@ export class ImageStore {
   addChatRef(name: string): void {
     if (!this.genRefs().includes(name)) this.genRefs.set([...this.genRefs(), name]);
   }
-  // A character photo becomes a reference: it is imported into the chat files
-  // first (the answer is the new image id), then added to the references.
+  // A character picture becomes a reference: it is already an image id of the
+  // data folder, so it is referenced where it stands (no copy into the chat).
   addCharacterPhotoRef(photo: string): void {
-    const c = this.chatStore.chat();
-    const ch = this.chatStore.character();
-    if (!c || !ch) return;
-    this.api
-      .importPhoto(c.id, ch.id, photo)
-      .then((res) => this.addChatRef(res.id))
-      .catch((e) => this.ui.error.set(String((e as Error).message)));
+    this.addChatRef(photo);
   }
 
   // Draws an image from the prompt (gen mode). The generation runs in the
@@ -193,9 +188,10 @@ export class ImageStore {
     const c = this.chatStore.chat();
     if (!c) return false;
     try {
-      // A file picked from disk becomes a picture of the chat's own files/
-      // first — the swap drops the old generation data, the description below
-      // then lands on the new card.
+      // A file picked from disk becomes a picture of the chat's own folder
+      // first (the server reuses an identical one rather than copying) — the
+      // swap drops the old generation data, the description below then lands on
+      // the new card.
       let target = image;
       if (edit.kind === 'file' && edit.data) {
         const saved = await this.api.replaceImage(c.id, messageId, image, edit.data);

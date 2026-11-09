@@ -132,6 +132,20 @@ export class TextGenerationService {
     return models.find((m) => m.supportsImages) ?? null;
   }
 
+  // The model that writes the picture prompts (the 📷 planner and the picture
+  // editor's "From the chat"): the config's dedicated imagePromptModel when it
+  // names a model that exists, else the chat's own model. This is the one global
+  // Settings pick — the user may want a strong prompt-writer that is not the
+  // model running the roleplay — and when it is unset nothing changes.
+  resolveImagePromptModel(config: Config, chat: Chat): Model | null {
+    const models = this.configuration.listModels(config);
+    if (config.imagePromptModel) {
+      const picked = models.find((m) => m.name === config.imagePromptModel);
+      if (picked) return picked;
+    }
+    return this.resolveModel(config, chat);
+  }
+
   // ---- prompts and history ----
 
   // person — the active persona (the persons table of catalogs.db); if it has a

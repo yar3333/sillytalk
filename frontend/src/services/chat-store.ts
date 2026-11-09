@@ -111,12 +111,12 @@ export class ChatStore {
     return users.find((u) => u.id === id) ?? this.chatUser();
   }
   readonly userAvatarUrl = computed<string>(() => {
-    const u = this.chatUser();
-    return u?.hasAvatar ? this.api.userAvatarUrl(u.id) : '';
+    const a = this.chatUser()?.avatar;
+    return a ? this.api.mediaUrl(a) : '';
   });
   readonly charAvatarUrl = computed<string>(() => {
-    const c = this.character();
-    return c?.hasAvatar ? this.api.characterAvatarUrl(c.id) : '';
+    const a = this.character()?.avatar;
+    return a ? this.api.mediaUrl(a) : '';
   });
   readonly currentModel = computed<Model | null>(() => {
     const c = this.chat();
@@ -174,7 +174,8 @@ export class ChatStore {
   readonly typingAvatarUrl = computed<string>(() => {
     const id = this.typingCharacterId();
     const c = id ? this.chatCharacters().find((x) => x.id === id) : null;
-    return c?.hasAvatar ? this.api.characterAvatarUrl(c.id) : '';
+    const a = c?.avatar;
+    return a ? this.api.mediaUrl(a) : '';
   });
   typingLabel(): string {
     const name = this.typingName();

@@ -27,6 +27,27 @@ import { UiStore } from '../../services/ui-store';
           model chip) — with per-item dialogs.
         </div>
 
+        <h3>Picture prompt model</h3>
+        <label class="field">
+          <span>Prompt model</span>
+          <!-- [selected] on the option: [value] on the <select> would be set
+               before the @for options exist and silently fail. -->
+          <select data-testid="settings-prompt-model" (change)="setPromptModel($event)">
+            <option value="" [selected]="!m()!.imagePromptModel">Default (the chat's model)</option>
+            @for (model of configStore.models(); track model.name) {
+              <option [value]="model.name" [selected]="model.name === m()!.imagePromptModel">
+                {{ model.name }}
+              </option>
+            }
+          </select>
+        </label>
+        <div class="hint">
+          The model that plans the picture prompts — the 📷 "picture of my turn" and the editor's
+          "From the chat". Leave it on Default to use each chat's own model; pick a strong one here
+          to plan with it regardless of the chat. Replies and picture captions still use the chat's
+          models.
+        </div>
+
         <h3>Image generation</h3>
         <div class="hint">
           Every enabled and available generator works in parallel — the jobs of one server are
@@ -113,6 +134,16 @@ export class Settings implements OnInit {
   private setListen(e: Event): void {
     const c = this.m()!;
     c.listen = (e.target as HTMLInputElement).value;
+    this.m.set({ ...c });
+  }
+
+  // The global picture-prompt model. An empty pick is a real choice — the chat's
+  // own model plans again — so the field is dropped rather than stored empty.
+  private setPromptModel(e: Event): void {
+    const c = this.m()!;
+    const name = (e.target as HTMLSelectElement).value;
+    if (name) c.imagePromptModel = name;
+    else delete c.imagePromptModel;
     this.m.set({ ...c });
   }
 

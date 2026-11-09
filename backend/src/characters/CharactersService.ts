@@ -1,22 +1,25 @@
 import fs from "fs";
 import path from "path";
+import { randomUUID } from "crypto";
 import { DatabaseSync } from "node:sqlite";
 import { Character } from "./Character";
 import { PathHelper } from "../shared/PathHelper";
-import { AvatarFile } from "../shared/AvatarFile";
+import { DataUrl } from "../shared/DataUrl";
+import { ImageMetaService } from "../images/ImageMetaService";
 import { createToken } from "../di";
 
 // The DI token of the character service (registered in index.ts).
 export const DI_CHARACTERS_SERVICE = createToken<CharactersService>("CharactersService");
 
-type CharacterRow = { id: string; name: string; description: string | null };
+type CharacterRow = { id: string; name: string; description: string | null; avatar: string | null };
 
 // The top-level character service: the character catalog in the `characters`
 // table of the catalogs database (catalogs.db in the data root) — the id is the
 // primary key and at the same time the name of the character's folder, where
-// its pictures live: photos/ is the "starter" photo set, avatar.<ext> the
-// character avatar. The card itself (name and description) is the row: there
-// is no character.json any more and its files are not read.
+// its pictures lie directly (no subfolder): the "starter" set are the image
+// files of the folder, and the avatar is one of them, named by an image id the
+// row keeps in its `avatar` column. The card itself (name and description) is
+// the row: there is no character.json any more and its files are not read.
 //
 // The root folder is read through the accessor (not injected as a value), so
 // the service always sees the current SILLYTALK_CHARACTERS_DIR / data root, and
@@ -26,6 +29,11 @@ export class CharactersService {
   constructor(
     private readonly charactersRoot: () => string,
     private readonly databaseFile: () => string,
+    // The images table, used only to de-duplicate an avatar picked from disk (a
+    // file the user chose that is already a picture of the data folder is
+    // referenced, not copied). Optional so the catalog can be used without the
+    // table; without it a disk pick is always written as a new file.
+    private readonly imageMeta?: ImageMetaService,
   ) {}
 
   private dbRef: DatabaseSync | null = null;
@@ -51,9 +59,15 @@ export class CharactersService {
       CREATE TABLE IF NOT EXISTS characters (
         id          TEXT PRIMARY KEY,
         name        TEXT NOT NULL,
-        description TEXT NOT NULL DEFAULT ''
+        description TEXT NOT NULL DEFAULT '',
+        avatar      TEXT
       );
     `);
+    // A table written before the avatar column existed gets it added (an empty
+    // value simply means "no avatar picked yet"); a fresh table has it already.
+    if (!(db.prepare(`PRAGMA table_info(characters)`).all() as Array<{ name: string }>).some((c) => c.name === "avatar")) {
+      db.exec("ALTER TABLE characters ADD COLUMN avatar TEXT");
+    }
     this.dbRef = db;
     return db;
   }
@@ -79,18 +93,37 @@ export class CharactersService {
     return rows.map((row) => CharactersService.fromRow(row)).sort((a, b) => a.name.localeCompare(b.name, "en"));
   }
 
-  // The character list with the starter-set photos and the avatar flag — the
-  // pictures stay files of the character's folder, only the card is the row.
-  listWithPhotos(): Array<Character & { photos: string[]; hasAvatar: boolean }> {
-    const root = this.charactersRoot();
-    return this.list().map((character) => {
-      const dir = PathHelper.characterPhotosDir(character.id, root);
-      let photos: string[] = [];
-      if (fs.existsSync(dir)) {
-        photos = fs.readdirSync(dir).filter((f) => /\.(png|jpe?g|webp|gif)$/i.test(f));
-      }
-      return { ...character, photos, hasAvatar: AvatarFile.find(PathHelper.characterDir(character.id, root)) !== null };
-    });
+  // The character list with the starter-set picture ids and the avatar image id
+  // — the pictures are files of the character's folder (addressed by their
+  // data-root-relative id), only the card is the row.
+  listWithPhotos(): Array<Character & { photos: string[]; avatar: string | null }> {
+    const rows = this.db()
+      .prepare("SELECT id, name, description, avatar FROM characters")
+      .all() as CharacterRow[];
+    return rows
+      .map((row) => ({
+        ...CharactersService.fromRow(row),
+        photos: this.pictureIdsOf(row.id),
+        avatar: typeof row.avatar === "string" && row.avatar ? row.avatar : null,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name, "en"));
+  }
+
+  // The image ids of a character's folder (the "starter" set plus any avatar
+  // file), sorted; an empty list when the folder does not exist yet. The ids
+  // are data-root-relative, exactly as every other picture id.
+  pictureIdsOf(id: string): string[] {
+    if (!this.isValidId(id)) return [];
+    const dir = PathHelper.characterDir(id, this.charactersRoot());
+    try {
+      return fs
+        .readdirSync(dir)
+        .filter((f) => /\.(png|jpe?g|webp|gif)$/i.test(f))
+        .sort()
+        .map((f) => PathHelper.imageIdOf(path.join(dir, f)));
+    } catch {
+      return [];
+    }
   }
 
   get(id: string): Character | null {
@@ -101,17 +134,8 @@ export class CharactersService {
     return row ? CharactersService.fromRow(row) : null;
   }
 
-  // The absolute path of a starter-set photo (the file name is reduced to its
-  // basename); null when the id is not a valid character id. The existence is
-  // up to the caller (ChatsService.importCharacterPhoto answers null for a
-  // missing file).
-  photoFile(id: string, name: string): string | null {
-    if (!this.isValidId(id)) return null;
-    return path.join(PathHelper.characterPhotosDir(id, this.charactersRoot()), path.basename(name));
-  }
-
-  // Writes the character's row and creates its folder (including photos/), the
-  // home of the starter set and the avatar.
+  // Writes the character's row and creates its folder, the home of its pictures
+  // (the starter set and the avatar lie directly in it).
   save(character: Character): void {
     if (!this.isValidId(character.id)) {
       throw new Error(`Invalid character ID: ${String(character.id)}`);
@@ -122,7 +146,7 @@ export class CharactersService {
          ON CONFLICT(id) DO UPDATE SET name = excluded.name, description = excluded.description`,
       )
       .run(character.id, character.name ?? "", character.description ?? "");
-    fs.mkdirSync(PathHelper.characterPhotosDir(character.id, this.charactersRoot()), { recursive: true });
+    fs.mkdirSync(PathHelper.characterDir(character.id, this.charactersRoot()), { recursive: true });
   }
 
   // Deletes the character's row and its folder (photos and everything else).
@@ -198,27 +222,91 @@ export class CharactersService {
     }
   }
 
-  // ---- avatar (avatar.<ext> in the character folder) ----
+  // ---- avatar (an image id the row keeps in its `avatar` column) ----
+  //
+  // The avatar is not a special file any more: it is one of the character's
+  // pictures, named by its data-root-relative id, and the preview is served
+  // through the usual media route. Setting it copies a picked file into the
+  // folder — unless that file is already a picture of the data folder, in which
+  // case the existing id is reused (no duplicate); or points the column at an
+  // existing picture id directly. Clearing it only drops the designation, never
+  // the file (the picture stays a normal folder picture the browser can delete).
 
-  // The avatar file (the first existing avatar.<ext>), null when absent.
-  findAvatar(id: string): string | null {
+  // The id of the character's avatar, or null when none is picked.
+  getAvatarId(id: string): string | null {
     if (!this.isValidId(id)) return null;
-    return AvatarFile.find(PathHelper.characterDir(id, this.charactersRoot()));
+    const row = this.db().prepare("SELECT avatar FROM characters WHERE id = ?").get(id) as
+      | { avatar: string | null }
+      | undefined;
+    return row && typeof row.avatar === "string" && row.avatar ? row.avatar : null;
   }
 
-  // Saves the avatar from an image data URL (replacing any older one).
-  // Throws when the payload is not an image data URL.
-  saveAvatar(id: string, dataUrl: string): void {
-    if (!this.isValidId(id)) {
-      throw new Error(`Invalid character ID: ${String(id)}`);
+  // Picks the avatar from a picture the user chose: either an existing picture
+  // id of the data folder (`imageId` — reused as is) or the bytes of a disk file
+  // (`dataUrl` — re-used when its content already lives in a data folder, else
+  // copied into the character's folder). Returns the avatar image id now stored.
+  // Throws on a bad id or an unreadable pick.
+  setAvatarImage(id: string, source: { dataUrl?: string; imageId?: string }): string {
+    if (!this.isValidId(id)) throw new Error(`Invalid character ID: ${String(id)}`);
+    if (!this.get(id)) throw new Error(`No such character: ${id}`);
+    let avatarId: string;
+    if (typeof source.imageId === "string" && source.imageId) {
+      const abs = PathHelper.resolvePictureId(source.imageId);
+      if (!abs || !fs.existsSync(abs)) throw new Error(`Unknown picture "${source.imageId}"`);
+      avatarId = source.imageId;
+    } else if (typeof source.dataUrl === "string" && source.dataUrl) {
+      avatarId = this.storePickedPicture(id, DataUrl.image(source.dataUrl));
+    } else {
+      throw new Error("Expected a picked picture (data or image field)");
     }
-    AvatarFile.save(PathHelper.characterDir(id, this.charactersRoot()), dataUrl);
+    this.db().prepare("UPDATE characters SET avatar = ? WHERE id = ?").run(avatarId, id);
+    return avatarId;
   }
 
-  // Deletes the avatar file; returns whether anything was deleted.
-  deleteAvatar(id: string): boolean {
+  // Drops the avatar designation; the file itself is left as a normal folder
+  // picture. Returns whether a designation was there to clear.
+  clearAvatar(id: string): boolean {
     if (!this.isValidId(id)) return false;
-    return AvatarFile.delete(PathHelper.characterDir(id, this.charactersRoot()));
+    const changed = this.db()
+      .prepare("UPDATE characters SET avatar = NULL WHERE id = ? AND avatar IS NOT NULL")
+      .run(id).changes;
+    return changed > 0;
+  }
+
+  // Follows a renamed picture in the avatar column (a folder rename moves the
+  // file the avatar points at; a picked avatar that names a picture elsewhere is
+  // left alone — its path did not change).
+  repointAvatar(fromId: string, toId: string): void {
+    if (!fromId || !toId || fromId === toId) return;
+    this.db().prepare("UPDATE characters SET avatar = ? WHERE avatar = ?").run(toId, fromId);
+  }
+
+  // Places the bytes of a picked file: a byte-identical picture already in the
+  // data folders gives its id back (the file is not written again), otherwise a
+  // new file lands in the character's folder and gets a row carrying its facts,
+  // so the next sync and the next dedup see it.
+  private storePickedPicture(
+    id: string,
+    picked: { buffer: Buffer; ext: string; hash: string },
+  ): string {
+    const duplicate = this.imageMeta
+      ?.findByHash(picked.buffer.length, picked.hash)
+      .find((candidate) => {
+        const file = PathHelper.resolvePictureId(candidate);
+        return file !== null && fs.existsSync(file);
+      });
+    if (duplicate) return duplicate;
+    const dir = PathHelper.characterDir(id, this.charactersRoot());
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `avatar-${randomUUID().slice(0, 6)}${picked.ext}`);
+    fs.writeFileSync(file, picked.buffer);
+    const newId = PathHelper.imageIdOf(file);
+    this.imageMeta?.set(newId, {
+      fileSize: picked.buffer.length,
+      fileModifiedAt: Math.floor(fs.statSync(file).mtimeMs),
+      fileHash: picked.hash,
+    });
+    return newId;
   }
 
   // Migration from the old config.json format: character entries become rows;

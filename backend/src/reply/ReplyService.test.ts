@@ -489,7 +489,7 @@ describe("attachUserImages", () => {
   it("stores the typed caption first, then one card per picture", () => {
     const chat = newChat();
     const first = "data:image/png;base64,aGVsbG8=";
-    const second = "data:image/jpeg;base64,aGVsbG8=";
+    const second = "data:image/png;base64,d29ybGQ=";
     const result = reply.attachUserImages(chat.id, "look at these", [first, second]);
     expect(result).not.toBeNull();
     const stored = chats.get(chat.id)!.messages;
@@ -770,7 +770,7 @@ describe("requestUserTurnImage (the picture of the user's turn)", () => {
       name: "Alice",
       description: "A tall woman with short red hair, always in a green coat.",
     });
-    const photo = path.join(PathHelper.characterPhotosDir("alice"), "photo1.jpg");
+    const photo = path.join(PathHelper.characterDir("alice"), "photo1.jpg");
     fs.writeFileSync(photo, "x");
     const photoId = PathHelper.imageIdOf(photo);
     textGeneration.plan = {
@@ -814,7 +814,7 @@ describe("requestUserTurnImage (the picture of the user's turn)", () => {
     // The conversation's own picture of her is the better anchor: it is the same
     // person AND the same technique, which is what makes two pictures of one
     // chat read as one story.
-    const photo = path.join(PathHelper.characterPhotosDir("alice"), "photo1.jpg");
+    const photo = path.join(PathHelper.characterDir("alice"), "photo1.jpg");
     fs.writeFileSync(photo, "x");
     const chat = newChat();
     const drawn = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=", { nameHint: "alice at the bar" });
@@ -844,7 +844,7 @@ describe("requestUserTurnImage (the picture of the user's turn)", () => {
 
   it("keeps the face when the generator has room for one reference only", async () => {
     fake.setMaxRefs(1);
-    const photo = path.join(PathHelper.characterPhotosDir("alice"), "photo1.jpg");
+    const photo = path.join(PathHelper.characterDir("alice"), "photo1.jpg");
     fs.writeFileSync(photo, "x");
     const chat = newChat();
     const harbour = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=", { nameHint: "a harbour" });

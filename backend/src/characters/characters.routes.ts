@@ -1,13 +1,12 @@
 import express from "express";
-import path from "path";
-import { PathHelper } from "../shared/PathHelper";
-import { HttpHelper } from "../shared/HttpHelper";
 import { Character } from "./Character";
 import { CharactersService } from "./CharactersService";
 import { EntityIdService } from "../entities/EntityIdService";
 
 // The /characters routes: the catalog CRUD (the full-list sync), the clone, the
-// ID rename, the photo serving and the avatar. The domain logic lives in
+// ID rename and the avatar. A character's pictures are ordinary files of its
+// folder (served by the /media route), so there is no photo route here. The
+// domain logic lives in
 // CharactersService (the catalogs table and the picture folders) and in
 // EntityIdService (what a new ID drags along); this file is the thin HTTP layer
 // (validation, status codes, streaming).
@@ -86,34 +85,12 @@ export function createCharactersRouter(
     }
   });
 
-  router.get("/:id/photos/:name", (req, res) => {
-    const character = characters.get(req.params.id);
-    if (!character) {
-      res.status(404).json({ error: "Character not found" });
-      return;
-    }
-    HttpHelper.sendImage(res, path.join(PathHelper.characterPhotosDir(character.id), path.basename(req.params.name)));
-  });
-
-  // ---- avatar ----
-  // The avatar is stored in the folder as avatar.<ext> (usually avatar.jpg);
-  // the extension follows the actual format of the uploaded image.
-
-  router.get("/:id/avatar", (req, res) => {
-    const id = String(req.params.id);
-    if (!characters.isValidId(id)) {
-      res.status(400).json({ error: "Invalid ID" });
-      return;
-    }
-    const file = characters.findAvatar(id);
-    if (!file) {
-      res.status(404).end();
-      return;
-    }
-    // Avatars change from settings — the browser must not cache them.
-    res.setHeader("Cache-Control", "no-store");
-    HttpHelper.sendImage(res, file);
-  });
+  // The avatar is one of the character's pictures: a normal image file of its
+  // folder whose data-root-relative id the row keeps. The preview is served by
+  // the /media route, so there is no GET here. Picking it accepts either an
+  // existing picture id (`image`, reused) or a disk file the user chose (`data`,
+  // a data URL — the server reuses a byte-identical picture or copies it into
+  // the folder). Clearing only drops the designation, the file stays.
 
   router.post("/:id/avatar", (req, res) => {
     const id = String(req.params.id);
@@ -121,14 +98,15 @@ export function createCharactersRouter(
       res.status(400).json({ error: "Invalid ID" });
       return;
     }
-    const data = req.body?.data;
-    if (typeof data !== "string" || !data) {
-      res.status(400).json({ error: "Expected an image data URL (data field)" });
+    const data = typeof req.body?.data === "string" ? req.body.data : undefined;
+    const image = typeof req.body?.image === "string" ? req.body.image : undefined;
+    if (!data && !image) {
+      res.status(400).json({ error: "Expected a picked picture (data or image field)" });
       return;
     }
     try {
-      characters.saveAvatar(id, data);
-      res.json({ ok: true });
+      const avatarId = characters.setAvatarImage(id, { ...(data ? { dataUrl: data } : {}), ...(image ? { imageId: image } : {}) });
+      res.json({ id: avatarId });
     } catch (err) {
       res.status(400).json({ error: (err as Error).message });
     }
@@ -140,7 +118,7 @@ export function createCharactersRouter(
       res.status(400).json({ error: "Invalid ID" });
       return;
     }
-    res.json({ deleted: characters.deleteAvatar(id) });
+    res.json({ deleted: characters.clearAvatar(id) });
   });
 
   return router;

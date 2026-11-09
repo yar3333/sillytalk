@@ -119,7 +119,9 @@ describe("rename", () => {
     expect(fs.existsSync(path.join(dir, "me"))).toBe(false);
     expect(persons.get("karin")).toEqual({ id: "karin", name: "You", description: "engineer" });
     expect(persons.get("me")).toBeNull();
-    expect(persons.findAvatar("karin")).toBeTruthy();
+    // the avatar file travelled with the folder (it is one of the persona's
+    // pictures now; the designation is a separate id the row keeps)
+    expect(fs.existsSync(path.join(dir, "karin", "avatar.jpg"))).toBe(true);
   });
 
   it("refuses a name that is taken, a missing source and a name that is not a folder name", () => {

@@ -155,8 +155,10 @@ export class InputPanel {
     });
   }
 
-  photoUrl(name: string): string {
-    return this.api.photoUrl(this.chatStore.characterId() ?? '', name);
+  // A character picture is an image id of the data folder, shown through the
+  // one media route.
+  photoUrl(id: string): string {
+    return this.api.mediaUrl(id);
   }
 
   // A reference chip shows the file name, not the whole data-relative path —

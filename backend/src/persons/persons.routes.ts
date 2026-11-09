@@ -1,5 +1,4 @@
 import express from "express";
-import { HttpHelper } from "../shared/HttpHelper";
 import { Person } from "./Person";
 import { PersonsService } from "./PersonsService";
 import { EntityIdService } from "../entities/EntityIdService";
@@ -80,25 +79,11 @@ export function createPersonsRouter(persons: PersonsService, entityIds: EntityId
     }
   });
 
-  // ---- avatar ----
-  // The avatar is stored in the folder as avatar.<ext> (usually avatar.jpg);
-  // the extension follows the actual format of the uploaded image.
-
-  router.get("/:id/avatar", (req, res) => {
-    const id = String(req.params.id);
-    if (!persons.isValidId(id)) {
-      res.status(400).json({ error: "Invalid ID" });
-      return;
-    }
-    const file = persons.findAvatar(id);
-    if (!file) {
-      res.status(404).end();
-      return;
-    }
-    // Avatars change from settings — the browser must not cache them.
-    res.setHeader("Cache-Control", "no-store");
-    HttpHelper.sendImage(res, file);
-  });
+  // The avatar is one of the persona's pictures: a normal image file of its
+  // folder whose data-root-relative id the row keeps. The preview is served by
+  // the /media route, so there is no GET here. Picking it accepts either an
+  // existing picture id (`image`, reused) or a disk file (`data`, a data URL).
+  // Clearing only drops the designation, the file stays.
 
   router.post("/:id/avatar", (req, res) => {
     const id = String(req.params.id);
@@ -106,14 +91,15 @@ export function createPersonsRouter(persons: PersonsService, entityIds: EntityId
       res.status(400).json({ error: "Invalid ID" });
       return;
     }
-    const data = req.body?.data;
-    if (typeof data !== "string" || !data) {
-      res.status(400).json({ error: "Expected an image data URL (data field)" });
+    const data = typeof req.body?.data === "string" ? req.body.data : undefined;
+    const image = typeof req.body?.image === "string" ? req.body.image : undefined;
+    if (!data && !image) {
+      res.status(400).json({ error: "Expected a picked picture (data or image field)" });
       return;
     }
     try {
-      persons.saveAvatar(id, data);
-      res.json({ ok: true });
+      const avatarId = persons.setAvatarImage(id, { ...(data ? { dataUrl: data } : {}), ...(image ? { imageId: image } : {}) });
+      res.json({ id: avatarId });
     } catch (err) {
       res.status(400).json({ error: (err as Error).message });
     }
@@ -125,7 +111,7 @@ export function createPersonsRouter(persons: PersonsService, entityIds: EntityId
       res.status(400).json({ error: "Invalid ID" });
       return;
     }
-    res.json({ deleted: persons.deleteAvatar(id) });
+    res.json({ deleted: persons.clearAvatar(id) });
   });
 
   return router;

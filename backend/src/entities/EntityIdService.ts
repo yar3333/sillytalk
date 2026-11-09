@@ -27,6 +27,10 @@ type EntityTarget = {
   // The row's primary key and the entity's folder move together — the domain's
   // own service owns both.
   rename: (id: string, newId: string) => boolean;
+  // The avatar column holds a picture id living inside the entity's folder, so a
+  // folder rename has to rewrite it (the owning service does, so the column
+  // stays its business).
+  repointAvatar: (fromId: string, toId: string) => void;
 };
 
 // The ID of a character or a persona is the PRIMARY KEY of its row in the
@@ -99,6 +103,7 @@ export class EntityIdService {
     for (const [oldId, nextId] of pairs) {
       this.chats.repointImageId(oldId, nextId);
       this.imageMeta.move(oldId, nextId);
+      target.repointAvatar(oldId, nextId);
     }
     this.chats.repointAuthor(target.kind, id, newId);
     this.imageMeta.repointDepicts(`${target.cast}:${id}`, `${target.cast}:${newId}`);
@@ -151,6 +156,7 @@ export class EntityIdService {
       isValid: (id) => service.isValidId(id),
       exists: (id) => service.get(id) !== null,
       rename: (id, newId) => service.rename(id, newId),
+      repointAvatar: (fromId, toId) => service.repointAvatar(fromId, toId),
     };
   }
 
@@ -164,6 +170,7 @@ export class EntityIdService {
       isValid: (id) => service.isValidId(id),
       exists: (id) => service.get(id) !== null,
       rename: (id, newId) => service.rename(id, newId),
+      repointAvatar: (fromId, toId) => service.repointAvatar(fromId, toId),
     };
   }
 }

@@ -315,12 +315,12 @@ export class MessageRow implements OnDestroy {
   }
   avatarUrl(): string {
     if (this.message().role === 'user') {
-      const u = this.chatStore.userOf(this.message().userId);
-      return u?.hasAvatar ? this.api.userAvatarUrl(u.id) : '';
+      const a = this.chatStore.userOf(this.message().userId)?.avatar;
+      return a ? this.api.mediaUrl(a) : '';
     }
     const id = this.message().characterId ?? this.chatStore.character()?.id;
-    const c = this.chatStore.characterOf(id);
-    return c?.hasAvatar ? this.api.characterAvatarUrl(c.id) : '';
+    const a = this.chatStore.characterOf(id)?.avatar;
+    return a ? this.api.mediaUrl(a) : '';
   }
   letter(): string {
     return avatarLetter(this.senderName());

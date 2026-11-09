@@ -129,7 +129,8 @@ function sameList(a: string[], b: string[]): boolean {
           </div>
           <div class="dialog-hint">
             {{ catalogLoading() ? 'Reading the pictures of the data folder…' : 'The relative path is the id the card will carry.' }}
-            A file picked from disk is copied into this chat's files.
+            A file picked from disk is saved into this chat's folder — a copy of a picture you
+            already have is reused, not duplicated.
           </div>
         }
 
@@ -312,7 +313,8 @@ export class PictureDialog implements OnInit {
   }
 
   // A file from disk: kept as a data URL (the preview and the describe button
-  // work on it) and saved into the chat's files on Save.
+  // work on it) and saved into the chat's folder on Save (the server reuses a
+  // byte-identical picture already in the data folders instead of copying).
   onPickFile(e: Event): void {
     const input = e.target as HTMLInputElement;
     const file = input.files?.[0];

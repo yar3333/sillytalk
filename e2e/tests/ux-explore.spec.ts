@@ -82,10 +82,12 @@ async function setupCatalog(): Promise<void> {
     imageGenerators: comfy ? [comfy.generator] : [],
   });
   // Avatars and a character photo: written/uploaded directly, the catalog
-  // sync keeps existing folders.
+  // sync keeps existing folders. The character's picture lives in its folder
+  // (no photos/ subfolder any more); the avatar POST picks a disk file and the
+  // server keeps its id in the row.
   const photo = makePng(320, 240, 40, 80, 200);
-  fs.mkdirSync(path.join(DATA, 'characters', 'alice', 'photos'), { recursive: true });
-  fs.writeFileSync(path.join(DATA, 'characters', 'alice', 'photos', 'photo1.png'), photo);
+  fs.mkdirSync(path.join(DATA, 'characters', 'alice'), { recursive: true });
+  fs.writeFileSync(path.join(DATA, 'characters', 'alice', 'photo1.png'), photo);
   await api('/persons/carol/avatar', 'POST', { data: dataUrl(makePng(64, 64, 140, 60, 160)) });
   await api('/characters/alice/avatar', 'POST', { data: dataUrl(makePng(64, 64, 60, 140, 60)) });
   await api('/characters/bob/avatar', 'POST', { data: dataUrl(makePng(64, 64, 180, 120, 40)) });
@@ -528,13 +530,13 @@ test('UX 10b: the picture editor — the prompt, the description, the file kind'
   await expect(card.getByTestId('card-caption')).toContainText('described by the mock model');
   await page.screenshot({ path: `${SHOTS}/ux-10b-saved.png` });
 
-  // "From a file": pick the character photo of the data folder — the card
+  // "From a file": pick the character picture of the data folder — the card
   // points at it and stops claiming a generation (no prompt, no redraw).
   await card.hover();
   await card.locator('.msg-edit.edit').click();
   await page.getByTestId('picture-kind-file').check();
   await expect(page.getByTestId('picture-prompt')).toHaveCount(0);
-  await page.getByTestId('picture-id').selectOption('characters/alice/photos/photo1.png');
+  await page.getByTestId('picture-id').selectOption('characters/alice/photo1.png');
   await page.getByTestId('picture-save').click();
   await expect(dialog).toBeHidden();
   await expect(card.locator('[data-testid=image-card] img')).toHaveAttribute('src', /photo1\.png/);
@@ -917,7 +919,7 @@ test('UX 20: the picture browser edits the picture, not a message', async ({ pag
 
   // The chat's picture is listed; its path is the id field.
   const before = (await api('/pictures')) as { pictures: Array<{ id: string; exists: boolean }> };
-  const id = before.pictures.find((p) => p.exists && p.id.includes('/files/'))!.id;
+  const id = before.pictures.find((p) => p.exists && p.id.startsWith('chats/'))!.id;
   await expect(page.getByTestId('picture-id-input')).toHaveValue(id);
   await page.screenshot({ path: `${SHOTS}/ux-20b-library.png` });
 
@@ -1041,15 +1043,15 @@ test('UX 20e: a picture renamed or dropped outside the app is followed by the ta
   const media = await fetch(`${API}/media?path=${encodeURIComponent(movedId)}`);
   expect(media.status).toBe(200);
 
-  // A picture dropped into a character's photos folder gets a row with the
+  // A picture dropped into a character's folder gets a row with the
   // facts of its file — the browser shows it as a picture of the library.
-  const dropped = path.join(DATA, 'characters', 'bob', 'photos', 'by-hand.png');
+  const dropped = path.join(DATA, 'characters', 'bob', 'by-hand.png');
   fs.mkdirSync(path.dirname(dropped), { recursive: true });
   fs.writeFileSync(dropped, makePng(48, 48, 10, 20, 30));
   const list2 = (await api('/pictures')) as {
     pictures: Array<{ id: string; fileSize?: number; fileHash?: string }>;
   };
-  const entry = list2.pictures.find((p) => p.id === 'characters/bob/photos/by-hand.png');
+  const entry = list2.pictures.find((p) => p.id === 'characters/bob/by-hand.png');
   expect(entry).toBeTruthy();
   expect(entry!.fileSize).toBeGreaterThan(0);
   expect(entry!.fileHash).toMatch(/^[0-9a-f]{64}$/);

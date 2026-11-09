@@ -123,9 +123,18 @@ export class ConfigurationService {
       // characters) are simply ignored.
       const parsed = JSON.parse(ConfigurationService.stripJsoncComments(raw)) as Record<string, unknown>;
       const def = this.defaultConfig();
+      const llmModels = this.normalizeLlmModels(parsed.llmModels, def);
+      // The picture-prompt model: kept only while it names a model that still
+      // exists, so a deleted entry does not leave a dangling pick the planner
+      // would silently fall back from anyway.
+      const imagePromptModel =
+        typeof parsed.imagePromptModel === "string" && llmModels[parsed.imagePromptModel]
+          ? parsed.imagePromptModel
+          : undefined;
       return {
         listen: typeof parsed.listen === "string" && parsed.listen ? parsed.listen : def.listen,
-        llmModels: this.normalizeLlmModels(parsed.llmModels, def),
+        llmModels,
+        ...(imagePromptModel ? { imagePromptModel } : {}),
         imageGenerators: this.normalizeGenerators(parsed.imageGenerators),
       };
     } catch (err) {

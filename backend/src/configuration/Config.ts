@@ -8,5 +8,9 @@ import { LlmModel } from "./LlmModel";
 export type Config = {
   listen: string; // "0.0.0.0:3210" — the server's listen address
   llmModels: Record<string, LlmModel>;
+  // The llmModels key of the model that WRITES the picture prompts (the 📷
+  // planner and "From the chat"). A global pick that may differ from the model
+  // running the replies; absent or unknown — the chat's own model is used.
+  imagePromptModel?: string;
   imageGenerators: ImageGenerator[];
 };

@@ -334,7 +334,7 @@ describe('InputPanel — message editing', () => {
       role: 'user',
       kind: 'image',
       text: 'a red boat on the lake',
-      images: ['chat-1/files/a-red-boat-1a2b3c.png'],
+      images: ['chat-1/a-red-boat-1a2b3c.png'],
       timestamp: 1,
     });
 
@@ -358,14 +358,14 @@ describe('InputPanel — message editing', () => {
       images: [],
       timestamp: 1,
     });
-    store.onImagesAdded(['data:image/png;base64,aGVsbG8=', 'chat-1/files/a-red-boat-1a2b3c.png']);
+    store.onImagesAdded(['data:image/png;base64,aGVsbG8=', 'chat-1/a-red-boat-1a2b3c.png']);
     fixture.detectChanges();
     await fixture.whenStable();
 
     const imgs = el.querySelectorAll<HTMLElement>('.pending .pending-thumb img');
     expect(imgs).toHaveLength(2);
     expect(imgs[0].getAttribute('src')).toBe('data:image/png;base64,aGVsbG8=');
-    expect(imgs[1].getAttribute('src')).toBe(mediaUrl('chat-1/files/a-red-boat-1a2b3c.png'));
+    expect(imgs[1].getAttribute('src')).toBe(mediaUrl('chat-1/a-red-boat-1a2b3c.png'));
   });
 
   it('cancelEdit clears the field and the attached list', async () => {
@@ -918,9 +918,9 @@ describe('ChatStore.isUserTurn — when the 📷 button belongs', () => {
         kind: 'image',
         userId: 'u1',
         text: '',
-        images: ['chat-1/files/a-picture-for-the-conversation-1a2b3c.png'],
+        images: ['chat-1/a-picture-for-the-conversation-1a2b3c.png'],
         generation: { source: 'auto', model: 'm1' },
-        imageStatus: { 'chat-1/files/a-picture-for-the-conversation-1a2b3c.png': 'pending' as const },
+        imageStatus: { 'chat-1/a-picture-for-the-conversation-1a2b3c.png': 'pending' as const },
         timestamp: 3,
       },
     ]);
@@ -964,7 +964,7 @@ describe('ChatStore.isUserTurn — when the 📷 button belongs', () => {
 
 describe('MessageRow — the image card', () => {
   const mediaUrl = (id: string) => `http://localhost:3000/api/media?path=${encodeURIComponent(id)}`;
-  const cardImage = 'chat-1/files/a-red-boat-at-dusk-1a2b3c.png';
+  const cardImage = 'chat-1/a-red-boat-at-dusk-1a2b3c.png';
 
   beforeEach(async () => {
     await TestBed.resetTestingModule();
@@ -990,7 +990,7 @@ describe('MessageRow — the image card', () => {
       userId: 'u1',
       text: 'a red boat on a calm lake at dusk',
       images: [cardImage],
-      generation: { prompt: 'a red boat, the sky orange', refs: ['chat-1/files/a-harbour-9f8e7d.png'], source: 'auto' },
+      generation: { prompt: 'a red boat, the sky orange', refs: ['chat-1/a-harbour-9f8e7d.png'], source: 'auto' },
       timestamp: 3,
     });
 
@@ -1048,7 +1048,7 @@ describe('MessageRow — the image card', () => {
       kind: 'image',
       userId: 'u1',
       text: 'my own photo',
-      images: ['chat-1/files/my-photo-1a2b3c.jpg'],
+      images: ['chat-1/my-photo-1a2b3c.jpg'],
       generation: { source: 'upload' },
       timestamp: 3,
     });
@@ -1127,8 +1127,8 @@ describe('MessageRow — the image card', () => {
 
 describe('PictureDialog — the picture editor', () => {
   const mediaUrl = (id: string) => `http://localhost:3000/api/media?path=${encodeURIComponent(id)}`;
-  const cardImage = 'chat-1/files/a-red-fox-1a2b3c.png';
-  const otherImage = 'characters/alice/photos/photo1.jpg';
+  const cardImage = 'chat-1/a-red-fox-1a2b3c.png';
+  const otherImage = 'characters/alice/photo1.jpg';
 
   type Patched = { chatId: string; messageId: string; patch: Record<string, unknown> };
   let patched: Patched[];
@@ -1170,7 +1170,7 @@ describe('PictureDialog — the picture editor', () => {
           prompt: 'a planned prompt',
           description: 'a planned description',
           // the plan names these pictures in order, so they belong to the prompt
-          refs: ['chat-1/files/the-fox-face-9f8e7d.png'],
+          refs: ['chat-1/the-fox-face-9f8e7d.png'],
         });
       },
       tunePicturePrompt: (chatId: string, prompt: string) => {
@@ -1289,7 +1289,7 @@ describe('PictureDialog — the picture editor', () => {
   });
 
   it('"From the chat" also hands over the pictures its prompt names, and Save keeps them with it', async () => {
-    const face = 'chat-1/files/the-fox-face-9f8e7d.png';
+    const face = 'chat-1/the-fox-face-9f8e7d.png';
     const { fixture, el } = await render(card());
     (el.querySelector('[data-testid=picture-prompt-from-chat]') as HTMLButtonElement).click();
     await tick();
@@ -1413,8 +1413,8 @@ describe('PictureDialog — the picture editor', () => {
 // that the edit goes to the picture (the table) and not to a message, and that a
 // rename — a file move — is its own action with the server's refusal shown.
 describe('PictureLibrary — the picture browser', () => {
-  const boat = 'chat-1/files/a-red-boat-1a2b3c.png';
-  const anchor = 'characters/alice/photos/photo1.jpg';
+  const boat = 'chat-1/a-red-boat-1a2b3c.png';
+  const anchor = 'characters/alice/photo1.jpg';
   let chat: Chat;
   let listed: Picture[];
   let edited: { id: string; patch: Record<string, unknown> }[];
@@ -1482,7 +1482,7 @@ describe('PictureLibrary — the picture browser', () => {
     listed = [
       { id: boat, description: 'a red boat on a calm lake', prompt: 'a red boat at dusk', refs: [anchor], exists: true },
       { id: anchor, exists: true },
-      { id: 'chat-9/files/gone-1a2b3c.png', description: 'a picture with no file', exists: false },
+      { id: 'chat-9/gone-1a2b3c.png', description: 'a picture with no file', exists: false },
     ];
     edited = [];
     renamed = [];
@@ -1568,7 +1568,7 @@ describe('PictureLibrary — the picture browser', () => {
     expect(rename.disabled).toBe(true);
 
     const idInput = el.querySelector('[data-testid=picture-id-input]') as HTMLInputElement;
-    idInput.value = 'chat-1/files/a-boat-at-sunset-9z8y7x.png';
+    idInput.value = 'chat-1/a-boat-at-sunset-9z8y7x.png';
     idInput.dispatchEvent(new Event('input'));
     fixture.detectChanges();
     expect((el.querySelector('[data-testid=picture-rename]') as HTMLButtonElement).disabled).toBe(false);
@@ -1577,9 +1577,9 @@ describe('PictureLibrary — the picture browser', () => {
     await tick();
     await tick();
 
-    expect(renamed).toEqual([{ id: boat, newId: 'chat-1/files/a-boat-at-sunset-9z8y7x.png' }]);
+    expect(renamed).toEqual([{ id: boat, newId: 'chat-1/a-boat-at-sunset-9z8y7x.png' }]);
     // the selection follows the picture to its new path
-    expect(TestBed.inject(PictureLibraryStore).selectedId()).toBe('chat-1/files/a-boat-at-sunset-9z8y7x.png');
+    expect(TestBed.inject(PictureLibraryStore).selectedId()).toBe('chat-1/a-boat-at-sunset-9z8y7x.png');
   });
 
   it('a save that answers late does not wipe the new id being typed', async () => {
@@ -1595,7 +1595,7 @@ describe('PictureLibrary — the picture browser', () => {
     (el.querySelector('[data-testid=picture-save]') as HTMLButtonElement).click();
 
     const idInput = el.querySelector('[data-testid=picture-id-input]') as HTMLInputElement;
-    idInput.value = 'chat-1/files/a-boat-at-sunset-9z8y7x.png';
+    idInput.value = 'chat-1/a-boat-at-sunset-9z8y7x.png';
     idInput.dispatchEvent(new Event('input'));
     fixture.detectChanges();
     expect((el.querySelector('[data-testid=picture-rename]') as HTMLButtonElement).disabled).toBe(false);
@@ -1606,16 +1606,16 @@ describe('PictureLibrary — the picture browser', () => {
     fixture.detectChanges();
 
     expect((el.querySelector('[data-testid=picture-id-input]') as HTMLInputElement).value).toBe(
-      'chat-1/files/a-boat-at-sunset-9z8y7x.png',
+      'chat-1/a-boat-at-sunset-9z8y7x.png',
     );
     expect((el.querySelector('[data-testid=picture-rename]') as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('a refused name lands in the error banner and keeps the picture where it was', async () => {
-    renameFails = 'There is already a file at "chat-1/files/x.png"';
+    renameFails = 'There is already a file at "chat-1/x.png"';
     const { el } = await render();
     const idInput = el.querySelector('[data-testid=picture-id-input]') as HTMLInputElement;
-    idInput.value = 'chat-1/files/x.png';
+    idInput.value = 'chat-1/x.png';
     idInput.dispatchEvent(new Event('input'));
     await tick();
     (el.querySelector('[data-testid=picture-rename]') as HTMLButtonElement).click();
@@ -1665,7 +1665,7 @@ describe('PictureLibrary — the picture browser', () => {
     show('chat-9');
     await tick();
     expect(visible()).toHaveLength(1);
-    expect(visible()[0].getAttribute('title')).toBe('chat-9/files/gone-1a2b3c.png');
+    expect(visible()[0].getAttribute('title')).toBe('chat-9/gone-1a2b3c.png');
 
     // words that belong to two different pictures match NOTHING — every word has
     // to be found on one picture, or a filter would answer "and" with an "or"
@@ -1701,7 +1701,7 @@ describe('PictureLibrary — the picture browser', () => {
     const order = () =>
       [...el.querySelectorAll('[data-testid=picture-row]')].map((r) => r.getAttribute('title'));
     // by default the order the server sends: newest file first, an orphan row last
-    expect(order()).toEqual([boat, anchor, 'chat-9/files/gone-1a2b3c.png']);
+    expect(order()).toEqual([boat, anchor, 'chat-9/gone-1a2b3c.png']);
 
     const sort = el.querySelector('[data-testid=picture-sort]') as HTMLSelectElement;
     sort.value = 'id';
@@ -1710,12 +1710,12 @@ describe('PictureLibrary — the picture browser', () => {
     // by ID the list reads alphabetically by the path — finding a picture by
     // reading its way through the folders; the orphan row sorts with the rest,
     // because the user looking for a path cannot know it lost its file
-    expect(order()).toEqual([anchor, boat, 'chat-9/files/gone-1a2b3c.png']);
+    expect(order()).toEqual([anchor, boat, 'chat-9/gone-1a2b3c.png']);
 
     sort.value = 'newest';
     sort.dispatchEvent(new Event('change'));
     fixture.detectChanges();
-    expect(order()).toEqual([boat, anchor, 'chat-9/files/gone-1a2b3c.png']);
+    expect(order()).toEqual([boat, anchor, 'chat-9/gone-1a2b3c.png']);
   });
 
   it('a picture used as a reference shows the count in the row and under the ID field', async () => {
@@ -1739,8 +1739,8 @@ describe('PictureLibrary — the picture browser', () => {
 // Toggling a character out of a chat is a reply-queue decision: it must not
 // touch the history it already wrote.
 describe('MessageRow — an author that is no longer a participant', () => {
-  const alice: Character = { id: 'c1', name: 'Alice', description: '', hasAvatar: false };
-  const bob: Character = { id: 'c2', name: 'Bob', description: '', hasAvatar: true };
+  const alice: Character = { id: 'c1', name: 'Alice', description: '', avatar: null };
+  const bob: Character = { id: 'c2', name: 'Bob', description: '', avatar: 'c2-av' };
 
   beforeEach(async () => {
     await TestBed.resetTestingModule();
@@ -1751,7 +1751,7 @@ describe('MessageRow — an author that is no longer a participant', () => {
           provide: ApiService,
           useValue: fakeApiForTurnButton({
             getCharacters: () => Promise.resolve([alice, bob]),
-            characterAvatarUrl: (id: string) => 'avatar-of-' + id,
+            mediaUrl: (id: string) => 'avatar-of-' + id,
           }),
         },
       ],
@@ -1774,7 +1774,7 @@ describe('MessageRow — an author that is no longer a participant', () => {
   it('keeps its name and avatar in the history', () => {
     const el = renderAuthorLine({ ...assistantLine, characterId: 'c2', text: 'a line of Bob' });
     expect(el.querySelector('[data-testid=msg-sender]')?.textContent).toBe('Bob');
-    expect(el.querySelector('.avatar img')?.getAttribute('src')).toBe('avatar-of-c2');
+    expect(el.querySelector('.avatar img')?.getAttribute('src')).toBe('avatar-of-c2-av');
 
     // the current participant is unaffected by the lookup change
     const aliceEl = renderAuthorLine({ ...assistantLine, text: 'a line of Alice' });
@@ -2165,7 +2165,7 @@ describe('ChatStore — the vision model of the chat', () => {
       role: 'user',
       kind: 'image',
       text: '',
-      images: ['chats/chat-1/files/a.png'],
+      images: ['chats/chat-1/a.png'],
       timestamp: 2,
     };
     const captioned: Chat = {
@@ -2199,7 +2199,7 @@ describe('ChatStore — the vision model of the chat', () => {
       role: 'user',
       kind: 'image',
       text: '',
-      images: ['chats/chat-1/files/a.png'],
+      images: ['chats/chat-1/a.png'],
       timestamp: 2,
     };
     const captionCalls: string[] = [];

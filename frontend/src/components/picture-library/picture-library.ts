@@ -160,8 +160,8 @@ import { PictureLibraryStore } from '../../services/picture-library-store';
           </div>
           <div class="dialog-hint">
             The ID is where the file lives, relative to the data folder. Renaming moves the file —
-            the chat cards and the reference lists that name it follow the new path. The folders
-            pictures live in (a chat's files/, a character's photos/, a persona's folder) stay the
+            the chat cards and the reference lists that name it follow the new path. The folder a
+            picture lives in (a chat's folder, a character's folder, a persona's folder) stays the
             same; only the name changes.
             <div class="lib-usedby" data-testid="picture-used-by">
               Used as a reference by {{ usedBy() }} other picture(s).

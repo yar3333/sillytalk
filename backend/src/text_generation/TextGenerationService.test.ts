@@ -103,6 +103,24 @@ describe("resolveVisionModel", () => {
   });
 });
 
+describe("resolveImagePromptModel", () => {
+  const writer: Model = { ...model, name: "writer", id: "writer-model" };
+
+  it("uses the config's dedicated picture-prompt model when it names one", () => {
+    const config = { ...configOf([model, writer]), imagePromptModel: "writer" };
+    // the chat runs its replies on "test", but the picture prompt is written by
+    // the dedicated model the Settings dialog picked
+    expect(textGenerationService.resolveImagePromptModel(config, chatWithModel("test"))).toEqual(writer);
+  });
+
+  it("falls back to the chat's own model when the pick is unset or unknown", () => {
+    const chat = chatWithModel("test");
+    expect(textGenerationService.resolveImagePromptModel(configOf([model, writer]), chat)).toEqual(model);
+    const dangling = { ...configOf([model]), imagePromptModel: "ghost" };
+    expect(textGenerationService.resolveImagePromptModel(dangling, chat)).toEqual(model);
+  });
+});
+
 describe("systemPromptFor", () => {
   it("includes the character name and description", () => {
     const out = textGenerationService.systemPromptFor({ name: "Alice", description: "A kind fairy" });
@@ -371,7 +389,7 @@ describe("chatCompletion", () => {
     // these tests point the data root at a temp folder and put a file in it.
     dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "sillytalk-tg-data-"));
     process.env.SILLYTALK_DATA_DIR = dataDir;
-    const file = path.join(PathHelper.chatFilesDir("chat-test"), "a-photo.png");
+    const file = path.join(PathHelper.chatDir("chat-test"), "a-photo.png");
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, "not-a-real-png");
     picture = PathHelper.imageIdOf(file);
@@ -554,7 +572,7 @@ describe("chatCompletion", () => {
 
     // still addressed by a valid id, but the file was deleted (or never written:
     // a generation the user cancelled before it produced a file)
-    const gone = PathHelper.imageIdOf(path.join(PathHelper.chatFilesDir("chat-test"), "missing.png"));
+    const gone = PathHelper.imageIdOf(path.join(PathHelper.chatDir("chat-test"), "missing.png"));
     await textGenerationService.chatCompletion(model, "system", [{ ...msg("look"), images: [gone] }]);
     const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
     expect(init.body).not.toContain("image_url");

@@ -10,7 +10,8 @@ Stack: **Node.js / Express 5 / TypeScript** (backend) + **Angular 22 / SCSS** (f
 
 ## Features
 
-- Chat with multiple AI characters (name, description/system prompt, a "starter" photo set folder, avatar).
+- Chat with multiple AI characters (name, description/system prompt, a "starter" picture set in
+  their folder, an avatar).
 - User profiles (personas): a name, a description that is passed to the model as information about
   the interlocutor, and an avatar. The persona and the character are picked separately for each
   chat (when creating the chat or in the menu on the name in the header). The user's and the
@@ -166,6 +167,10 @@ Example:
       "reasoningLevels": ["low", "medium", "high", "xhigh", "max"], // optional (the default set)
     },
   },
+  // the llmModels key of the model that PLANS the picture prompts (the 📷 "picture of my
+  // turn" and the editor's "From the chat"); empty/absent = the chat's own model plans.
+  // Replies and picture captions are unaffected.
+  "imagePromptModel": "",
   "imageGenerators": [
     // A generation method: "kind" says which one — "comfyui" or "sdapi".
     // Every enabled and available method works in parallel; the jobs of one
@@ -217,8 +222,13 @@ resolved by `resolveApiKey()`: `envKey` (an environment variable) takes priority
   persona description), with `~/.config/sillytalk/users/<id>/` folders holding their pictures.
   There is no "current" user in the config anymore: each chat picks its own persona
   (`Chat.userId`) — in the menu on the name in the header or when creating a chat.
-- Avatars: `users/<id>/avatar.jpg` and `characters/<id>/avatar.jpg` — uploaded in **Settings**,
+- Avatars: an avatar is one of the entity's pictures (a file in `users/<id>/` or `characters/<id>/`),
+  designated by its id kept in the entity's row — picked in the character/persona dialog from disk
+  (a copy of a picture you already have is reused, not duplicated) or from an existing picture;
   shown next to the messages.
+- Picture prompt model: the model that writes a picture's prompt (the 📷 "picture of my turn" and
+  the editor's "From the chat") can be set separately from the one that replies — a global field in
+  **Settings** ("Picture prompt model"). Leave it on Default to plan with each chat's own model.
 - Image generation: there can be several methods (`imageGenerators`), each named by its `kind`
   (`comfyui` or `sdapi`) and carrying an `enabled` toggle (default `true` — a disabled method is
   never used; an entry whose `kind` the app does not know is dropped). At app startup every method
@@ -257,17 +267,18 @@ resolved by `resolveApiKey()`: `envKey` (an environment variable) takes priority
 - Characters and users (the cards): `~/.config/sillytalk/catalogs.db` — a SQLite database
   (`node:sqlite`) with two tables, `characters` and `persons`, each row keyed by the ID that is
   also the name of the entity's folder below
-- Characters: `~/.config/sillytalk/characters/<id>/` — folder name = character ID; `photos/` — the
-  "starter" photos; `avatar.jpg` — the avatar (the card itself is the row of `catalogs.db`)
-- Users: `~/.config/sillytalk/users/<id>/` — `avatar.jpg` — the avatar (the card is the row of
-  `catalogs.db`)
+- Characters: `~/.config/sillytalk/characters/<id>/` — folder name = character ID; the "starter"
+  pictures sit directly in it; the avatar is one of them, named by the `avatar` id in the row of
+  `catalogs.db` (the card itself is that row)
+- Users: `~/.config/sillytalk/users/<id>/` — the persona's pictures sit directly in the folder; the
+  avatar is one of them, named by the `avatar` id in the row of `catalogs.db`
 - ComfyUI workflows of your own: `~/.config/sillytalk/comfyui/<model>.json` — replaces the workflow
   the app ships for that model name, or adds a model (empty by default)
 - Test pictures of `sillytalk test-comfyui`: `~/.config/sillytalk/comfyui-test/` — written by that
   command only (`--out` sends them elsewhere); nothing reads them, delete them whenever you like
 - Chats: `~/.config/sillytalk/chats/chats.db` — a SQLite database (`node:sqlite`) with the chat
   fields and the messages; the pictures stay plain files in
-  `~/.config/sillytalk/chats/<chatId>/files/` (the old per-chat `chat.json` files are imported
+  `~/.config/sillytalk/chats/<chatId>/` (the old per-chat `chat.json` files are imported
   into the database once and renamed to `chat.json.migrated`). The `<chatId>` of a new chat is the
   moment it was created (`2026-02-08_14-03-22`) and can be renamed in "Chat settings" — the folder
   and the chat's pictures move with the new name
@@ -314,7 +325,7 @@ backend/
                    # images table —
                    # the ChatsService class + its DI token
     shared/         # cross-domain helpers: the image id <-> path mapping, the
-                    # row shape of the images table, avatars, file streaming
+                    # row shape of the images table, the data-URL parser, file streaming
     characters/    # the character storage in the characters/<id>/ folders —
                    # the CharactersService class + its DI token
     users.ts       # the user storage in the users/<id>/ folders

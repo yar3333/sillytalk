@@ -1,6 +1,7 @@
 // A person (the persona card) is a row of the `persons` table in the catalogs
 // database (name + persona description), keyed by the id that is also the name
-// of its folder under users/ (the home of its avatar).
+// of its folder under users/ (where its pictures — the avatar included — lie
+// directly).
 export type Person = {
   id: string;
   name: string;

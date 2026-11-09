@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { DatabaseSync } from "node:sqlite";
 import { Chat } from "./Chat";
 import { ChatMessage, ImageGenerationData, isImageMessage } from "./ChatMessage";
@@ -462,10 +462,10 @@ export class ChatsService {
       ...(source.stylePrompt ? { stylePrompt: source.stylePrompt } : {}),
       messages: [],
     };
-    const sourceDir = PathHelper.chatFilesDir(source.id, this.chatsRoot());
-    const copyDir = PathHelper.chatFilesDir(copy.id, this.chatsRoot());
+    const sourceDir = PathHelper.chatDir(source.id, this.chatsRoot());
+    const copyDir = PathHelper.chatDir(copy.id, this.chatsRoot());
     if (fs.existsSync(sourceDir)) fs.cpSync(sourceDir, copyDir, { recursive: true });
-    // The two folders as id prefixes ("chats/<id>/files/") — an id is a path
+    // The two folders as id prefixes ("chats/<id>/") — an id is a path
     // relative to the data root, so the prefix is computed, not guessed (the
     // chats folder may live outside the data root).
     const from = `${PathHelper.imageIdOf(sourceDir)}/`;
@@ -787,45 +787,69 @@ export class ChatsService {
 
   // ---- chat files (uploaded/generated images) ----
   //
-  // A chat image lives in chats/<chatId>/files/ and is named by its path
-  // relative to the data folder ("chats/<id>/files/a-sunset-3f2a1c.png"), which
+  // A chat image lives directly in chats/<chatId>/ and is named by its path
+  // relative to the data folder ("chats/<id>/a-sunset-3f2a1c.png"), which
   // is what the message stores, what the API carries and what a row lists
   // as a generation reference.
 
-  // Saves a data URL into the chat files/, returns the image id. `nameHint` is
+  // Saves a data URL into the chat folder, returns the image id. `nameHint` is
   // the wanted human-readable base name ("a sunset over the sea"); a unique
   // suffix is appended either way, so two pictures never share a file. `meta`
   // becomes the row of the picture in the images table.
+  //
+  // A picture the user attached that is byte-for-byte a picture they already
+  // have somewhere in the data folders is NOT copied again: its existing id is
+  // returned, so one file does not become two cards pointing at two copies. The
+  // row of that existing picture is left as it is (its caption is shared).
   saveImage(chatId: string, dataUrl: string, opts: { nameHint?: string; meta?: ImageMeta } = {}): string {
     const match = /^data:([\w/+.-]+);base64,(.+)$/.exec(dataUrl);
     if (!match) throw new Error("Expected a data URL like data:image/...;base64,...");
     const ext = ChatsService.EXT_BY_MIME[match[1]] ?? ".png";
+    const buffer = Buffer.from(match[2], "base64");
+    const hash = createHash("sha256").update(buffer).digest("hex");
+    const existing = this.findExistingByHash(buffer.length, hash);
+    if (existing) return existing;
     const filename = `${ChatsService.slugify(opts.nameHint ?? "img", "img")}-${randomUUID().slice(0, 6)}${ext}`;
-    const dir = PathHelper.chatFilesDir(chatId, this.chatsRoot());
+    const dir = PathHelper.chatDir(chatId, this.chatsRoot());
     fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, filename);
-    fs.writeFileSync(file, Buffer.from(match[2], "base64"));
+    fs.writeFileSync(file, buffer);
     const id = PathHelper.imageIdOf(file);
+    // The file's facts are recorded by the disk sync (which also feeds the dedup
+    // above); a save only writes the caller's own metadata, so a picture nobody
+    // described still has no row.
     if (opts.meta) this.imageMeta.set(id, opts.meta);
     return id;
   }
 
-  // The id a generated image will be saved under in the chat files/ (the file
+  // The id of a picture already in the data folders whose row says it has this
+  // exact size and content hash, or null. The first hit whose file really is
+  // there wins; this is how a disk pick is de-duplicated against what the user
+  // already owns.
+  private findExistingByHash(size: number, hash: string): string | null {
+    for (const id of this.imageMeta.findByHash(size, hash)) {
+      const file = PathHelper.resolvePictureId(id);
+      if (file && fs.existsSync(file)) return id;
+    }
+    return null;
+  }
+
+  // The id a generated image will be saved under in the chat folder (the file
   // itself appears when the background job finishes — the id is reserved in the
   // message first). `nameHint` is the human-readable English name (2–5 words).
   reservedImageId(chatId: string, nameHint: string, extension = ".png"): string {
-    const dir = PathHelper.chatFilesDir(chatId, this.chatsRoot());
+    const dir = PathHelper.chatDir(chatId, this.chatsRoot());
     const filename = `${ChatsService.slugify(nameHint, "image")}-${randomUUID().slice(0, 6)}${extension}`;
     return PathHelper.imageIdOf(path.join(dir, filename));
   }
 
-  // Copies a file from anywhere in the data folders into the chat files/,
+  // Copies a file from anywhere in the data folders into the chat folder,
   // returns its id (null when the source is missing). The row of the source in
   // the images table is copied too, so an imported picture keeps its
   // description.
   importImage(chatId: string, sourcePath: string): string | null {
     if (!fs.existsSync(sourcePath)) return null;
-    const dir = PathHelper.chatFilesDir(chatId, this.chatsRoot());
+    const dir = PathHelper.chatDir(chatId, this.chatsRoot());
     fs.mkdirSync(dir, { recursive: true });
     const base = ChatsService.slugify(path.basename(sourcePath, path.extname(sourcePath)), "photo");
     const target = path.join(dir, `${base}-${randomUUID().slice(0, 6)}${path.extname(sourcePath)}`);
@@ -835,7 +859,7 @@ export class ChatsService {
     return id;
   }
 
-  // Copies a character photo into the chat files/ (the 🎨 reference picker),
+  // Copies a character photo into the chat folder (the 🎨 reference picker),
   // returns the image id.
   importCharacterPhoto(chatId: string, photoPath: string): string | null {
     return this.importImage(chatId, photoPath);

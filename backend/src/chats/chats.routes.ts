@@ -1,6 +1,5 @@
 import express from "express";
 import fs from "fs";
-import { CharactersService } from "../characters/CharactersService";
 import { ImageGenerationService } from "../image_generation/ImageGenerationService";
 import { ReplyService } from "../reply/ReplyService";
 import { HttpHelper } from "../shared/HttpHelper";
@@ -21,7 +20,6 @@ import { ChatsService } from "./ChatsService";
 export function createChatsRouter(
   chats: ChatsService,
   reply: ReplyService,
-  characters: CharactersService,
   imageGeneration: ImageGenerationService,
 ): express.Router {
   const router = express.Router();
@@ -178,29 +176,6 @@ export function createChatsRouter(
       // picture still drawing) — the banner can show it as it is.
       res.status(400).json({ error: (err as Error).message });
     }
-  });
-
-  // Imports a character photo into the chat files/ (a reference for the 🎨
-  // mode); the answer is the new image id.
-  router.post("/:id/import-photo", (req, res) => {
-    const chat = chats.get(req.params.id);
-    if (!chat) {
-      res.status(404).json({ error: "Chat not found" });
-      return;
-    }
-    const { characterId, photo } = req.body ?? {};
-    const character = characters.get(characterId);
-    if (!character) {
-      res.status(404).json({ error: "Character not found" });
-      return;
-    }
-    const photoPath = characters.photoFile(character.id, String(photo));
-    const id = photoPath ? chats.importCharacterPhoto(chat.id, photoPath) : null;
-    if (!id) {
-      res.status(404).json({ error: "Photo not found" });
-      return;
-    }
-    res.json({ id });
   });
 
   // ---- messages ----

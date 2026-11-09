@@ -15,7 +15,13 @@ import { PathHelper } from "../shared/PathHelper";
 // renaming is a file move that the chat cards and the stored reference lists
 // have to follow; that is what most of these tests are about.
 
-const PNG = "data:image/png;base64,aGVsbG8=";
+// A distinct PNG payload per call. saveImage de-duplicates by content, so two
+// pictures that are meant to be different in a test must be different bytes —
+// one constant reused everywhere would collapse to one file.
+let pngSeq = 0;
+function PNG(): string {
+  return "data:image/png;base64," + Buffer.from("picture-" + ++pngSeq).toString("base64");
+}
 
 let root: string;
 let meta: ImageMetaService;
@@ -79,7 +85,7 @@ afterEach(() => {
 describe("browsing the pictures", () => {
   it("shows every picture of the data folders with the row that describes it", () => {
     const chat = chats.create(["a"], "m1", "me");
-    const inChat = chats.saveImage(chat.id, PNG, { nameHint: "a red boat" });
+    const inChat = chats.saveImage(chat.id, PNG(), { nameHint: "a red boat" });
     meta.set(inChat, { description: "a red boat on a calm lake", prompt: "a red boat at dusk" });
     const portrait = path.join(PathHelper.personsDir(), "carol/avatar.jpg");
     fs.mkdirSync(path.dirname(portrait), { recursive: true });
@@ -102,7 +108,7 @@ describe("browsing the pictures", () => {
 
   it("lists a picture with no row at all, and a row whose file is gone after them", () => {
     const chat = chats.create(["a"], "m1", "me");
-    const plain = chats.saveImage(chat.id, PNG, { nameHint: "an undescribed picture" });
+    const plain = chats.saveImage(chat.id, PNG(), { nameHint: "an undescribed picture" });
     meta.set("chats/gonechat/files/deleted-1a2b3c.png", { description: "a picture that is not there" });
 
     const seen = library.browse();
@@ -117,23 +123,23 @@ describe("browsing the pictures", () => {
 
   it("never lists a file that is not a picture, and never reaches the data root", () => {
     const chat = chats.create(["a"], "m1", "me");
-    const picture = chats.saveImage(chat.id, PNG, { nameHint: "a boat" });
+    const picture = chats.saveImage(chat.id, PNG(), { nameHint: "a boat" });
     // the JSON that sits beside the pictures, and the secret that sits beside
     // the folders: the browser walks pictures only, by name and by folder
-    fs.writeFileSync(path.join(PathHelper.chatsDir(), chat.id, "files", "a-note.txt"), "not a picture");
+    fs.writeFileSync(path.join(PathHelper.chatsDir(), chat.id, "a-note.txt"), "not a picture");
     fs.writeFileSync(path.join(root, "config.json"), JSON.stringify({ apiKey: "secret" }));
 
     const seen = library.browse();
     expect(seen.map((p) => p.id)).toEqual([picture]);
     expect(library.get("config.json")).toBeNull();
-    expect(library.get(`${chat.id}/files/a-note.txt`)).toBeNull();
+    expect(library.get(`${chat.id}/a-note.txt`)).toBeNull();
     // the chats database itself is inside a picture folder and must stay unseen
     expect(seen.some((p) => p.id.endsWith("chats.db"))).toBe(false);
   });
 
   it("reads one picture, and nothing for a picture that is neither file nor row", () => {
     const chat = chats.create(["a"], "m1", "me");
-    const id = chats.saveImage(chat.id, PNG, { nameHint: "a boat" });
+    const id = chats.saveImage(chat.id, PNG(), { nameHint: "a boat" });
     meta.set(id, { description: "a boat" });
     expect(library.get(id)).toMatchObject({ id, description: "a boat", exists: true });
     expect(library.get("chats/c1/files/nowhere-1a2b3c.png")).toBeNull();
@@ -141,10 +147,10 @@ describe("browsing the pictures", () => {
 
   it("counts the pictures that name a picture in their reference set (browse and get, computed on read)", () => {
     const chat = chats.create(["a"], "m1", "me");
-    const anchor = chats.saveImage(chat.id, PNG, { nameHint: "the anchor face" });
-    const first = chats.saveImage(chat.id, PNG, { nameHint: "first scene" });
-    const second = chats.saveImage(chat.id, PNG, { nameHint: "second scene" });
-    const lonely = chats.saveImage(chat.id, PNG, { nameHint: "nothing refers to me" });
+    const anchor = chats.saveImage(chat.id, PNG(), { nameHint: "the anchor face" });
+    const first = chats.saveImage(chat.id, PNG(), { nameHint: "first scene" });
+    const second = chats.saveImage(chat.id, PNG(), { nameHint: "second scene" });
+    const lonely = chats.saveImage(chat.id, PNG(), { nameHint: "nothing refers to me" });
     meta.set(first, { refs: [anchor] });
     meta.set(second, { refs: [anchor, lonely] });
 
@@ -212,9 +218,9 @@ describe("the disk sync (the table follows the files)", () => {
 
   it("follows a picture renamed outside the app: the row, the cards and the refs", () => {
     const chat = chats.create(["a"], "m1", "me");
-    const id = chats.saveImage(chat.id, PNG, { nameHint: "a red boat" });
+    const id = chats.saveImage(chat.id, PNG(), { nameHint: "a red boat" });
     chats.addImageMessage(chats.get(chat.id)!, id, { description: "a red boat at dusk" });
-    const drawn = chats.saveImage(chat.id, PNG, { nameHint: "the two of them" });
+    const drawn = chats.saveImage(chat.id, PNG(), { nameHint: "the two of them" });
     meta.set(drawn, { refs: [id] });
     library.sync(); // learns the facts of the boat the way startup would
 
@@ -242,7 +248,7 @@ describe("the disk sync (the table follows the files)", () => {
 
   it("follows a file moved to another folder and leaves a truly deleted picture as an orphan", () => {
     const chat = chats.create(["a"], "m1", "me");
-    const id = chats.saveImage(chat.id, PNG, { nameHint: "a boat" });
+    const id = chats.saveImage(chat.id, PNG(), { nameHint: "a boat" });
     meta.set(id, { description: "a boat" });
     library.sync();
     const facts = meta.get(id)!;
@@ -304,7 +310,7 @@ describe("the disk sync (the table follows the files)", () => {
 describe("editing a picture from the browser", () => {
   it("writes the description and the prompt that a chat card then shows", () => {
     const chat = chats.create(["a"], "m1", "me");
-    const id = chats.saveImage(chat.id, PNG, { nameHint: "a red boat" });
+    const id = chats.saveImage(chat.id, PNG(), { nameHint: "a red boat" });
     chats.addImageMessage(chats.get(chat.id)!, id, { description: "as drawn", generation: { prompt: "a boat", source: "manual" } });
 
     const edited = library.edit(id, { description: "corrected by hand", prompt: "a red boat at dusk with gulls" });
@@ -332,8 +338,8 @@ describe("editing a picture from the browser", () => {
 
   it("sets the reference list a stored prompt names, and clears it with an empty one", () => {
     const chat = chats.create(["a"], "m1", "me");
-    const anchor = chats.saveImage(chat.id, PNG, { nameHint: "alice" });
-    const card = chats.saveImage(chat.id, PNG, { nameHint: "the two of them" });
+    const anchor = chats.saveImage(chat.id, PNG(), { nameHint: "alice" });
+    const card = chats.saveImage(chat.id, PNG(), { nameHint: "the two of them" });
     library.edit(card, { prompt: "the first reference image shows the woman in the green coat", refs: [anchor] });
     expect(meta.get(card)?.refs).toEqual([anchor]);
     library.edit(card, { refs: [] });
@@ -348,7 +354,7 @@ describe("editing a picture from the browser", () => {
 describe("renaming a picture", () => {
   it("moves the file, the row and the card that shows it", () => {
     const chat = chats.create(["a"], "m1", "me");
-    const id = chats.saveImage(chat.id, PNG, { nameHint: "img-1a2b3c" });
+    const id = chats.saveImage(chat.id, PNG(), { nameHint: "img-1a2b3c" });
     chats.addImageMessage(chats.get(chat.id)!, id, { description: "a red boat at dusk" });
 
     const newId = renamedIn(id, "a-red-boat-9z8y7x.png");
@@ -367,8 +373,8 @@ describe("renaming a picture", () => {
 
   it("repoints the reference lists of the prompts that name it", () => {
     const chat = chats.create(["a"], "m1", "me");
-    const anchor = chats.saveImage(chat.id, PNG, { nameHint: "alice" });
-    const drawn = chats.saveImage(chat.id, PNG, { nameHint: "the-two-of-them" });
+    const anchor = chats.saveImage(chat.id, PNG(), { nameHint: "alice" });
+    const drawn = chats.saveImage(chat.id, PNG(), { nameHint: "the-two-of-them" });
     meta.set(drawn, { prompt: "the first reference image shows the woman", refs: [anchor] });
 
     const newAnchor = renamedIn(anchor, "alice-in-a-green-coat-1a2b3c.png");
@@ -383,8 +389,8 @@ describe("renaming a picture", () => {
   it("leaves the other chat's copy of a picture alone", () => {
     const first = chats.create(["a"], "m1", "me");
     const second = chats.create(["b"], "m1", "me");
-    const inFirst = chats.saveImage(first.id, PNG, { nameHint: "a boat" });
-    const inSecond = chats.saveImage(second.id, PNG, { nameHint: "a boat" });
+    const inFirst = chats.saveImage(first.id, PNG(), { nameHint: "a boat" });
+    const inSecond = chats.saveImage(second.id, PNG(), { nameHint: "a boat" });
     meta.set(inFirst, { description: "the first chat's" });
     meta.set(inSecond, { description: "the second chat's" });
 
@@ -396,8 +402,8 @@ describe("renaming a picture", () => {
 
   it("refuses a name that another picture already has, and changes nothing", () => {
     const chat = chats.create(["a"], "m1", "me");
-    const id = chats.saveImage(chat.id, PNG, { nameHint: "a boat" });
-    const taken = chats.saveImage(chat.id, PNG, { nameHint: "already-there" });
+    const id = chats.saveImage(chat.id, PNG(), { nameHint: "a boat" });
+    const taken = chats.saveImage(chat.id, PNG(), { nameHint: "already-there" });
     chats.addImageMessage(chats.get(chat.id)!, id, { description: "a boat" });
 
     expect(() => library.rename(id, taken)).toThrow(/already a file/);
@@ -408,7 +414,7 @@ describe("renaming a picture", () => {
 
   it("refuses a name outside the picture folders, a data-root file and a non-picture", () => {
     const chat = chats.create(["a"], "m1", "me");
-    const id = chats.saveImage(chat.id, PNG, { nameHint: "a boat" });
+    const id = chats.saveImage(chat.id, PNG(), { nameHint: "a boat" });
     for (const bad of [
       "../elsewhere.png",
       "config.json",
@@ -427,7 +433,7 @@ describe("renaming a picture", () => {
 
   it("renaming to the same name is not an error and keeps the row", () => {
     const chat = chats.create(["a"], "m1", "me");
-    const id = chats.saveImage(chat.id, PNG, { nameHint: "a boat" });
+    const id = chats.saveImage(chat.id, PNG(), { nameHint: "a boat" });
     meta.set(id, { description: "a boat" });
     expect(library.rename(id, id)).toMatchObject({ id, description: "a boat" });
   });

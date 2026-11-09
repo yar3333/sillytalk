@@ -26,17 +26,23 @@ export interface Character {
   id: string;
   name: string;
   description: string;
-  photos?: string[]; // the character's "starter" photo set (🎨 reference picker)
-  hasAvatar?: boolean; // is there a characters/<id>/avatar.*
+  // The character's pictures are ordinary files of its folder, addressed by
+  // their image id (a path relative to the data root). The "starter" set is
+  // offered to the 🎨 reference picker; the avatar is one of them.
+  photos?: string[];
+  // The avatar is an image id (a picture of the folder) the row keeps, or null.
+  // Its preview is loaded with mediaUrl(avatar).
+  avatar?: string | null;
 }
 
 // A user (persona card) is a row of the persons table in the backend's catalogs
-// database (served by the backend via /api/persons).
+// database (served by the backend via /api/persons). Its avatar is an image id
+// too (a picture of its folder), previewed through mediaUrl.
 export interface User {
   id: string;
   name: string;
   description: string;
-  hasAvatar?: boolean; // is there a users/<id>/avatar.*
+  avatar?: string | null;
 }
 
 export interface SdApiSettings {
@@ -87,6 +93,9 @@ export function isSdApiGenerator(g: ImageGenerator): g is SdApiSettings {
 export interface AppConfig {
   listen: string; // "0.0.0.0:3210"
   llmModels: Record<string, LlmModel>;
+  // The llmModels key of the model that WRITES the picture prompts (the 📷
+  // planner and "From the chat"); empty/absent — the chat's own model is used.
+  imagePromptModel?: string;
   imageGenerators: ImageGenerator[];
 }
 
@@ -100,7 +109,7 @@ export interface ChatMessage {
   // A text message: the line. An image card: what is on the picture.
   text: string;
   // Image identifiers — paths relative to the data folder
-  // ("chats/<chatId>/files/a-sunset-3f2a1c.png"). A card carries exactly one.
+  // ("chats/<chatId>/a-sunset-3f2a1c.png"). A card carries exactly one.
   images: string[];
   timestamp: number;
   error?: boolean;
@@ -252,24 +261,24 @@ export class ApiService {
     return this.req<User[]>('/persons', { method: 'PUT', body: JSON.stringify({ users }) });
   }
 
-  userAvatarUrl(userId: string): string {
-    return API + '/persons/' + userId + '/avatar';
-  }
-
-  characterAvatarUrl(characterId: string): string {
-    return API + '/characters/' + characterId + '/avatar';
-  }
-
-  // Uploads an avatar (a data URL) to the user/character folder.
-  uploadAvatar(kind: 'user' | 'character', id: string, data: string): Promise<{ ok: boolean }> {
+  // Picks the avatar of a user/character from a picture the user chose: either a
+  // disk file (`data` — a data URL) or an existing picture id (`image`). The
+  // server de-duplicates (a byte-identical picture already in the data folders
+  // is reused) and returns the avatar's image id, which the row now keeps.
+  setAvatar(
+    kind: 'user' | 'character',
+    id: string,
+    source: { data?: string; image?: string },
+  ): Promise<{ id: string }> {
     const base = kind === 'user' ? '/persons' : '/characters';
-    return this.req(base + '/' + id + '/avatar', {
+    return this.req<{ id: string }>(base + '/' + id + '/avatar', {
       method: 'POST',
-      body: JSON.stringify({ data }),
+      body: JSON.stringify(source),
     });
   }
 
-  deleteAvatar(kind: 'user' | 'character', id: string): Promise<{ deleted: boolean }> {
+  // Drops the avatar designation (the picture file itself stays).
+  clearAvatar(kind: 'user' | 'character', id: string): Promise<{ deleted: boolean }> {
     const base = kind === 'user' ? '/persons' : '/characters';
     return this.req(base + '/' + id + '/avatar', { method: 'DELETE' });
   }
@@ -344,15 +353,6 @@ export class ApiService {
     return this.req<{ id: string; chat: Chat }>(`/chats/${id}/rename`, {
       method: 'POST',
       body: JSON.stringify({ newId }),
-    });
-  }
-
-  // Imports a character photo into the chat files/ as a 🎨 reference; the
-  // answer is the new image id.
-  importPhoto(chatId: string, characterId: string, photo: string): Promise<{ id: string }> {
-    return this.req<{ id: string }>('/chats/' + chatId + '/import-photo', {
-      method: 'POST',
-      body: JSON.stringify({ characterId, photo }),
     });
   }
 
@@ -528,7 +528,8 @@ export class ApiService {
   }
 
   // Replaces a ready message image with a file the user picked (a data URL):
-  // the server saves it into the chat files/ and swaps it for the old one.
+  // the server saves it into the chat's folder (reusing an identical picture it
+  // already has rather than copying) and swaps it for the old one.
   replaceImage(chatId: string, messageId: string, image: string, data: string): Promise<{ chat: Chat }> {
     return this.req(`/chats/${chatId}/messages/${messageId}/replace-image`, {
       method: 'POST',
@@ -573,9 +574,5 @@ export class ApiService {
   // The URL of an image by its id (a path relative to the data folder).
   mediaUrl(id: string): string {
     return API + '/media?path=' + encodeURIComponent(id);
-  }
-
-  photoUrl(characterId: string, name: string): string {
-    return API + '/characters/' + characterId + '/photos/' + encodeURIComponent(name);
   }
 }

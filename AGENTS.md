@@ -160,18 +160,24 @@ backend/               Express API; also serves the built frontend
                        character catalog in the `characters` table of the
                        catalogs.db SQLite database (node:sqlite; the card — id
                        (also the folder name of the entity's pictures), name,
-                       description; the characters/<id>/ folders hold only the
+                       description, avatar (an image id); the characters/<id>/ folders hold only the
                        pictures — a leftover character.json is not read): CRUD,
                        clone, the full-list sync, the migration from the old
                        config format, the ID validation, the ID rename (the row
-                       + the folder move together), the avatar
-                       (findAvatar/saveAvatar/
-                       deleteAvatar), the list with photos + the avatar flag
-                       (listWithPhotos), the photo path (photoFile); DI token
-                       DI_CHARACTERS_SERVICE, the root folder and the database
-                       file injected as () => string, close() is final);
+                       + the folder move together), the avatar (an image id kept
+                       in the row's `avatar` column — getAvatarId/setAvatarImage/
+                       clearAvatar/repointAvatar, the picture picked from disk or
+                       from an existing id, a byte-identical picture already in
+                       the data folders reused rather than copied through the
+                       image-metadata service's findByHash), the list with photos
+                       + the avatar id (listWithPhotos), the picture ids of the
+                       folder (pictureIdsOf); DI token
+                       DI_CHARACTERS_SERVICE, the root folder, the database
+                       file and the image-metadata service injected, close() is
+                       final);
                        characters.routes.ts — the /characters routes (the
-                       catalog sync, the clone, the photos, the avatar);
+                       catalog sync, the clone, the avatar pick/clear; the
+                       pictures are served by the one /media route by id);
                        CharactersService.test.ts — jest unit tests
     chats/             the chat domain: the Chat.ts / ChatMessage.ts /
                        ChatSummary.ts types and the top-level service class
@@ -179,7 +185,7 @@ backend/               Express API; also serves the built frontend
                        chats.db SQLite database (node:sqlite; the chats table
                        holds the chat fields, messages one row per message —
                        both as JSON blobs; the images stay files in
-                       chats/<id>/files/, WHAT IS KNOWN about them lives in the
+                       chats/<id>/, WHAT IS KNOWN about them lives in the
                        one global images table — an image-card row stores no
                        caption/prompt/depicts of its own, get() fills a card
                        from the table on every read, and with no row the card
@@ -204,8 +210,11 @@ backend/               Express API; also serves the built frontend
                        fallback (and the vision pick — Chat.visionModelId is
                        dropped when the model it names leaves the config),
                        the chat files (saveImage with an English
-                       name hint, reservedImageId, importImage,
-                       importCharacterPhoto, normalizeImages — every picture is
+                       name hint that de-duplicates by content (a byte-identical
+                       picture already in the data folders is reused, not copied —
+                       the image-metadata findByHash size+sha256 check),
+                       reservedImageId, importImage, normalizeImages — every
+                       picture is
                        addressed by its data-root-relative ID, never by an
                        absolute path), the message primitives (addUserMessage,
                        addImageMessage, editMessage, setMessageText,
@@ -235,16 +244,20 @@ backend/               Express API; also serves the built frontend
                        the top-level service class (PersonsService.ts — the
                        persona catalog in the `persons` table of the same
                        catalogs.db (the card — id (also the folder name of the
-                       avatar folder under users/), name, description; a
+                       picture folder under users/), name, description, avatar (an
+                       image id); a
                        leftover user.json is not read): CRUD, clone, the
                        full-list sync, the ID validation, the ID rename (the row
-                       + the folder move together), the avatar
-                       (findAvatar/saveAvatar/
-                       deleteAvatar), the list with the avatar flag
-                       (listWithAvatars); DI token DI_PERSONS_SERVICE, the root
-                       folder and the database file injected as () => string,
-                       close() is final); persons.routes.ts —
-                       the /persons routes (the persona catalog + the avatar);
+                       + the folder move together), the avatar (an image id kept
+                       in the row's `avatar` column — getAvatarId/setAvatarImage/
+                       clearAvatar/repointAvatar, deduped through the image-
+                       metadata service), the list with the avatar id
+                       (listWithAvatars), the picture ids of the folder
+                       (pictureIdsOf); DI token DI_PERSONS_SERVICE, the root
+                       folder, the database file and the image-metadata service
+                       injected, close() is final); persons.routes.ts —
+                       the /persons routes (the persona catalog + the avatar
+                       pick/clear);
                        PersonsService.test.ts — jest unit tests
     configuration/     the configuration domain: the types (Config.ts,
                        LlmModel.ts, Model.ts, and the generator settings —
@@ -259,7 +272,10 @@ backend/               Express API; also serves the built frontend
                        parsing, the flat-model helpers, the legacy-field
                        cleanup (prepareLegacyConfig), normalizeGenerators (an
                        entry without a known `kind` is dropped — a generator
-                       the app cannot run is not a generator); DI token
+                       the app cannot run is not a generator), and the
+                       imagePromptModel cleanup (the global picture-prompt
+                       model key; dropped when it names a model no longer in
+                       llmModels); DI token
                        DI_CONFIGURATION_SERVICE);
                        config.routes.ts — the /config routes;
                        ConfigurationService.test.ts — jest unit tests
@@ -288,9 +304,12 @@ backend/               Express API; also serves the built frontend
                        DI_REPLY_SERVICE, the six domain services injected) and
                        ReplyService.test.ts — jest unit tests
     shared/            small cross-domain helpers as stateless classes with
-                       static methods: AvatarFile.ts (the avatar.<ext>
-                       find/save/delete, shared by the character and the
-                       person services), HttpHelper.ts (sendImage — the file
+                       static methods: DataUrl.ts (image(dataUrl) — the one
+                       parser of a `data:image/…;base64,` URL into its buffer,
+                       a normalised file extension and its sha256 hash; the
+                       avatar and chat-attachment paths both go through it, so
+                       the same bytes hash the same way for the de-dup),
+                       HttpHelper.ts (sendImage — the file
                        streaming and the picture-format guard isImage, both a
                        routes-layer concern; every file response of the app
                        goes through them, and each has its test),
@@ -397,7 +416,7 @@ frontend/              Angular app
                        min-P / repetition penalty + the system-prompt addition
     image-lightbox/    a picture enlarged over a dark backdrop (ImageStore
                        .lightbox carries the media URL)
-    settings/          settings modal (listen address / image generation)
+    settings/          settings modal (listen address / the picture prompt model / image generation)
   angular.json         build config (incl. style budgets)
   proxy.conf.json      dev proxy: /api -> http://localhost:3210
 
@@ -421,21 +440,27 @@ e2e/                   Playwright suite
                        open and renamed to chat.json.migrated; a message row
                        of a picture card stores only the image id and its
                        status — the caption/prompt live in images.db)
-  chats/<chatId>/files/ — the pictures of a chat, every one of them addressable by
-                       its data-root-relative id (<chatId>/files/<slug>-<6hex>.png);
-                       plain pictures, nothing is written next to them
-  characters/<id>/  — the pictures of a character: photos/ — the "starter" set,
-                       avatar.<ext> — the character avatar (the card itself is a row
-                       of catalogs.db, the folder holds no files of its own besides
-                       pictures; a leftover character.json is not read)
-  users/<id>/       — the pictures of a persona: avatar.<ext> — the persona avatar
+  chats/<chatId>/   — the pictures of a chat, sitting directly in the chat's folder,
+                       every one of them addressable by its data-root-relative id
+                       (<chatId>/<slug>-<6hex>.png); plain pictures, nothing is
+                       written next to them (the old files/ subfolder is gone — no
+                       legacy path is read)
+  characters/<id>/  — the pictures of a character, directly in its folder (the
+                       "starter" set the planner offers as look references); the
+                       avatar is one of these pictures, named by the row's `avatar`
+                       column rather than a fixed avatar.<ext> file (the card itself
+                       is a row of catalogs.db, the folder holds no files of its own
+                       besides pictures; a leftover character.json is not read)
+  users/<id>/       — the pictures of a persona, directly in its folder; the avatar
+                       is one of these pictures, named by the row's `avatar` column
                        (the card is a row of catalogs.db; a leftover user.json is
                        not read)
   catalogs.db       (node:sqlite: the characters + persons tables — the cards
                        themselves: id (also the folder name of the entity's
-                       pictures), name, description; opened lazily, close() is
-                       final; the old character.json / user.json files are not
-                       read and not touched)
+                       pictures), name, description, avatar (the data-root-relative
+                       id of the picture used as the avatar, or NULL); opened lazily,
+                       close() is final; the old character.json / user.json files
+                       are not read and not touched)
   comfyui/           — the user's own ComfyUI workflows: <model>.json replaces the
                        workflow the app ships for that name, or adds a model (the
                        file name is the model name); empty by default
@@ -523,6 +548,10 @@ or through the in-app **Settings** dialog. Paths may use `~` (resolved by `expan
       "reasoningLevels": ["low", "medium", "high", "xhigh", "max"]  // optional
     }
   },
+  // the llmModels key of the model that PLANS the picture prompts (the 📷 "picture of
+  // my turn" and the editor's "From the chat"); unset or a model that is gone = the
+  // chat's own model plans. It does not affect replies or picture captions.
+  "imagePromptModel": "",
   // generation backends: kind = "sdapi" | "comfyui" decides the type; every
   // enabled + available one is used in parallel, the jobs of one SERVER are
   // queued (enabled defaults to true)
@@ -657,6 +686,17 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   failed all leave the card as it is (no error banner — an unlabelled picture is a normal state).
   That caption is what a chat model without vision reads about the picture in the history and what
   the 📷 planner reads in its catalogue, so it is not decoration.
+- **A separate planner model (`Config.imagePromptModel`).** The model that writes a picture's
+  prompt can be different from the one that replies. It is a GLOBAL Settings field (the Settings
+  dialog's "Picture prompt model" pick, `settings-prompt-model`), an llmModels key, used ONLY by the
+  picture PLANNER — the 📷 "picture of my turn" and the editor's "From the chat" — NOT by
+  replies, tunePrompt ("Make it English"), or the vision captions. `TextGenerationService.resolveImagePromptModel`
+  (mirrored by `ReplyService.resolveImagePromptModel`) is the rule: the configured key when it names
+  an existing model, else the chat's own model. `runUserTurnImage` and `planPicturePrompt` resolve
+  through it; `ConfigurationService` drops the field on load when it names a model no longer in
+  `llmModels`, and the Settings pick writes an empty value as "Default" (the field removed → the
+  chat's own model plans). Replies and picture captions are unaffected — they keep the chat's model
+  and the chat's vision model.
 - **Pictures belong to the user; the model is text-only.** There is no `[IMG:…]` /
   `[PHOTO:…]` protocol and no `accessAllImages` flag anymore: `systemPromptFor` states plainly that
   the character cannot send or create images. A picture enters a chat in exactly three ways, and all
@@ -699,7 +739,8 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
     green coat") together with the personality, capped at 400 characters by
     `ReplyService.visualLine` so one long card cannot eat the planning prompt — and, as **anchors**,
     up to two of their actual pictures: newest first a card of THIS chat that depicts them, else
-    `characters/<id>/photos/*` and the avatar. The planner is told `char:alice — Alice: <look>
+    the pictures of `characters/<id>/` and the avatar (the avatar is itself one of
+    those pictures, so it leads the list). The planner is told `char:alice — Alice: <look>
     (shown on picture 2)` and answers with the cast ids the picture shows plus the 2–4 word noun
     phrase it used for each (`subjects`). The anchors are what really carries a face; the look line
     is all the generator gets of a person who has no picture anywhere.
@@ -721,8 +762,8 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   draw and a regeneration alike (`ReplyService.withChatStyle`, which skips a prompt that already
   carries the style so repeated redraws do not stack it).
 - **Every picture is addressed by an ID that is its path relative to the data folder**
-  (`PathHelper.imageIdOf` / `resolveImageId`, e.g. `chats/<chatId>/files/a-sunset-1a2b3c.png`,
-  `characters/alice/photos/photo1.jpg`). The same id is the PRIMARY KEY of its row in the images
+  (`PathHelper.imageIdOf` / `resolveImageId`, e.g. `chats/<chatId>/a-sunset-1a2b3c.png`,
+  `characters/alice/photo1.jpg`). The same id is the PRIMARY KEY of its row in the images
   table — the table and the file are found by exactly the same string. An id is resolved only when
   it stays inside one of the data folders (`configDir`, `chatsDir`, `charactersDir`, `personsDir`),
   so an id written by hand in a chat or in a stored row can never reach an arbitrary file; an
@@ -744,8 +785,9 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   {"error":"Unknown image path"}`. The second rule is by name: `HttpHelper.sendImage` streams only a
   name whose extension is a picture format (`HttpHelper.isImage` — png / jpg / jpeg / webp / gif / bmp
   / avif), which also covers the files that sit *inside* a picture folder (`chats/chats.db`, a
-  `chat.json.migrated`, any leftover JSON) with `404`. Both rules guard the character photo
-  and the avatar routes too — every file response of the app goes through `sendImage`. The storage
+  `chat.json.migrated`, any leftover JSON) with `404`. This is the one file route the app serves
+  pictures through — the chat cards, the character/persona pictures and the avatars all load their
+  preview by id from here, so every file response of the app goes through `sendImage`. The storage
   side stays looser on purpose: a reference may name any image of the data folders.
 - **What is known about a picture lives in ONE global table, `images.db`** — keyed by the image id,
   holding `{ name, description, depicts, prompt, negativePrompt, refs, source, generator, model,
@@ -858,14 +900,23 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
 - **Characters are NOT in the config.** Each character is a row of the `characters` table of
   `~/.config/sillytalk/catalogs.db` (`node:sqlite`, `catalogsDatabaseFile()`): the id is the primary
   key and at the same time the name of the character's picture folder
-  `~/.config/sillytalk/characters/<id>/`, the row carries `{ name, description }` — the **one**
+  `~/.config/sillytalk/characters/<id>/`, the row carries `{ name, description, avatar }` — the
+  **one**
   description is the whole card, the appearance included
   (English, since the picture planner reads the visual line out of it for every prompt that shows
   her; a card has no appearance field of its own).
-  `photos/` is the fixed "starter" photo set (computed by
-  `characterPhotosDir(id)`), and `avatar.jpg` is the character avatar shown next to its messages.
-  The photos and the avatar are ordinary pictures of a character folder, so they can be addressed by
-  an image id (`characters/alice/photos/photo1.jpg`) like any other — there is no separate reference
+  The character's pictures are ordinary image files sitting **directly in** that folder (no
+  `photos/` subfolder) — they are the "starter" set the planner offers as look references
+  (`pictureIdsOf(id)` lists them). The **avatar** is one of those pictures: the row's `avatar`
+  column holds the data-root-relative id of the file used as the avatar (NULL when there is none),
+  and the preview is served by the one `/api/media?path=<id>` route — there is no `avatar.jpg`
+  file and no avatar GET route any more. Picking an avatar (`setAvatarImage`) takes a disk file
+  (a data URL) or an existing picture id; a disk file whose bytes match a picture already in the
+  data folders (the image-metadata `findByHash` size+sha256 check) is **reused rather than
+  copied**, so the row points at the file the user already has. `clearAvatar` NULLs the column
+  and keeps the file.
+  The pictures and the avatar are addressed by
+  an image id (`characters/alice/photo1.jpg`) like any other — there is no separate reference
   machinery for them and no "access to all images" flag (the characters do not attach pictures at
   all). They ARE, however, what the picture planner offers as a person's **look references** (see the
   cast bullet above).
@@ -878,10 +929,12 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   rows at startup (`index.ts`) and stripped by `PUT /api/config` — do not reintroduce a
   `characters` array in the config.
 - **Users are NOT in the config either.** Each person (persona card) is a row of the `persons` table
-  of the same `catalogs.db` (the row carries `{ name, description }` — the description
+  of the same `catalogs.db` (the row carries `{ name, description, avatar }` — the description
   is the whole card, the appearance included, exactly as for a character); the id is the primary key
-  and the name of the folder `~/.config/sillytalk/users/<id>/` that holds `avatar.jpg`
-  (persona avatar, shown next to user messages — the persona appears in the picture cast of the chat
+  and the name of the folder `~/.config/sillytalk/users/<id>/` whose pictures sit directly in it;
+  the **avatar** is one of those pictures, named by the row's `avatar` column (the data-root-relative
+  id, or NULL) and served by the `/api/media` route — there is no `avatar.jpg` file (persona avatar,
+  shown next to user messages — the persona appears in the picture cast of the chat
   too, so a persona whose card says nothing visual and whose avatar is missing is the one case the
   model has to invent a face from). The old `user.json` files are **not supported and not read**
   (converted into rows once by a throwaway script, deleted by the user by hand). CRUD lives in
@@ -899,8 +952,9 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   the primary key of its catalogs row and the name of its picture folder (`characters/<id>/`,
   `users/<id>/`) at once, so it is not a label the app slaps on
   something — it is written into the chats (`Chat.characterIds`, `Chat.userId`, the `characterId` /
-  `userId` of every stored line), into the picture ids of that folder (`characters/<id>/photos/*`,
-  `avatar.jpg` — the primary keys of the images table and the ids the cards point at) and into the
+  `userId` of every stored line), into the picture ids of that folder (`characters/<id>/*.png` —
+  the primary keys of the images table and the ids the cards point at), into the row's own `avatar`
+  column (the avatar id starts with the folder name, so a rename repoints it too) and into the
   picture rows' `depicts` (the cast refs `char:<id>` / `user:<id>`). Both entity dialogs therefore
   carry an **ID field**: when creating, the user writes the ID (the field suggests one from the name —
   `helpers.suggestEntityId` — until he touches it; an empty field falls back to the generated
@@ -916,7 +970,8 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   in `helpers.isEntityId`); **`entities/EntityIdService.ts`** is the piece that walks the trail above
   (`renameCharacter` / `renamePerson`: the cards and reference lists through
   `ChatsService.repointImageId`, the rows through `ImageMetaService.move`, the chats through the new
-  `ChatsService.repointAuthor`, the cast through `ImageMetaService.repointDepicts`) — it sits above
+  `ChatsService.repointAuthor`, the cast through `ImageMetaService.repointDepicts` and the entity's
+  own avatar id through the catalog's `repointAvatar`) — it sits above
   both catalogs, the chat store and the table for the same reason the picture browser does: a rename
   is nothing one row or one folder can do on its own. Renaming is per kind, so a character and a
   persona that
@@ -925,7 +980,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   server has just rewritten that chat's participant list and message authors.
 - **A chat ID follows the same rule.** It is the primary key of the chat's rows
   AND the name of its folder `chats/<id>/`, and it prefixes every picture id of
-  the chat (`chats/<id>/files/…`). A new chat is therefore named by its
+  the chat (`chats/<id>/…`). A new chat is therefore named by its
   **creation moment** — `yyyy-mm-dd_hh-mm-ss` local time, a `-2`/`-3` suffix
   keeping it unique inside one second (`ChatsService.newChatId`; the clone takes
   the same shape) — a name that reads in a chat list, a picture id and a folder
@@ -981,11 +1036,15 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   The header character menu toggles participants (last one cannot be removed) and reorders them
   with ↑/↓; there is no legacy single-`characterId` format — old chats were converted once by a
   one-off script.
-- **Avatars.** Served/uploaded via `GET/POST/DELETE /api/persons/:id/avatar` and
-  `GET/POST/DELETE /api/characters/:id/avatar`. The file is `avatar.<ext>` where the extension
-  follows the actual uploaded format (usually `.jpg`); the GET route serves the first existing
-  candidate and sets `Cache-Control: no-store`. List endpoints add a computed `hasAvatar` flag —
-  the UI shows the image only when it is true.
+- **Avatars.** An avatar is a normal picture of the entity's folder, designated by the data-root-
+  relative id stored in the row's `avatar` column — there is no fixed `avatar.<ext>` file and no
+  GET avatar route; the preview is served by the one `GET /api/media?path=<id>` route.
+  `POST /api/persons/:id/avatar` / `POST /api/characters/:id/avatar` set it from a disk file
+  (`{ data }`, a data URL — a byte-identical picture already in the data folders is reused, not
+  copied) or from an existing picture (`{ image }`, an id); the answer is the avatar's id, which the
+  dialog mirrors into its local row. `DELETE …/:id/avatar` NULLs the column and keeps the file.
+  List endpoints return the `avatar` id (or null) on each row — `listWithPhotos` / `listWithAvatars`;
+  the UI shows the image only when the id is non-null.
 
 ## Command line (`backend/src/cli.ts`)
 
@@ -1101,8 +1160,9 @@ that needs the databases resolves them here — the one place allowed to.
   copy's edit form (the `app.ts` modal blocks wrap the dialog in a single-item `@for ... track
   item-id`, so the dialog component is recreated and re-initializes when the item changes).
   Model clone — a duplicate entry under a free "<name> copy" key (the dialog still closes). The
-  settings dialog does NOT manage them — it keeps only the
-  listen address and the image generators (with a hint pointing at the header menus): "+ ComfyUI"
+  settings dialog does NOT manage them — it keeps the
+  listen address, the global picture-prompt model pick and the image generators (with a hint
+  pointing at the header menus): "+ ComfyUI"
   adds a `{ kind: 'comfyui' }` entry (URL + the model **pick** + the GPU device + width/height — the
   pick is fed by `GET /api/image/status`'s `comfyUiModels` rather than a hardcoded frontend list, and
   the hint under it names the converter node the server needs) and "+ SD API" the SD fields; the row

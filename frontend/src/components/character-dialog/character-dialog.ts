@@ -22,17 +22,28 @@ import { UiStore } from '../../services/ui-store';
       @if (!isNew()) {
         <div class="avatar-pick">
           <div class="avatar-thumb">
-            @if (hasAvatar()) {
+            @if (avatar()) {
               <img [src]="avatarSrc()" alt="" />
             } @else {
               {{ letter() }}
             }
           </div>
-          <label class="btn" title="Upload avatar (characters/<id>/avatar.jpg)">
-            photo
+          <label class="btn" title="Pick a picture from disk (one already in your folders is reused, not copied)">
+            from disk
             <input type="file" hidden accept="image/*" (change)="onAvatarFile($event)" />
           </label>
-          @if (hasAvatar()) {
+          <select
+            class="btn"
+            data-testid="char-avatar-pick"
+            title="Use one of the existing pictures as the avatar"
+            (change)="onAvatarPick($event)"
+          >
+            <option value="">From the pictures…</option>
+            @for (p of pictures(); track p.id) {
+              <option [value]="p.id">{{ p.id }}</option>
+            }
+          </select>
+          @if (avatar()) {
             <button class="btn danger" title="Remove avatar" (click)="removeAvatar()">✕</button>
           }
         </div>
@@ -108,14 +119,17 @@ export class CharacterDialog implements OnInit {
   readonly name = signal('');
   readonly description = signal('');
   readonly isNew = signal(true);
-  readonly hasAvatar = signal(false);
+  // The avatar is an image id (a path relative to the data folder) kept in the
+  // row; null — the character has no avatar.
+  readonly avatar = signal<string | null>(null);
+  // The existing pictures the avatar can be pointed at (GET /pictures), the
+  // "From the pictures…" pick.
+  readonly pictures = signal<{ id: string }[]>([]);
   // The ID field: the folder name of a new character, the current one in the
   // edit mode (where Rename applies it).
   readonly idDraft = signal('');
   // The suggested ID follows the name until the user writes one of their own.
   private idTouched = false;
-  // A cache buster for the avatar preview after upload/removal.
-  readonly mediaVersion = signal(0);
   private id = '';
 
   ngOnInit(): void {
@@ -128,8 +142,12 @@ export class CharacterDialog implements OnInit {
       if (c) {
         this.name.set(c.name);
         this.description.set(c.description);
-        this.hasAvatar.set(!!c.hasAvatar);
+        this.avatar.set(c.avatar ?? null);
       }
+      this.api
+        .listPictures()
+        .then((res) => this.pictures.set(res.pictures.map((p) => ({ id: p.id }))))
+        .catch(() => undefined);
     }
   }
 
@@ -138,7 +156,8 @@ export class CharacterDialog implements OnInit {
     return ch || '•';
   }
   avatarSrc(): string {
-    return this.api.characterAvatarUrl(this.id) + '?v=' + this.mediaVersion();
+    const a = this.avatar();
+    return a ? this.api.mediaUrl(a) : '';
   }
   setName(e: Event): void {
     const value = (e.target as HTMLInputElement).value;
@@ -227,21 +246,25 @@ export class CharacterDialog implements OnInit {
     if (!file) return;
     try {
       const data = await this.readFile(file);
-      await this.api.uploadAvatar('character', this.id, data);
-      this.hasAvatar.set(true);
-      this.mediaVersion.update((v) => v + 1);
+      const id = await this.configStore.setAvatar('character', this.id, { data });
+      if (id) this.avatar.set(id);
     } catch (err) {
       this.ui.error.set(String((err as Error).message));
     }
   }
+  // Points the avatar at an existing picture (the "From the pictures…" pick) —
+  // no copy is made, the row just names that id.
+  async onAvatarPick(e: Event): Promise<void> {
+    const selectEl = e.target as HTMLSelectElement;
+    const image = selectEl.value;
+    selectEl.value = '';
+    if (!image) return;
+    const id = await this.configStore.setAvatar('character', this.id, { image });
+    if (id) this.avatar.set(id);
+  }
   async removeAvatar(): Promise<void> {
-    try {
-      await this.api.deleteAvatar('character', this.id);
-      this.hasAvatar.set(false);
-      this.mediaVersion.update((v) => v + 1);
-    } catch (err) {
-      this.ui.error.set(String((err as Error).message));
-    }
+    await this.configStore.clearAvatar('character', this.id);
+    this.avatar.set(null);
   }
   private readFile(file: File): Promise<string> {
     return new Promise((resolve, reject) => {

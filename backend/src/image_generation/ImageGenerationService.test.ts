@@ -40,11 +40,11 @@ const images = new ImageGenerationService(new TextGenerationService(configuratio
 // The id of a picture of a chat — the way a message and the API address it: a
 // path relative to the data folder, with "/" separators.
 function imageId(chatId: string, name: string): string {
-  return PathHelper.imageIdOf(path.join(PathHelper.chatFilesDir(chatId), name));
+  return PathHelper.imageIdOf(path.join(PathHelper.chatDir(chatId), name));
 }
 // The absolute path an id addresses (the file the generator has to write).
 function imageFile(chatId: string, name: string): string {
-  return path.join(PathHelper.chatFilesDir(chatId), name);
+  return path.join(PathHelper.chatDir(chatId), name);
 }
 
 // ------------------------------------------------------------------ mock server
@@ -330,7 +330,7 @@ describe("ComfyUI generator", () => {
   }, 30000);
 
   it("takes the template of the model that matches the number of references and uploads them into input/", async () => {
-    fs.mkdirSync(PathHelper.chatFilesDir(chatIdDefault), { recursive: true });
+    fs.mkdirSync(PathHelper.chatDir(chatIdDefault), { recursive: true });
     const refs: string[] = [];
     for (const name of ["first-ref.png", "second-ref.png"]) {
       fs.writeFileSync(imageFile(chatIdDefault, name), "x");
@@ -372,7 +372,7 @@ describe("ComfyUI generator", () => {
     // The plan is made for the strongest generator the user configured; the job
     // can still land on one that takes fewer. Dropping the extra reference keeps
     // the picture (with the faces that did fit) instead of leaving a broken card.
-    fs.mkdirSync(PathHelper.chatFilesDir(chatIdDefault), { recursive: true });
+    fs.mkdirSync(PathHelper.chatDir(chatIdDefault), { recursive: true });
     const refs: string[] = [];
     for (const name of ["a.png", "b.png", "c.png"]) {
       fs.writeFileSync(imageFile(chatIdDefault, name), "x");
@@ -471,7 +471,7 @@ describe("the ComfyUI workflow files", () => {
     expect(comfy.converted).toEqual(["text"]);
 
     // the same file's oneImage template is what a reference runs on
-    fs.mkdirSync(PathHelper.chatFilesDir(chatIdDefault), { recursive: true });
+    fs.mkdirSync(PathHelper.chatDir(chatIdDefault), { recursive: true });
     fs.writeFileSync(imageFile(chatIdDefault, "own-ref.png"), "x");
     expect(
       (await oneShot(gen, "with my reference", [imageId(chatIdDefault, "own-ref.png")], "own-model-ref.png")).status,
@@ -541,7 +541,7 @@ describe("the ComfyUI workflow files", () => {
     // model then simply does not take references. The picture is still drawn,
     // from the text alone, and the unusable reference is never uploaded.
     writeWorkflow("text-only-model", { text: templateOf("no references here") });
-    fs.mkdirSync(PathHelper.chatFilesDir(chatIdDefault), { recursive: true });
+    fs.mkdirSync(PathHelper.chatDir(chatIdDefault), { recursive: true });
     fs.writeFileSync(imageFile(chatIdDefault, "ref-for-text-only.png"), "x");
     const r = await oneShot(
       comfyGen(comfy, { model: "text-only-model" }),
@@ -646,7 +646,7 @@ describe("background image jobs", () => {
 
   it("only the references that are really pictures of the data folder reach the server", async () => {
     await images.refreshAvailableGenerators([comfyGen(comfy)]);
-    fs.mkdirSync(PathHelper.chatFilesDir(jobChatId), { recursive: true });
+    fs.mkdirSync(PathHelper.chatDir(jobChatId), { recursive: true });
     const real = imageFile(jobChatId, "a-real-reference.png");
     fs.writeFileSync(real, "x");
     const r = await runJob("job-refs.png", {

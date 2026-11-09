@@ -105,6 +105,8 @@ describe("renaming a character", () => {
     characters.save({ id: "alice", name: "Alice", description: "a tall woman in a green coat" });
     characterPhoto("alice", "photo1.jpg");
     fs.writeFileSync(path.join(PathHelper.characterDir("alice"), "avatar.jpg"), "img");
+    // designate one of the folder's pictures as the avatar: the row keeps its id
+    characters.setAvatarImage("alice", { imageId: "characters/alice/avatar.jpg" });
 
     entityIds.renameCharacter("alice", "green-coat");
 
@@ -118,7 +120,8 @@ describe("renaming a character", () => {
     // the photo is the same file at a new path, and the avatar moved along
     expect(fs.existsSync(fileOf("characters/green-coat/photos/photo1.jpg"))).toBe(true);
     expect(fs.existsSync(fileOf("characters/green-coat/avatar.jpg"))).toBe(true);
-    expect(characters.findAvatar("green-coat")).toBeTruthy();
+    // the avatar column followed the move (its id names the folder that moved)
+    expect(characters.getAvatarId("green-coat")).toBe("characters/green-coat/avatar.jpg");
   });
 
   it("carries the chat along: the participant list, the author of every line, the card of her photo", () => {

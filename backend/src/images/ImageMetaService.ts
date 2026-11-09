@@ -158,6 +158,19 @@ export class ImageMetaService {
     return out;
   }
 
+  // The ids of the rows that remember a file of exactly this size and this
+  // content hash. This is what a disk pick is de-duplicated by: a picture the
+  // user chose that already lives in one of the data folders is reused rather
+  // than copied, so the same file does not get a second id and a second row.
+  // A byte-identical copy gives several ids; the caller keeps the first one
+  // whose file really is there.
+  findByHash(size: number, hash: string): string[] {
+    const rows = this.db()
+      .prepare("SELECT id FROM images WHERE file_size = ? AND file_hash = ?")
+      .all(size, hash) as Array<{ id: string }>;
+    return rows.map((row) => row.id);
+  }
+
   // Every row of the table as `{ id, ...meta }` — the picture browser, newest
   // edit first. The rowid breaks a tie: two writes can land in the same
   // millisecond, and a browser whose order changes between two refreshes looks

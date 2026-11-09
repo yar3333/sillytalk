@@ -1,21 +1,24 @@
 import fs from "fs";
 import path from "path";
+import { randomUUID } from "crypto";
 import { DatabaseSync } from "node:sqlite";
 import { Person } from "./Person";
 import { PathHelper } from "../shared/PathHelper";
-import { AvatarFile } from "../shared/AvatarFile";
+import { DataUrl } from "../shared/DataUrl";
+import { ImageMetaService } from "../images/ImageMetaService";
 import { createToken } from "../di";
 
 // The DI token of the person service (registered in index.ts).
 export const DI_PERSONS_SERVICE = createToken<PersonsService>("PersonsService");
 
-type PersonRow = { id: string; name: string; description: string | null };
+type PersonRow = { id: string; name: string; description: string | null; avatar: string | null };
 
 // The top-level person service: the persona catalog in the `persons` table of
 // the catalogs database (catalogs.db in the data root) — the id is the primary
-// key and at the same time the name of the persona's folder, where its avatar
-// lives (avatar.<ext>). The card itself (name and description) is the row:
-// there is no user.json any more and its files are not read.
+// key and at the same time the name of the persona's folder, where its pictures
+// lie directly (no subfolder): the avatar is one of them, named by an image id
+// the row keeps in its `avatar` column. The card itself (name and description)
+// is the row: there is no user.json any more and its files are not read.
 //
 // The on-disk folder layout (users/) and the SILLYTALK_USERS_DIR env var are
 // historical — the domain concept in the code is person/persons.
@@ -28,6 +31,11 @@ export class PersonsService {
   constructor(
     private readonly personsRoot: () => string,
     private readonly databaseFile: () => string,
+    // The images table, used only to de-duplicate an avatar picked from disk (a
+    // file the user chose that is already a picture of the data folder is
+    // referenced, not copied). Optional so the catalog can be used without the
+    // table; without it a disk pick is always written as a new file.
+    private readonly imageMeta?: ImageMetaService,
   ) {}
 
   private dbRef: DatabaseSync | null = null;
@@ -53,9 +61,15 @@ export class PersonsService {
       CREATE TABLE IF NOT EXISTS persons (
         id          TEXT PRIMARY KEY,
         name        TEXT NOT NULL,
-        description TEXT NOT NULL DEFAULT ''
+        description TEXT NOT NULL DEFAULT '',
+        avatar      TEXT
       );
     `);
+    // A table written before the avatar column existed gets it added (an empty
+    // value simply means "no avatar picked yet"); a fresh table has it already.
+    if (!(db.prepare(`PRAGMA table_info(persons)`).all() as Array<{ name: string }>).some((c) => c.name === "avatar")) {
+      db.exec("ALTER TABLE persons ADD COLUMN avatar TEXT");
+    }
     this.dbRef = db;
     return db;
   }
@@ -81,14 +95,35 @@ export class PersonsService {
     return rows.map((row) => PersonsService.fromRow(row)).sort((a, b) => a.name.localeCompare(b.name, "en"));
   }
 
-  // The person list with the avatar flag — the avatar stays a file of the
-  // persona's folder, only the card is the row.
-  listWithAvatars(): Array<Person & { hasAvatar: boolean }> {
-    const root = this.personsRoot();
-    return this.list().map((person) => ({
-      ...person,
-      hasAvatar: AvatarFile.find(PathHelper.personDir(person.id, root)) !== null,
-    }));
+  // The person list with the avatar image id — the avatar is a picture of the
+  // persona's folder, addressed by its data-root-relative id; only the card is
+  // the row.
+  listWithAvatars(): Array<Person & { avatar: string | null }> {
+    const rows = this.db()
+      .prepare("SELECT id, name, description, avatar FROM persons")
+      .all() as PersonRow[];
+    return rows
+      .map((row) => ({
+        ...PersonsService.fromRow(row),
+        avatar: typeof row.avatar === "string" && row.avatar ? row.avatar : null,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name, "en"));
+  }
+
+  // The image ids of a persona's folder, sorted (an avatar the user dropped in
+  // is one of them); empty when the folder does not exist yet.
+  pictureIdsOf(id: string): string[] {
+    if (!this.isValidId(id)) return [];
+    const dir = PathHelper.personDir(id, this.personsRoot());
+    try {
+      return fs
+        .readdirSync(dir)
+        .filter((f) => /\.(png|jpe?g|webp|gif)$/i.test(f))
+        .sort()
+        .map((f) => PathHelper.imageIdOf(path.join(dir, f)));
+    } catch {
+      return [];
+    }
   }
 
   get(id: string): Person | null {
@@ -186,27 +221,86 @@ export class PersonsService {
     }
   }
 
-  // ---- avatar (avatar.<ext> in the person folder) ----
+  // ---- avatar (an image id the row keeps in its `avatar` column) ----
+  //
+  // The avatar is one of the persona's pictures, named by its data-root-relative
+  // id (previewed through the media route). Setting it copies a picked file into
+  // the folder unless the file is already a picture of the data folder (then the
+  // existing id is reused), or points the column at an existing picture id.
+  // Clearing it drops the designation only, never the file.
 
-  // The avatar file (the first existing avatar.<ext>), null when absent.
-  findAvatar(id: string): string | null {
+  // The id of the persona's avatar, or null when none is picked.
+  getAvatarId(id: string): string | null {
     if (!this.isValidId(id)) return null;
-    return AvatarFile.find(PathHelper.personDir(id, this.personsRoot()));
+    const row = this.db().prepare("SELECT avatar FROM persons WHERE id = ?").get(id) as
+      | { avatar: string | null }
+      | undefined;
+    return row && typeof row.avatar === "string" && row.avatar ? row.avatar : null;
   }
 
-  // Saves the avatar from an image data URL (replacing any older one).
-  // Throws when the payload is not an image data URL.
-  saveAvatar(id: string, dataUrl: string): void {
-    if (!this.isValidId(id)) {
-      throw new Error(`Invalid person ID: ${String(id)}`);
+  // Picks the avatar from a picture the user chose: an existing picture id
+  // (`imageId`, reused) or the bytes of a disk file (`dataUrl`, de-duplicated
+  // against the data folders, else copied into the persona's folder). Returns
+  // the avatar image id now stored. Throws on a bad id or an unreadable pick.
+  setAvatarImage(id: string, source: { dataUrl?: string; imageId?: string }): string {
+    if (!this.isValidId(id)) throw new Error(`Invalid person ID: ${String(id)}`);
+    if (!this.get(id)) throw new Error(`No such persona: ${id}`);
+    let avatarId: string;
+    if (typeof source.imageId === "string" && source.imageId) {
+      const abs = PathHelper.resolvePictureId(source.imageId);
+      if (!abs || !fs.existsSync(abs)) throw new Error(`Unknown picture "${source.imageId}"`);
+      avatarId = source.imageId;
+    } else if (typeof source.dataUrl === "string" && source.dataUrl) {
+      avatarId = this.storePickedPicture(id, DataUrl.image(source.dataUrl));
+    } else {
+      throw new Error("Expected a picked picture (data or image field)");
     }
-    AvatarFile.save(PathHelper.personDir(id, this.personsRoot()), dataUrl);
+    this.db().prepare("UPDATE persons SET avatar = ? WHERE id = ?").run(avatarId, id);
+    return avatarId;
   }
 
-  // Deletes the avatar file; returns whether anything was deleted.
-  deleteAvatar(id: string): boolean {
+  // Drops the avatar designation; the file stays a normal folder picture.
+  clearAvatar(id: string): boolean {
     if (!this.isValidId(id)) return false;
-    return AvatarFile.delete(PathHelper.personDir(id, this.personsRoot()));
+    const changed = this.db()
+      .prepare("UPDATE persons SET avatar = NULL WHERE id = ? AND avatar IS NOT NULL")
+      .run(id).changes;
+    return changed > 0;
+  }
+
+  // Follows a renamed picture in the avatar column (a folder rename moves the
+  // file the avatar points at; a picked avatar that names a picture elsewhere is
+  // left alone — its path did not change).
+  repointAvatar(fromId: string, toId: string): void {
+    if (!fromId || !toId || fromId === toId) return;
+    this.db().prepare("UPDATE persons SET avatar = ? WHERE avatar = ?").run(toId, fromId);
+  }
+
+  // Places the bytes of a picked file: a byte-identical picture already in the
+  // data folders gives its id back; otherwise a new file lands in the persona's
+  // folder with a row carrying its facts.
+  private storePickedPicture(
+    id: string,
+    picked: { buffer: Buffer; ext: string; hash: string },
+  ): string {
+    const duplicate = this.imageMeta
+      ?.findByHash(picked.buffer.length, picked.hash)
+      .find((candidate) => {
+        const file = PathHelper.resolvePictureId(candidate);
+        return file !== null && fs.existsSync(file);
+      });
+    if (duplicate) return duplicate;
+    const dir = PathHelper.personDir(id, this.personsRoot());
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `avatar-${randomUUID().slice(0, 6)}${picked.ext}`);
+    fs.writeFileSync(file, picked.buffer);
+    const newId = PathHelper.imageIdOf(file);
+    this.imageMeta?.set(newId, {
+      fileSize: picked.buffer.length,
+      fileModifiedAt: Math.floor(fs.statSync(file).mtimeMs),
+      fileHash: picked.hash,
+    });
+    return newId;
   }
 
   private static fromRow(row: PersonRow): Person {

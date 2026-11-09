@@ -1,6 +1,6 @@
 // A character is a row of the `characters` table in the catalogs database,
-// keyed by the id that is also the name of its folder under characters/ (the
-// home of its photos/ set and its avatar).
+// keyed by the id that is also the name of its folder under characters/ (where
+// its pictures — the starter set and the avatar — lie directly).
 export type Character = {
   id: string;
   name: string;
