@@ -113,6 +113,16 @@ if (fs.existsSync(PathHelper.configFile())) {
 const config = configuration.loadConfig();
 PathHelper.ensureDirs();
 
+// Reconcile the images table with the picture files on disk before anything
+// reads it: a file the user dropped into a folder gets its row, a file he
+// renamed outside the app takes its cards and references to the new path.
+// A broken file must never stop the server, so a failing sync is only said.
+try {
+  container.resolve(DI_PICTURE_LIBRARY_SERVICE).sync();
+} catch (err) {
+  console.error(`picture sync at startup skipped: ${(err as Error).message}`);
+}
+
 // The available image generators (enabled and up) — every one of them can
 // run jobs in parallel; the jobs of a single generator are queued.
 const images = container.resolve(DI_IMAGE_GENERATION_SERVICE);

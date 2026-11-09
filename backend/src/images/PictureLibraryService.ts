@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { createHash } from "crypto";
 import { ChatsService } from "../chats/ChatsService";
 import { ImageMeta } from "../shared/ImageMeta";
 import { HttpHelper } from "../shared/HttpHelper";
@@ -42,7 +43,12 @@ export class PictureLibraryService {
   // their rows, newest first, and after them the rows whose file is gone — an
   // orphan row is not a picture, but it is information the user should be able
   // to see (and delete) rather than something silently hidden.
+  //
+  // The read first reconciles the table with the disk (sync), so opening the
+  // browser is also the moment a file the user dropped into a folder gets its
+  // row and a file he renamed by hand gets his cards back.
   browse(): PictureEntry[] {
+    this.sync();
     const rows = new Map(this.meta.list().map((row) => [row.id, row]));
     const counts = PictureLibraryService.refCounts(rows.values());
     const entries: PictureEntry[] = [];
@@ -142,6 +148,72 @@ export class PictureLibraryService {
     return this.get(newId);
   }
 
+  // ---- the disk sync ----
+  //
+  // The pictures are ordinary files and the user may touch them outside the
+  // app: drop one into a folder, rename one in Explorer. The table must not
+  // drift from the disk, so the library reconciles the two — at server start
+  // and every time the browser opens. Two directions:
+  //
+  // - a file on disk without a row gets one, carrying the facts of its file
+  //   (size, modification time, sha256 of the content);
+  // - a row whose file is gone is a renamed picture when one of the files
+  //   nobody's row points at has the same extension, the same size and the
+  //   same hash — a rename outside the app is a move, not a new picture, so
+  //   the row FOLLOWS the file: it moves to the new id and the chat cards and
+  //   the stored reference lists naming the old path are repointed, exactly as
+  //   through the app's own Rename.
+  //
+  // A row without a stored hash cannot be recognised (the app never saw the
+  // file's bytes), and a file whose size and time still match what the row
+  // remembers is not hashed again — the content check only runs on files that
+  // are new or changed since the last sync.
+  sync(): void {
+    const rows = new Map(this.meta.list().map((row) => [row.id, row]));
+    const diskIds = PathHelper.listPictureIds();
+    const onDisk = new Set(diskIds);
+
+    // The facts of every file: taken from the row when it vouches for the file
+    // (same size, same time), computed otherwise. One stat + hash per changed
+    // file, reused by both the rename search and the write below.
+    const facts = new Map<string, { size: number; mtime: number; hash: string }>();
+    for (const id of diskIds) {
+      const f = PictureLibraryService.factsOf(id, rows.get(id));
+      if (f) facts.set(id, f);
+    }
+
+    // 1) a picture renamed outside the app: its row points at a path with no
+    //    file, and somewhere on the disk there is a file no row points at with
+    //    the same extension, size and content. The row follows the file.
+    const claimed = new Set<string>();
+    for (const row of rows.values()) {
+      if (onDisk.has(row.id)) continue;
+      if (typeof row.fileHash !== "string" || typeof row.fileSize !== "number") continue;
+      const twin = diskIds.find(
+        (id) =>
+          !rows.has(id) &&
+          !claimed.has(id) &&
+          PictureLibraryService.extensionOf(id) === PictureLibraryService.extensionOf(row.id) &&
+          facts.get(id)?.size === row.fileSize &&
+          facts.get(id)?.hash === row.fileHash,
+      );
+      if (!twin) continue;
+      claimed.add(twin);
+      this.meta.move(row.id, twin);
+      this.chats.repointImageId(row.id, twin);
+    }
+
+    // 2) the facts of every file on disk into its row — which is also what
+    //    gives a picture the user dropped into a folder a row of its own. The
+    //    file a rename just moved gets its facts here too: set re-reads the
+    //    row, which by now lives at the new path.
+    for (const [id, f] of facts) {
+      const row = rows.get(id);
+      if (row && row.fileSize === f.size && row.fileModifiedAt === f.mtime && row.fileHash === f.hash) continue;
+      this.meta.set(id, { fileSize: f.size, fileModifiedAt: f.mtime, fileHash: f.hash });
+    }
+  }
+
   // ---- the path rules ----
 
   // The file of a picture id that really is a picture of the folders pictures
@@ -169,5 +241,45 @@ export class PictureLibraryService {
     } catch {
       return undefined;
     }
+  }
+
+  // The facts of a file on disk: what the row already knows when the file has
+  // not changed since (same size, same modification time — no re-reading of
+  // every picture on every sync), the stat and the content hash otherwise.
+  // Null when the file cannot be read at all (gone between the listing and
+  // this stat, or not readable) — no row is written from a guess.
+  private static factsOf(
+    id: string,
+    row: (ImageMeta & { id: string }) | undefined,
+  ): { size: number; mtime: number; hash: string } | null {
+    const file = PictureLibraryService.fileOf(id);
+    if (!file) return null;
+    try {
+      const stat = fs.statSync(file);
+      const mtime = Math.floor(stat.mtimeMs);
+      if (
+        row &&
+        typeof row.fileHash === "string" &&
+        row.fileSize === stat.size &&
+        row.fileModifiedAt === mtime
+      ) {
+        return { size: stat.size, mtime, hash: row.fileHash };
+      }
+      const hash = createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+      return { size: stat.size, mtime, hash };
+    } catch {
+      return null;
+    }
+  }
+
+  // The extension a renamed file keeps (a move does not change the format);
+  // compared lower-case, because the app writes lower-case and the user may
+  // not. A name without a dot has no extension and matches only another such
+  // name — isImage has already made sure a picture has one of the picture
+  // extensions, so this never matches empty onto a real extension by accident.
+  private static extensionOf(id: string): string {
+    const name = id.slice(id.lastIndexOf("/") + 1);
+    const dot = name.lastIndexOf(".");
+    return dot < 0 ? "" : name.slice(dot).toLowerCase();
   }
 }

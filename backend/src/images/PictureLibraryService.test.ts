@@ -164,6 +164,143 @@ describe("browsing the pictures", () => {
   });
 });
 
+describe("the disk sync (the table follows the files)", () => {
+  // The pictures are files and the user may touch them outside the app: drop
+  // one into a folder, rename one in Explorer. The sync at startup and on
+  // every browser open must keep the table honest — a file without a row gets
+  // one, a renamed file takes its row (and its cards) to the new path.
+
+  function dropPicture(id: string, content: string): string {
+    const file = fileOf(id);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content);
+    return id;
+  }
+
+  it("gives a file the user dropped into a folder a row with the facts of its file", () => {
+    const id = dropPicture("characters/alice/photos/dropped.png", "the bytes the user put there");
+
+    library.sync();
+
+    const row = meta.get(id);
+    expect(row).not.toBeNull();
+    expect(row!.fileSize).toBe(Buffer.byteLength("the bytes the user put there"));
+    expect(row!.fileModifiedAt).toEqual(expect.any(Number));
+    expect(row!.fileHash).toMatch(/^[0-9a-f]{64}$/);
+    // and the browser shows it: the dropped picture is a picture of the library
+    expect(library.browse().find((p) => p.id === id)).toMatchObject({ exists: true });
+
+    // syncing again changes nothing — the row still vouches for the same file,
+    // so the file is not read a second time
+    const before = meta.get(id)!;
+    library.sync();
+    expect(meta.get(id)!.fileHash).toBe(before.fileHash);
+    expect(meta.get(id)!.updatedAt).toBe(before.updatedAt);
+  });
+
+  it("refreshes the facts when the file's content changed under the row", () => {
+    const id = dropPicture("characters/alice/photos/growing.png", "one size");
+    library.sync();
+    const firstHash = meta.get(id)!.fileHash;
+
+    fs.writeFileSync(fileOf(id), "a different, longer content");
+    library.sync();
+
+    expect(meta.get(id)!.fileHash).not.toBe(firstHash);
+    expect(meta.get(id)!.fileSize).toBe(Buffer.byteLength("a different, longer content"));
+  });
+
+  it("follows a picture renamed outside the app: the row, the cards and the refs", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    const id = chats.saveImage(chat.id, PNG, { nameHint: "a red boat" });
+    chats.addImageMessage(chats.get(chat.id)!, id, { description: "a red boat at dusk" });
+    const drawn = chats.saveImage(chat.id, PNG, { nameHint: "the two of them" });
+    meta.set(drawn, { refs: [id] });
+    library.sync(); // learns the facts of the boat the way startup would
+
+    // the user renames the file in Explorer — the app sees only a moved file
+    const moved = renamedIn(id, "my-boat-9z8y7x.png");
+    fs.renameSync(fileOf(id), fileOf(moved));
+
+    library.sync();
+
+    // the row followed the file: same picture, new path, nothing of it lost
+    expect(meta.get(id)).toBeNull();
+    expect(meta.get(moved)?.description).toBe("a red boat at dusk");
+    // the card in the chat names the new path (the picture the user renamed IS
+    // the picture his chat shows — leaving the card on the dead path would
+    // break it)
+    expect(chats.get(chat.id)!.messages[0].images).toEqual([moved]);
+    // and the reference list the stored prompt names follows too
+    expect(meta.get(drawn)?.refs).toEqual([moved]);
+    // the browser shows the moved picture as the boat it is
+    expect(library.browse().find((p) => p.id === moved)).toMatchObject({
+      exists: true,
+      description: "a red boat at dusk",
+    });
+  });
+
+  it("follows a file moved to another folder and leaves a truly deleted picture as an orphan", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    const id = chats.saveImage(chat.id, PNG, { nameHint: "a boat" });
+    meta.set(id, { description: "a boat" });
+    library.sync();
+    const facts = meta.get(id)!;
+
+    // a moved file in another folder of the picture world is still the same
+    // picture — the extension, size and content are the identity, not the folder
+    const moved = "characters/alice/photos/the-boat.png";
+    fs.mkdirSync(path.dirname(fileOf(moved)), { recursive: true });
+    fs.renameSync(fileOf(id), fileOf(moved));
+    library.sync();
+    expect(meta.get(moved)?.description).toBe("a boat");
+    expect(meta.get(id)).toBeNull();
+
+    // now the file is really deleted: no file can match the row, so the row
+    // stays an orphan (the user can clear it in the browser) and nothing moves
+    fs.rmSync(fileOf(moved));
+    library.sync();
+    expect(meta.get(moved)?.description).toBe("a boat");
+    expect(meta.get(moved)?.fileHash).toBe(facts.fileHash);
+  });
+
+  it("does not guess at a row with no stored facts, and identical copies do not steal each other", () => {
+    // an old row with no hash: the file is gone, but there is nothing to match
+    // it BY — it stays an orphan, it is not married to some new file
+    meta.set("chats/oldchat/files/gone-1a2b3c.png", { description: "a picture of the old days" });
+    const stranger = dropPicture("characters/alice/photos/stranger.png", "bytes nobody owns");
+    library.sync();
+    expect(meta.get(stranger)!.description).toBeUndefined();
+    expect(meta.get("chats/oldchat/files/gone-1a2b3c.png")?.description).toBe("a picture of the old days");
+
+    // two byte-identical unowned copies and an orphan row that recognizes
+    // BOTH: the row takes one of them and the other stays a picture of its
+    // own — one file cannot be the same picture twice
+    const original = dropPicture("characters/carol/photos/original.png", "the very same bytes");
+    meta.set(original, { description: "the one picture" });
+    library.sync(); // the original learns its facts the way startup would
+    fs.rmSync(fileOf(original));
+    const copyA = dropPicture("characters/bob/photos/copy-a.png", "the very same bytes");
+    const copyB = dropPicture("characters/alice/photos/copy-b.png", "the very same bytes");
+    library.sync(); // the row of the lost original must take one of the twins
+
+    const carried = meta.list().filter((r) => r.description === "the one picture");
+    expect(carried).toHaveLength(1);
+    expect([copyA, copyB]).toContain(carried[0].id);
+    // the other copy is a picture of its own: a row of facts, no borrowed caption
+    const other = carried[0].id === copyA ? copyB : copyA;
+    expect(meta.get(other)?.fileHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(meta.get(other)?.description).toBeUndefined();
+  });
+
+  it("browse syncs on its own: opening the browser is the reconciliation", () => {
+    const id = dropPicture("users/carol/hand-dropped.jpg", "a file the user put here");
+    expect(meta.get(id)).toBeNull();
+    // no sync() call — browse does it
+    expect(library.browse().find((p) => p.id === id)!.fileHash).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
 describe("editing a picture from the browser", () => {
   it("writes the description and the prompt that a chat card then shows", () => {
     const chat = chats.create(["a"], "m1", "me");

@@ -274,7 +274,11 @@ resolved by `resolveApiKey()`: `envKey` (an environment variable) takes priority
 - What is known about a picture: `~/.config/sillytalk/images.db` — one SQLite table with one row per
   picture of the data folder, keyed by its path relative to that folder: what the picture shows, the
   prompt it was drawn from, its references and the people on it. The single source the chat cards
-  read, and what the Pictures browser edits. The old `<image>.png.json` files next to a picture are
+  read, and what the Pictures browser edits. The table is kept in step with the disk at startup and
+  every time the browser opens: a picture file you drop into a folder gets a row, and a picture you
+  rename outside the app is recognized by its size and content hash — its row, its chat cards and
+  its stored references follow the file to the new path.
+  The old `<image>.png.json` files next to a picture are
   the previous format: they are not read, not merged and not deleted — clear them yourself if you
   have any
 

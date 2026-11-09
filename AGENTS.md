@@ -134,10 +134,16 @@ backend/               Express API; also serves the built frontend
                        deleted, and a picture with one simply has no row;
                        close() is final; DI token DI_IMAGE_META_SERVICE) and
                        PictureLibraryService.ts (the picture browser's service:
-                       browse() = the files of the picture folders with their
+                       browse() = sync() first, then the files of the picture
+                       folders with their
                        rows + the orphan rows last, every entry with its
                        referencedBy count — how many other rows' refs name it,
-                       computed on every read, never stored, edit() = the
+                       computed on every read, never stored, sync() = the disk
+                       reconciliation (a file without a row gets one with the
+                       facts of its file size/mtime/sha256; a row whose file is
+                       gone matches an unowned file by extension + size + hash
+                       and FOLLOWS it — meta.move + ChatsService.repointImageId),
+                       edit() = the
                        description/
                        prompt/refs of any picture of the data folder, rename()
                        = the file move whose new id the chat cards and the
@@ -404,8 +410,10 @@ e2e/                   Playwright suite
   config.json
   images.db           (node:sqlite: the one global images table — every picture
                        of the data folder by its data-root-relative id, with
-                       its description, prompt, references and cast; the
-                       picture browser edits it, chat cards read it; nothing is
+                       its description, prompt, references and cast, plus the
+                       facts of its file (size, mtime, sha256) kept by the disk
+                       sync; the picture browser edits it, chat cards read it;
+                       nothing is
                        migrated in — a leftover <image>.png.json of the old
                        format is not read and left where it is)
   chats/chats.db      (node:sqlite: the chats + messages tables; the legacy
@@ -747,14 +755,28 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   generation block being dropped). The table is the authority: `ChatsService.get()` fills every
   image card from it on every read, and a message row stores **no copy** of the caption/prompt —
   a card whose picture has no row reads as a picture nobody described. A row is merge-on-write: a
-  field given as `undefined` or empty is removed, and a row left saying nothing is deleted — so an
-  upload with no description leaves no row at all and the `files/` folders stay plain pictures.
+  field given as `undefined` or empty is removed, and a row left saying nothing is deleted.
   `source` says how the picture got there: `upload` / `manual` / `auto`. The old format of this
   data — a `<image>.png.json` sidecar next to each described picture (plus the short
   `<image>.json` alias) — is **not supported and not migrated**: the app neither reads such a file,
   nor merges it into a row, nor falls back to it, nor deletes it. Clearing the leftovers is the
   user's own decision; a picture that only has one simply shows no caption.
   `close()` is final, like the chats database.
+- **The table is reconciled with the disk by `PictureLibraryService.sync()`** — at server start
+  (`index.ts`, a failing sync is only logged, it never stops the server) and on every browser open
+  (`browse()` syncs before reading). The row of every picture on disk carries the **facts of its
+  file** — `fileSize`, `fileModifiedAt` (ms) and `fileHash` (sha256 hex, `shared/ImageMeta.ts`) —
+  and a file that has no row gets one carrying exactly those facts (the `files/` folders themselves
+  stay plain pictures; nothing is written next to a file). A file whose row still vouches for it
+  (same size, same modification time) is **not hashed again** — the content read only happens for
+  new or changed files. The facts are also what recognises a picture **renamed outside the app**:
+  a row whose file is gone and a file no row points at with the same extension, size and hash are
+  the same picture moved — the row FOLLOWS the file (`meta.move` + `ChatsService.repointImageId`,
+  the same trail the app's own Rename walks), so the chat cards and the stored reference lists name
+  the new path and the picture keeps working. A row without a stored hash is never guessed at (it
+  stays an orphan), and one file can only carry one row — byte-identical copies leave the others as
+  pictures of their own. These fields are row bookkeeping, not generation data: they are NOT in
+  `IMAGE_GENERATION_KEYS`, so a "this is just a file" edit keeps them.
 - **The picture browser (⋮ → Pictures)** is the chat-independent view and editor of that table:
   `GET /api/pictures` lists every picture of the picture folders with its row (newest file first,
   orphan rows — a row whose file is gone — last, visible so the user can clear them),
@@ -1375,7 +1397,8 @@ that needs the databases resolves them here — the one place allowed to.
   difference pictures reviewed. Those pictures (changed pixels painted magenta over the dimmed new
   shot, for every file that differs at all — restored ones too) go to `.qwen/tmp/shot-diffs/`;
   `--dry-run` reports without touching anything, `--strict` fails on a PNG this reader cannot
-  decode. The two UX 20 screenshots of the picture browser can never be stable: the list shows
+  decode. The three screenshots of the picture browser taken by UX 20 (ux-20b / ux-20c / ux-20d) can
+  never be stable: the list shows
   generated file names with a random suffix.
 - Uses **mocked model + image generation** — both suites share `e2e/helpers/mocks.ts`:
   a deterministic OpenAI-compatible LLM (the delay before answering is controllable at

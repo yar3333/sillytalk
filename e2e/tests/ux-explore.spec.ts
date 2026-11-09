@@ -1000,6 +1000,61 @@ test('UX 20: the picture browser edits the picture, not a message', async ({ pag
   expect(still.pictures.some((p) => p.id === newId)).toBe(true);
 });
 
+// The disk sync: the pictures are files and the user may touch them outside
+// the app. Opening the browser reconciles the table with the disk — a file
+// renamed in Explorer takes its row and its chat cards to the new path (the
+// match is by extension + size + content hash), a file dropped into a folder
+// gets a row of its own.
+test('UX 20e: a picture renamed or dropped outside the app is followed by the table', async ({ page }) => {
+  await setDelay(50);
+  await openApp(page);
+  await page.getByTestId('gen-toggle').click();
+  await page.getByTestId('input').fill('a red circle');
+  await page.getByTestId('send').click();
+  await expect(page.getByTestId('img-pending')).toBeVisible({ timeout: 15000 });
+  await expect(page.getByTestId('img-pending')).toBeHidden({ timeout: 20000 });
+  const chatId = ((await api('/chats')) as Array<{ id: string }>)[0].id;
+  const card = ((await api(`/chats/${chatId}`)) as { messages: Array<{ kind: string; images: string[] }> })
+    .messages.find((m) => m.kind === 'image')!;
+  const id = card.images[0];
+
+  // Let the server learn the facts of the file (this GET is a sync).
+  await api('/pictures');
+
+  // The user renames the file on disk.
+  const file = path.join(DATA, ...id.split('/'));
+  const moved = path.join(path.dirname(file), 'moved-by-hand.png');
+  fs.renameSync(file, moved);
+  const movedId = `${id.slice(0, id.lastIndexOf('/') + 1)}moved-by-hand.png`;
+
+  // Opening the browser (any read of the catalog) finds it: the row followed
+  // the file, the chat card names the new path, the media route serves it.
+  await expect(async () => {
+    const after = (await api('/pictures')) as { pictures: Array<{ id: string; exists: boolean }> };
+    expect(after.pictures.some((p) => p.id === movedId && p.exists)).toBe(true);
+    expect(after.pictures.some((p) => p.id === id)).toBe(false);
+  }).toPass({ timeout: 10000 });
+  const chatAfter = (await api(`/chats/${chatId}`)) as {
+    messages: Array<{ kind: string; images?: string[] }>;
+  };
+  expect(chatAfter.messages.find((m) => m.kind === 'image')?.images).toEqual([movedId]);
+  const media = await fetch(`${API}/media?path=${encodeURIComponent(movedId)}`);
+  expect(media.status).toBe(200);
+
+  // A picture dropped into a character's photos folder gets a row with the
+  // facts of its file — the browser shows it as a picture of the library.
+  const dropped = path.join(DATA, 'characters', 'bob', 'photos', 'by-hand.png');
+  fs.mkdirSync(path.dirname(dropped), { recursive: true });
+  fs.writeFileSync(dropped, makePng(48, 48, 10, 20, 30));
+  const list2 = (await api('/pictures')) as {
+    pictures: Array<{ id: string; fileSize?: number; fileHash?: string }>;
+  };
+  const entry = list2.pictures.find((p) => p.id === 'characters/bob/photos/by-hand.png');
+  expect(entry).toBeTruthy();
+  expect(entry!.fileSize).toBeGreaterThan(0);
+  expect(entry!.fileHash).toMatch(/^[0-9a-f]{64}$/);
+});
+
 // The collected issues are attached to every test run as a JSON artifact.
 test.afterEach(async ({ page }, testInfo) => {
   if (issues.length > 0) {

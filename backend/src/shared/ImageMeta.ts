@@ -47,6 +47,17 @@ export type ImageMeta = {
   // ISO timestamps of the first write and the last change.
   createdAt?: string;
   updatedAt?: string;
+  // Facts about the FILE on disk, kept by the library's disk sync
+  // (PictureLibraryService.sync, run at startup and whenever the picture
+  // browser opens): the size, the modification time (ms) and the sha256 hex of
+  // the content. The row of every picture on disk carries them — which is also
+  // how a picture renamed OUTSIDE the app is recognised again: a file nobody's
+  // row points at, whose extension, size and hash match a row whose file is
+  // gone, is that same picture at a new path, and the row (and every card and
+  // reference list naming the old path) follows it.
+  fileSize?: number;
+  fileModifiedAt?: number;
+  fileHash?: string;
   // The patch semantics above: a key set to undefined is dropped from the row.
   [key: string]: unknown;
 };

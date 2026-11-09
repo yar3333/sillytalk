@@ -27,6 +27,9 @@ const COLUMNS = [
   "steps",
   "created_at",
   "updated_at",
+  "file_size",
+  "file_mtime",
+  "file_hash",
 ] as const;
 
 type Column = (typeof COLUMNS)[number];
@@ -49,6 +52,9 @@ const FIELD_TO_COLUMN: Record<string, Column> = {
   steps: "steps",
   createdAt: "created_at",
   updatedAt: "updated_at",
+  fileSize: "file_size",
+  fileModifiedAt: "file_mtime",
+  fileHash: "file_hash",
 };
 
 // The image metadata database: the ONE place what is known about a picture is
@@ -107,9 +113,21 @@ export class ImageMetaService {
         height          INTEGER,
         steps           INTEGER,
         created_at      TEXT,
-        updated_at      TEXT
+        updated_at      TEXT,
+        file_size       INTEGER,
+        file_mtime      INTEGER,
+        file_hash       TEXT
       );
     `);
+    // A database written before the file facts existed gets the columns added;
+    // a database created now already has them, and the check keeps the ALTER
+    // from erroring on every start.
+    const have = new Set(
+      (db.prepare(`PRAGMA table_info(images)`).all() as Array<{ name: string }>).map((c) => c.name),
+    );
+    for (const column of ["file_size", "file_mtime", "file_hash"] as const) {
+      if (!have.has(column)) db.exec(`ALTER TABLE images ADD COLUMN ${column}`);
+    }
     this.dbRef = db;
     return db;
   }
