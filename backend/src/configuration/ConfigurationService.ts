@@ -124,16 +124,20 @@ export class ConfigurationService {
       const parsed = JSON.parse(ConfigurationService.stripJsoncComments(raw)) as Record<string, unknown>;
       const def = this.defaultConfig();
       const llmModels = this.normalizeLlmModels(parsed.llmModels, def);
-      // The picture-prompt model: kept only while it names a model that still
-      // exists, so a deleted entry does not leave a dangling pick the planner
-      // would silently fall back from anyway.
-      const imagePromptModel =
-        typeof parsed.imagePromptModel === "string" && llmModels[parsed.imagePromptModel]
-          ? parsed.imagePromptModel
-          : undefined;
+      // The three global model picks (the chat model, the vision model, the
+      // picture-prompt model): each is kept only while it names a model that
+      // still exists, so a deleted or renamed entry does not leave a dangling
+      // pick every resolver would silently fall back from anyway.
+      const pick = (value: unknown): string | undefined =>
+        typeof value === "string" && llmModels[value] ? value : undefined;
+      const chatModel = pick(parsed.chatModel);
+      const visionModel = pick(parsed.visionModel);
+      const imagePromptModel = pick(parsed.imagePromptModel);
       return {
         listen: typeof parsed.listen === "string" && parsed.listen ? parsed.listen : def.listen,
         llmModels,
+        ...(chatModel ? { chatModel } : {}),
+        ...(visionModel ? { visionModel } : {}),
         ...(imagePromptModel ? { imagePromptModel } : {}),
         imageGenerators: this.normalizeGenerators(parsed.imageGenerators),
       };

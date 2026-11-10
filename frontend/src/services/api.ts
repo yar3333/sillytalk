@@ -93,8 +93,16 @@ export function isSdApiGenerator(g: ImageGenerator): g is SdApiSettings {
 export interface AppConfig {
   listen: string; // "0.0.0.0:3210"
   llmModels: Record<string, LlmModel>;
+  // The llmModels key of the model the app TALKS with (replies, and the default
+  // of every other role); empty/absent — the first model of llmModels. A global
+  // pick: the header's model chip writes it.
+  chatModel?: string;
+  // The llmModels key of the model that LOOKS at pictures (card captions, the
+  // describe helpers); empty/absent — the chat model when it can see, else the
+  // first model that can.
+  visionModel?: string;
   // The llmModels key of the model that WRITES the picture prompts (the 📷
-  // planner and "From the chat"); empty/absent — the chat's own model is used.
+  // planner and "From the chat"); empty/absent — the chat model is used.
   imagePromptModel?: string;
   imageGenerators: ImageGenerator[];
 }
@@ -186,11 +194,10 @@ export interface Chat {
   // The active persona — messages are sent under its name. The personas
   // that participated in the chat are derived from message authors (msg.userId).
   userId: string;
-  modelId: string; // the llmModels key of the chosen model
-  // The llmModels key of the model that LOOKS at the pictures of this chat
-  // (card captions, the "Describe the picture" button). Absent — the chat's own
-  // model when it can see, else the first vision-capable model of the config.
-  visionModelId?: string;
+  // The models are GLOBAL settings, not fields of a chat: AppConfig.chatModel
+  // is the model the app talks with, AppConfig.visionModel the one that looks at
+  // pictures (AppConfig.imagePromptModel writes the picture prompts). The header
+  // chips write them.
   // Per-chat sampling overrides for the provider request; a field left
   // undefined is not sent at all (the provider default applies).
   sampling?: {
@@ -343,10 +350,12 @@ export class ApiService {
     return this.req<ChatSummary[]>('/chats');
   }
 
-  createChat(characterIds: string[], modelId: string, userId: string): Promise<Chat> {
+  // A new chat: the participants (reply priority order) and the persona. The
+  // model is a global setting now, so it is not part of a chat.
+  createChat(characterIds: string[], userId: string): Promise<Chat> {
     return this.req<Chat>('/chats', {
       method: 'POST',
-      body: JSON.stringify({ characterIds, modelId, userId }),
+      body: JSON.stringify({ characterIds, userId }),
     });
   }
 

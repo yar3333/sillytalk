@@ -108,7 +108,6 @@ async function setupCatalog(): Promise<void> {
 async function seedChat(rounds: number, charIds: string[] = ['alice']): Promise<string> {
   const chat = (await api('/chats', 'POST', {
     characterIds: charIds,
-    modelId: 'mock model',
     userId: 'carol',
   })) as { id: string };
   for (let i = 0; i < rounds; i++) {
@@ -624,10 +623,11 @@ test('UX 12: model failure -> red error bubble', async ({ page }) => {
     contextSize: 1024,
     supportsImages: false,
   };
+  // The models are global now: the whole app talks with the broken one.
+  cfg.chatModel = 'broken model';
   await api('/config', 'PUT', cfg);
   await api('/chats', 'POST', {
     characterIds: ['alice'],
-    modelId: 'broken model',
     userId: 'carol',
   });
   await openApp(page);
@@ -848,10 +848,11 @@ test('UX 18: the picture style of the chat is drawn into every picture', async (
   await page.screenshot({ path: `${SHOTS}/ux-18b-regenerated-once.png` });
 });
 
-// The vision model: the chat talks with one model and lets another one look at
+// The vision model: the app talks with one model and lets another one look at
 // pictures. The 👁 next to the model chip names the model that will really look
-// (a hover hint, it has no room for a name) and its menu picks one.
-test('UX 19: the vision model of the chat (the 👁 chip)', async ({ page }) => {
+// (a hover hint, it has no room for a name) and its menu picks one — a GLOBAL
+// setting like the chat model itself.
+test('UX 19: the vision model of the app (the 👁 chip)', async ({ page }) => {
   // A second model that cannot see, next to the vision-capable chat model.
   const cfg = (await api('/config')) as Record<string, unknown> & {
     llmModels: Record<string, unknown>;
@@ -889,6 +890,8 @@ test('UX 19: the vision model of the chat (the 👁 chip)', async ({ page }) => 
   await expect(chip).toHaveAttribute('title', /blind model" cannot see pictures/);
   await expect(chip).toHaveClass(/missing/);
   await page.screenshot({ path: `${SHOTS}/ux-19b-blind-pick.png` });
+  // The pick is a GLOBAL setting now — it lands in config.json, not in a chat.
+  expect(((await api('/config')) as Record<string, unknown>).visionModel).toBe('blind model');
 
   // Back to the default: the chat model looks again.
   await chip.click();
@@ -896,11 +899,14 @@ test('UX 19: the vision model of the chat (the 👁 chip)', async ({ page }) => 
   await expect(chip).not.toHaveClass(/missing/);
   await expect(chip).toHaveAttribute('title', /mock model/);
 
-  // The pick is stored on the chat, not in the browser.
+  // ...and the default means the field is gone from the config, not a value.
+  expect(((await api('/config')) as Record<string, unknown>).visionModel).toBeUndefined();
+  // A chat carries no model picks at all any more.
   const chatId = ((await api('/chats')) as Array<{ id: string }>)[0]?.id;
   expect(chatId).toBeTruthy();
   const chat = (await api(`/chats/${chatId}`)) as Record<string, unknown>;
-  expect(chat.visionModelId).toBeUndefined();
+  expect(chat).not.toHaveProperty('visionModelId');
+  expect(chat).not.toHaveProperty('modelId');
 });
 
 // The picture browser: the whole data folder in one dialog, where the caption

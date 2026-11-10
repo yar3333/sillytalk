@@ -49,18 +49,22 @@ function llmModel(name: string, supportsImages: boolean): LlmModel {
   };
 }
 
-// The config is stubbed: the reply flow reads it only for the model resolution
-// (resolveChatModel / resolveVisionModel) — no real config.json is involved.
-// `vision` turns the one model into one that can see pictures (the describe
-// tests); `extra` adds entries next to m1 (a chat model that is blind plus a
-// model that is not, which is what the vision pick is for).
+// The models are global settings now: the config names the chat model and the
+// vision model, and a chat carries neither. `vision` turns m1 into a model that
+// can see pictures (the describe tests); `extra` adds entries next to m1 (a
+// blind chat model plus a model that can see, which is what the vision pick is
+// for); `chatModel`/`visionModel` are the global picks.
 class StubConfigurationService extends ConfigurationService {
   vision = false;
   extra: Record<string, LlmModel> = {};
+  chatModel?: string;
+  visionModel?: string;
   loadConfig(): Config {
     return {
       listen: "127.0.0.1:3210",
       llmModels: { m1: { ...model(), supportsImages: this.vision }, ...this.extra },
+      ...(this.chatModel ? { chatModel: this.chatModel } : {}),
+      ...(this.visionModel ? { visionModel: this.visionModel } : {}),
       imageGenerators: [],
     };
   }
@@ -247,7 +251,7 @@ beforeEach(() => {
   process.env.SILLYTALK_DATA_DIR = root;
   configuration = new StubConfigurationService();
   imageMeta = new ImageMetaService(() => root);
-  chats = new ChatsService(() => path.join(root, "chats"), configuration, imageMeta);
+  chats = new ChatsService(() => path.join(root, "chats"), imageMeta);
   characters = new CharactersService(
     () => path.join(root, "characters"),
     () => path.join(root, "catalogs.db"),
@@ -297,7 +301,7 @@ async function flushJobs(turns = 6): Promise<void> {
 
 // A fresh chat with one user message in it.
 function newChat(): Chat {
-  const chat = chats.create(["alice"], "m1", "me");
+  const chat = chats.create(["alice"], "me");
   chat.messages.push({ id: "u1", role: "user", userId: "me", kind: "text", text: "Hi", images: [], timestamp: 1 });
   chats.save(chat);
   return chats.get(chat.id)!;
@@ -374,7 +378,7 @@ describe("appendAssistantReply", () => {
 
   it("a character switched out of the chat keeps its name on the lines it already said", async () => {
     characters.save({ id: "bob", name: "Bob", description: "Another test character." });
-    const chat = chats.create(["bob"], "m1", "me");
+    const chat = chats.create(["bob"], "me");
     chat.messages.push(
       { id: "u1", role: "user", userId: "me", kind: "text", text: "Hi", images: [], timestamp: 1 },
       { id: "b1", role: "assistant", characterId: "bob", kind: "text", text: "Hey.", images: [], timestamp: 2 },
@@ -1103,10 +1107,10 @@ describe("the picture editor's LLM helpers", () => {
   });
 });
 
-// Which model looks at pictures: the chat's own pick, else its chat model when
-// that can see, else the first model of the config that can.
+// Which model looks at pictures: the global vision pick, else the chat model
+// when that can see, else the first model of the config that can.
 describe("the vision model of the chat", () => {
-  it("describes pictures with the chat's own model when it can see", async () => {
+  it("describes pictures with the chat model when it can see", async () => {
     configuration.vision = true;
     const { chat } = chatWithCard();
     await reply.describePicture(chat.id, { imageId: "a.png" });
@@ -1114,30 +1118,26 @@ describe("the vision model of the chat", () => {
   });
 
   it("describes pictures with a model that can see when the chat model cannot", async () => {
-    // no pick yet: the first vision-capable model of the config takes the job,
-    // so a roleplay model without vision still gets its cards described
+    // no pick: the first vision-capable model of the config takes the job, so a
+    // roleplay model without vision still gets its cards described
     configuration.extra = { seer: llmModel("seer", true) };
     const { chat } = chatWithCard();
     expect(await reply.describePicture(chat.id, { imageId: "a.png" })).toBe("a small red boat on a calm lake");
     expect(textGeneration.describeModel).toBe("seer");
   });
 
-  it("describes pictures with the model the chat picked", async () => {
+  it("describes pictures with the model the vision pick names", async () => {
     configuration.extra = { seer: llmModel("seer", true), other: llmModel("other", true) };
+    configuration.visionModel = "other";
     const { chat } = chatWithCard();
-    const picked = chats.get(chat.id)!;
-    picked.visionModelId = "other";
-    chats.save(picked);
     await reply.describePicture(chat.id, { imageId: "a.png" });
     expect(textGeneration.describeModel).toBe("other");
   });
 
   it("says plainly that a picked model cannot see, instead of silently using another", async () => {
     configuration.extra = { seer: llmModel("seer", true) };
+    configuration.visionModel = "m1";
     const { chat } = chatWithCard();
-    const picked = chats.get(chat.id)!;
-    picked.visionModelId = "m1";
-    chats.save(picked);
     await expect(reply.describePicture(chat.id, { imageId: "a.png" })).rejects.toThrow(/"m1" cannot see pictures/);
     expect(textGeneration.describeModel).toBeNull();
   });
@@ -1238,15 +1238,15 @@ describe("replaceImage", () => {
 });
 
 describe("resolveChatModel", () => {
-  it("returns the model the chat references", () => {
-    const chat = newChat();
-    expect(reply.resolveChatModel(chat)?.name).toBe("m1");
+  it("returns the model the config picks", () => {
+    configuration.extra = { second: llmModel("second", false) };
+    configuration.chatModel = "second";
+    expect(reply.resolveChatModel()?.name).toBe("second");
   });
 
-  it("falls back to the first model when the chat model is gone", () => {
-    const chat = newChat();
-    chat.modelId = "renamed-away";
-    expect(reply.resolveChatModel(chat)?.name).toBe("m1");
+  it("falls back to the first model when the config names none", () => {
+    configuration.extra = { second: llmModel("second", false) };
+    expect(reply.resolveChatModel()?.name).toBe("m1");
   });
 });
 

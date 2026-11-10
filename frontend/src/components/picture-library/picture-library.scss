@@ -305,6 +305,14 @@ select {
   }
 }
 
+/* the LLM helper under the description — the same row of buttons the card
+   editor uses for its own helpers */
+.row-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
 /* the ID field with its Rename button beside it — a rename is the field's own
    action, not a Save, so it sits where the name is written, not at the bottom
    of the dialog */

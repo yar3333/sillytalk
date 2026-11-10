@@ -146,7 +146,7 @@ export function createImageRouter(
         res.status(400).json({ error: "Expected a picture data URL" });
         return;
       }
-      const model = reply.resolveVisionModel(chat);
+      const model = reply.resolveVisionModel();
       if (!model || !model.supportsImages) {
         res.status(400).json({ error: ReplyService.noVisionMessage(model) });
         return;

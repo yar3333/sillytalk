@@ -224,7 +224,7 @@ import { chatHintOf, chatTitleOf, messageCountLabel } from '../../services/helpe
                   <button
                     class="opt opt-toggle"
                     data-testid="model-option"
-                    [class.active]="chatStore.chat()?.modelId === m.name"
+                    [class.active]="chatStore.currentModel()?.name === m.name"
                     (click)="chatStore.selectModel(m.name)"
                   >
                     {{ m.name }}
@@ -270,10 +270,10 @@ import { chatHintOf, chatTitleOf, messageCountLabel } from '../../services/helpe
               <button
                 class="opt"
                 data-testid="vision-option-default"
-                [class.active]="!chatStore.chat()?.visionModelId"
+                [class.active]="!chatStore.visionModelPick()"
                 (click)="chatStore.selectVisionModel('')"
               >
-                Default — the chat's model, else the first that can see
+                Default — the chat model, else the first that can see
               </button>
               <div class="sep"></div>
               @for (m of configStore.models(); track m.name) {
@@ -281,7 +281,7 @@ import { chatHintOf, chatTitleOf, messageCountLabel } from '../../services/helpe
                   <button
                     class="opt opt-toggle"
                     data-testid="vision-option"
-                    [class.active]="chatStore.chat()?.visionModelId === m.name"
+                    [class.active]="chatStore.visionModelPick() === m.name"
                     (click)="chatStore.selectVisionModel(m.name)"
                   >
                     {{ m.name }}

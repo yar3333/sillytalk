@@ -48,10 +48,14 @@ backend/               Express API; also serves the built frontend
                        composeImagePrompt (the JSON plan of the picture of the
                        user's turn, reused as the editor's "From the chat") —
                        all on the one requestCompletion;
-                       resolveModel (the chat's model by llmModels key with
-                       the first-model fallback) and resolveVisionModel (the
-                       model that looks at pictures: the chat's pick, else its
-                       own model when it can see, else the first that can); the system prompt (which now
+                       resolveModel (the config's global chatModel by llmModels
+                       key with the first-model fallback), resolveVisionModel
+                       (the model that looks at pictures: the config's
+                       visionModel, else the chat model when it can see, else the
+                       first that can) and resolveImagePromptModel (the config's
+                       imagePromptModel, else the chat model) — all three take
+                       the CONFIG and nothing else, because the models are
+                       app-wide settings; the system prompt (which now
                        says the model itself cannot attach or draw pictures),
                        the [SILENT] marker, author labels, the text description
                        of a card in a history line, history trimming;
@@ -226,9 +230,9 @@ backend/               Express API; also serves the built frontend
                        re-keyed + every chats/<old>/ picture id and images.db
                        row repointed; it refuses a malformed or taken name and
                        a chat whose picture is still pending),
-                       the format guards, the model
-                       fallback (and the vision pick — Chat.visionModelId is
-                       dropped when the model it names leaves the config),
+                       the format guards (the retired per-chat model picks are
+                       stripped from a stored blob on the first read — the models
+                       are global settings now),
                        the chat files (saveImage with an English
                        name hint that de-duplicates by content (a byte-identical
                        picture already in the data folders is reused, not copied —
@@ -251,8 +255,8 @@ backend/               Express API; also serves the built frontend
                        of every chat follow a renamed picture; repointImageIds
                        applies several replacements in ONE pass, which is what a
                        trade of two ids needs — and is what the disk sync calls);
-                       DI token DI_CHATS_SERVICE, the root folder, the
-                       configuration service and the image-metadata service
+                       DI token DI_CHATS_SERVICE, the root folder and the
+                       image-metadata service
                        injected); chats.routes.ts — the
                        /chats routes
                        (the chat CRUD + the clone (POST /:id/clone) + the ID
@@ -296,10 +300,10 @@ backend/               Express API; also serves the built frontend
                        parsing, the flat-model helpers, the legacy-field
                        cleanup (prepareLegacyConfig), normalizeGenerators (an
                        entry without a known `kind` is dropped — a generator
-                       the app cannot run is not a generator), and the
-                       imagePromptModel cleanup (the global picture-prompt
-                       model key; dropped when it names a model no longer in
-                       llmModels); DI token
+                       the app cannot run is not a generator), and the model-pick
+                       cleanup (the three global keys — chatModel, visionModel,
+                       imagePromptModel — each dropped when it names a model no
+                       longer in llmModels); DI token
                        DI_CONFIGURATION_SERVICE);
                        config.routes.ts — the /config routes;
                        ConfigurationService.test.ts — jest unit tests
@@ -564,7 +568,7 @@ or through the in-app **Settings** dialog. Paths may use `~` (resolved by `expan
   // address the server listens on (host:port) — port is parsed from here
   "listen": "0.0.0.0:3210",
   // key = model name inside the app (displayed, chosen in the menu) AND the
-  // identifier a chat references via `chat.modelId`; value field `id` is the
+  // identifier the global picks below name; value field `id` is the
   // identifier actually sent to the provider.
   "llmModels": {
     "openrouter/anthropic/claude-3.5-sonnet": {
@@ -578,9 +582,17 @@ or through the in-app **Settings** dialog. Paths may use `~` (resolved by `expan
       "reasoningLevels": ["low", "medium", "high", "xhigh", "max"]  // optional
     }
   },
+  // The models are settings of the WHOLE APP, not of a chat (the header's model
+  // chip and 👁 write them; the Settings dialog keeps only the prompt model).
+  // The one that talks (replies, and the default of every other role); unset or
+  // unknown = the first model of llmModels.
+  "chatModel": "openrouter/anthropic/claude-3.5-sonnet",
+  // The one that LOOKS at pictures (card captions, the describe helpers); unset
+  // or unknown = the chat model when it can see, else the first that can.
+  "visionModel": "",
   // the llmModels key of the model that PLANS the picture prompts (the 📷 "picture of
   // my turn" and the editor's "From the chat"); unset or a model that is gone = the
-  // chat's own model plans. It does not affect replies or picture captions.
+  // chat model plans. It does not affect replies or picture captions.
   "imagePromptModel": "",
   // generation backends: kind = "sdapi" | "comfyui" decides the type; every
   // enabled + available one is used in parallel, the jobs of one SERVER are
@@ -607,8 +619,9 @@ or through the in-app **Settings** dialog. Paths may use `~` (resolved by `expan
 
 The config is **flat**: connection settings live on each `llmModels` entry (`baseUrl`,
 `apiKey`/`envKey`, `contextSize`) — there is no separate `providers` level. The **key** of
-`llmModels` is both the human-visible name and the internal id a chat references
-(`chat.modelId`); the entry's `id` field is the identifier actually sent to the provider
+`llmModels` is both the human-visible name and the internal id the three global picks
+(`chatModel`, `visionModel`, `imagePromptModel`) name; the entry's `id` field is the identifier
+actually sent to the provider
 (flattened to `Model.name`/`Model.id` in `listModels()`, see
 `configuration/ConfigurationService.ts`). The API key is
 resolved by `resolveApiKey()`: `envKey` (env var) wins over `apiKey` (literal).
@@ -699,34 +712,37 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   generator per GPU; the ComfyUI server needs the models of the workflow installed (the
   `picgen-install-comfyui` script of the `d:\MyDocs\AiPic\generators` folder the workflows were
   ported from sets such a server up — it is not part of this app).
-- **One model talks, another one looks (`Chat.visionModelId`).** The model that runs the replies
-  does not have to be the one that sees: a chat can name a second llmModels entry that describes its
-  pictures. `TextGenerationService.resolveVisionModel` is the rule, and it is mirrored on the
-  frontend (`ChatStore.visionModel`): the chat's pick wins — even when it cannot see, so the banner
-  can say "«x» cannot see pictures" instead of silently using another model — else the chat's own
-  model when it `supportsImages`, else the first vision-capable model of the config (a roleplay
-  model with no vision still gets its cards described). Nothing configured that can see → the
-  `"Describe the picture"` call answers a 400 with that sentence. The pick is set by the 👁 chip of
-  the header (`PATCH /api/chats/:id`, body `{ visionModelId }`; an empty value is a real choice and
-  goes back to the default) and a key whose model is gone is dropped by `ChatsService` on read.
+- **One model talks, another one looks (`Config.chatModel` / `Config.visionModel`).** The models are
+  GLOBAL settings, not fields of a chat: the model that runs the replies is `chatModel` and the one
+  that sees is `visionModel`, both written by the header chips (the model chip and the 👁) through
+  `PUT /api/config` — a chat carries no pick at all, so switching a model switches it for the whole
+  app. `TextGenerationService.resolveVisionModel(config)` is the rule, mirrored on the frontend
+  (`ChatStore.visionModel`): the configured vision model wins — even when it cannot see, so the
+  banner can say "«x» cannot see pictures" instead of silently using another — else the chat model
+  when it `supportsImages`, else the first vision-capable model of the config (a roleplay model with
+  no vision still gets its cards described). Nothing configured that can see → the
+  `"Describe the picture"` call answers a 400 with that sentence. An empty vision pick is a real
+  choice (the field is removed, back to that default), and `ConfigurationService` drops a pick whose
+  model is gone on load.
   What uses it: the editor's `POST /api/image/describe`, and the caption of an attached picture —
   `ChatStore.send` calls `POST /api/image/caption` `{ chatId, messageId }` for every 📎 card that
   has no caption (`ReplyService.captionPicture`), which writes the vision model's sentence into the
-  picture's row (`description` — what the card shows as its `text`); an empty caption, a chat with nothing that can see and a model that
+  picture's row (`description` — what the card shows as its `text`); an empty caption, a config with nothing that can see and a model that
   failed all leave the card as it is (no error banner — an unlabelled picture is a normal state).
   That caption is what a chat model without vision reads about the picture in the history and what
   the 📷 planner reads in its catalogue, so it is not decoration.
 - **A separate planner model (`Config.imagePromptModel`).** The model that writes a picture's
-  prompt can be different from the one that replies. It is a GLOBAL Settings field (the Settings
-  dialog's "Picture prompt model" pick, `settings-prompt-model`), an llmModels key, used ONLY by the
+  prompt can be different from the one that replies. It is a GLOBAL field (the Settings dialog's
+  "Picture prompt model" pick, `settings-prompt-model`), an llmModels key, used ONLY by the
   picture PLANNER — the 📷 "picture of my turn" and the editor's "From the chat" — NOT by
   replies, tunePrompt ("Make it English"), or the vision captions. `TextGenerationService.resolveImagePromptModel`
   (mirrored by `ReplyService.resolveImagePromptModel`) is the rule: the configured key when it names
-  an existing model, else the chat's own model. `runUserTurnImage` and `planPicturePrompt` resolve
+  an existing model, else the chat model (`chatModel`, else the first). `runUserTurnImage` and
+  `planPicturePrompt` resolve
   through it; `ConfigurationService` drops the field on load when it names a model no longer in
   `llmModels`, and the Settings pick writes an empty value as "Default" (the field removed → the
-  chat's own model plans). Replies and picture captions are unaffected — they keep the chat's model
-  and the chat's vision model.
+  chat model plans). Replies and picture captions are unaffected — they use `chatModel` and
+  `visionModel`.
 - **Pictures belong to the user; the model is text-only.** There is no `[IMG:…]` /
   `[PHOTO:…]` protocol and no `accessAllImages` flag anymore: `systemPromptFor` states plainly that
   the character cannot send or create images. A picture enters a chat in exactly three ways, and all
@@ -1162,7 +1178,10 @@ that needs the databases resolves them here — the one place allowed to.
   pick, ✎ edit icon per item, "+ New model"; the chip is the ONLY model picker — the "⋮" menu has no
   model submenu), then the **vision chip** — a small round 👁 right of the model chip (opens the
   **vision menu**: a "Default" row plus every llm model, each marked `(👁)` when it can see, ✎ per
-  row; single-select — the active row is highlighted). The chip carries no name of its own: the
+  row; single-select — the active row is highlighted). Both chips write the **global** pick
+  (`PUT /api/config` with `chatModel` / `visionModel`) — the models are settings of the whole app,
+  not of a chat, so a pick lives across chats and survives switching. The vision chip carries no
+  name of its own: the
   model that will really look is its hover hint (`ChatStore.visionModelTitle`, e.g. "Pictures are
   described by: qwen-vl"; a pick that cannot see says so, and the chip is dimmed —
   `.vision-chip.missing`). The **chat title** label (the chat's own `name`, or the date it was created while
@@ -1205,7 +1224,7 @@ that needs the databases resolves them here — the one place allowed to.
   `Chat.stylePrompt` and
   `Chat.name`, saved with
   `PATCH /api/chats/:id` (the only place they are set — `POST /api/chats` takes just the
-  participants, the persona and the model). `ReplyService.appendAssistantReply`
+  participants and the persona; the models are not a field of a chat at all). `ReplyService.appendAssistantReply`
   appends `systemSuffix` to the system prompt of every reply in the chat, and `sampling` goes into
   every model call of the chat — the replies and the 📷 picture-planning call alike — as
   `temperature` / `min_p` / `repetition_penalty`, each sent only when it is set (`requestCompletion`
@@ -1213,7 +1232,7 @@ that needs the databases resolves them here — the one place allowed to.
 - **Entity edit dialogs** (character-dialog / user-dialog / model-dialog): one per item, opened from
   the ✎ icons / "+ New" buttons above. They carry **Save/Cancel**, **Delete** (a confirm; only in
   edit mode) and **Clone** (only in edit mode). Models are saved through the config (a rename
-  re-keys the llmModels entry); characters/personas through the full list sync. Character/persona
+  re-keys the llmModels entry); characters/personas one card at a time (`PUT …/:id`). Character/persona
   clone — `POST /api/characters/:id/clone` / `POST /api/persons/:id/clone` (the folder is copied:
   photos and avatar go along, the name gets a " (copy)" suffix); the response is
   `{ id, characters|users }` with the NEW id, and the dialog does NOT close — it switches to the
@@ -1297,7 +1316,14 @@ that needs the databases resolves them here — the one place allowed to.
   caption written here is what the chat shows, and the current chat is re-read after the save), the
   **reference list** the prompt names (added from the catalog, minus the picture itself and minus any
   row whose file is gone), and its **ID** with a separate **Rename** action sitting right of the ID
-  field (`.id-row`), not at the bottom of the dialog — a rename is the field's own action. Under the
+  field (`.id-row`), not at the bottom of the dialog — a rename is the field's own action. The
+  description has its own **"Describe the picture"** (`picture-describe` — the same call and the same
+  button the card editor has): the model that looks is the OPEN CHAT's vision model, so with no chat
+  at all the button is disabled, and the answer only fills the form (Save is still the write).
+  For a picture the app drew **automatically** (the 📷 turn picture, `source: 'auto'`) the prompt and
+  the reference list are NOT shown: both are the planner's, and they are edited where the card is
+  (`picture-dialog`); a draw the user asked for (🎨, `manual`) keeps its prompt here, because that
+  text is theirs. Under the
   field the hint line states **"Used as a reference by N other picture(s)"** (`picture-used-by`,
   the same `referencedBy` number as the row badge) — it is what tells the user whether a rename has
   followers. Renaming is not a label:
@@ -1597,8 +1623,10 @@ that needs the databases resolves them here — the one place allowed to.
   `.lib-thumb-gone` ✕ inside, a `.lib-refs` "N ref(s)" badge when other pictures use it and a
   `.lib-same` "N copy/copies" badge when the same bytes live at another path),
   `picture-empty`, `picture-preview`, then the editor of the selected
-  picture — `picture-description`, `picture-prompt`, the reference chips (`picture-ref-remove` per
-  chip) and `picture-ref-add` (the `<select>` of catalog ids), the `picture-id-input` with
+  picture — `picture-description` with its `picture-describe` helper, `picture-prompt` and the
+  reference chips (`picture-ref-remove` per chip) with `picture-ref-add` (the `<select>` of catalog
+  ids) — both absent for a picture the app drew automatically (`source: 'auto'`) —, the
+  `picture-id-input` with
   `picture-rename` right of the field (disabled until the id differs), the
   `picture-used-by` hint line under it, the `picture-forget` button of a row whose file is gone
   (absent for a real picture) and `picture-reset` / `picture-save` at its bottom.

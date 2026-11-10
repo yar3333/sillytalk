@@ -24,12 +24,11 @@ export type Chat = {
   // that ever participated are not stored: they are derived on the fly from
   // message authors (ChatMessage.userId).
   userId: string;
-  modelId: string; // llmModels key of the chosen model
-  // The llmModels key of the model that LOOKS at pictures in this chat (the
-  // card captions). Absent — the chat's own model when it can see, else the
-  // first vision-capable model of the config: a roleplay model without vision
-  // still gets its pictures described.
-  visionModelId?: string;
+  // The models are GLOBAL settings, not fields of a chat: Config.chatModel is
+  // the model the app talks with and Config.visionModel the one that looks at
+  // pictures (Config.imagePromptModel writes the picture prompts). A chat that
+  // still carries its old per-chat pick loses it on the next read
+  // (ChatsService.normalize).
   sampling?: ChatSampling; // per-chat sampling overrides (absent fields = provider default)
   // A free-text addition appended to the system prompt of every reply in
   // this chat (the user's extra instructions — style, quirks, etc.).

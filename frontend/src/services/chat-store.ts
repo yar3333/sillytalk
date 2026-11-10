@@ -118,26 +118,34 @@ export class ChatStore {
     const a = this.character()?.avatar;
     return a ? this.api.mediaUrl(a) : '';
   });
+  // The model the app talks with — the GLOBAL config pick, else the first model
+  // (the backend's resolveModel). A chat carries no model of its own: the header
+  // chip shows and switches the setting for the whole app.
   readonly currentModel = computed<Model | null>(() => {
-    const c = this.chat();
-    if (!c) return null;
-    return this.configStore.models().find((m) => m.name === c.modelId) ?? null;
+    const cfg = this.configStore.config();
+    if (!cfg) return null;
+    const models = this.configStore.models();
+    const picked = cfg.chatModel ? models.find((m) => m.name === cfg.chatModel) : undefined;
+    return picked ?? models[0] ?? null;
   });
   readonly modelLabel = computed<string>(() => this.currentModel()?.name ?? '—');
-  // The model that looks at pictures for this chat — the backend's rule
-  // (TextGenerationService.resolveVisionModel) mirrored here so the header
-  // names the model that will really look: the chat's own pick, else its chat
-  // model when that can see, else the first vision-capable model of the config.
+  // The model that looks at pictures — the backend's rule
+  // (TextGenerationService.resolveVisionModel) mirrored here so the header names
+  // the model that will really look: the global vision pick, else the chat model
+  // when that can see, else the first vision-capable model of the config.
   readonly visionModel = computed<Model | null>(() => {
-    const c = this.chat();
-    if (!c) return null;
+    const cfg = this.configStore.config();
+    if (!cfg) return null;
     const models = this.configStore.models();
-    const picked = c.visionModelId ? models.find((m) => m.name === c.visionModelId) : undefined;
+    const picked = cfg.visionModel ? models.find((m) => m.name === cfg.visionModel) : undefined;
     if (picked) return picked;
-    const own = models.find((m) => m.name === c.modelId);
+    const own = this.currentModel();
     if (own?.supportsImages) return own;
     return models.find((m) => m.supportsImages) ?? null;
   });
+  // The explicit vision pick ('' — the default rule above); the menu's active
+  // row and its "Default" entry read this.
+  readonly visionModelPick = computed<string>(() => this.configStore.config()?.visionModel ?? '');
   // The hover hint of the 👁 chip: the model that describes this chat's
   // pictures (the one the app will really use), or why there is none.
   readonly visionModelTitle = computed<string>(() => {
@@ -210,10 +218,9 @@ export class ChatStore {
     // and character, so the app does not open with an empty dialog.
     const users = this.configStore.users();
     const chars = this.configStore.characters();
-    const modelKeys = Object.keys(cfg.llmModels);
-    if (modelKeys.length === 0 || users.length === 0 || chars.length === 0) return;
+    if (Object.keys(cfg.llmModels).length === 0 || users.length === 0 || chars.length === 0) return;
     this.api
-      .createChat([chars[0].id], modelKeys[0], users[0].id)
+      .createChat([chars[0].id], users[0].id)
       .then((chat) => {
         this.setChat(chat);
         return this.refreshChats();
@@ -596,19 +603,17 @@ export class ChatStore {
     this.api.patchChat(c.id, { userId: id }).then((ch) => this.setChat(ch));
   }
 
+  // The global model picks (the header chips) — they are settings of the whole
+  // app, so they are written to the config, not to a chat.
   selectModel(modelId: string): void {
-    const c = this.chat();
-    if (!c) return;
-    this.api.patchChat(c.id, { modelId }).then((ch) => this.setChat(ch));
+    this.configStore.selectChatModel(modelId);
   }
 
-  // The model that describes this chat's pictures (the 👁 menu). An empty name
-  // is a real choice: back to the default — the chat's own model when it can
-  // see, else the first vision-capable model of the config.
+  // The model that describes pictures (the 👁 menu). An empty name is a real
+  // choice: back to the default — the chat model when it can see, else the
+  // first vision-capable model of the config.
   selectVisionModel(name: string): void {
-    const c = this.chat();
-    if (!c) return;
-    this.api.patchChat(c.id, { visionModelId: name }).then((ch) => this.setChat(ch));
+    this.configStore.selectVisionModel(name);
   }
 
   refreshChats(): Promise<void> {
@@ -681,14 +686,9 @@ export class ChatStore {
   confirmNewChat(sel: { userId: string; characterIds: string[] }): void {
     const cfg = this.configStore.config();
     if (!cfg || sel.characterIds.length === 0 || !sel.userId) return;
-    const c = this.chat();
-    const modelId =
-      c && Object.keys(cfg.llmModels).includes(c.modelId)
-        ? c.modelId
-        : (Object.keys(cfg.llmModels)[0] ?? '');
     this.newChatOpen.set(false);
     this.api
-      .createChat(sel.characterIds, modelId, sel.userId)
+      .createChat(sel.characterIds, sel.userId)
       .then((chat) => {
         this.setChat(chat);
         return this.refreshChats();

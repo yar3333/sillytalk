@@ -22,8 +22,8 @@ import { PathHelper } from "./shared/PathHelper";
 // parsing, validation, status codes, file streaming). The services are
 // injected — the composition root in index.ts builds the DI container and
 // hands them in here. The text-generation service is not handed in: the only
-// route-level concern left (the chat's model) is resolved by the reply
-// service (ReplyService.resolveChatModel).
+// route-level concern left (which model replies) is resolved by the reply
+// service (ReplyService.resolveChatModel) from the config's global pick.
 export function createApiRouter(
   imageGeneration: ImageGenerationService,
   characters: CharactersService,

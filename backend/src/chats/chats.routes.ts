@@ -54,7 +54,6 @@ export function createChatsRouter(
     }
     const chat = chats.create(
       characterIds,
-      typeof body.modelId === "string" ? body.modelId : "",
       typeof body.userId === "string" ? body.userId : "",
     );
     res.json(chat);
@@ -75,8 +74,7 @@ export function createChatsRouter(
       res.status(404).json({ error: "Chat not found" });
       return;
     }
-    const { characterIds, modelId, visionModelId, userId, sampling, systemSuffix, name, stylePrompt } =
-      req.body ?? {};
+    const { characterIds, userId, sampling, systemSuffix, name, stylePrompt } = req.body ?? {};
     // The chat's own name — the title in the header. An empty name is stored as
     // "no name", which is what makes the header fall back to the creation date.
     if (name !== undefined) {
@@ -93,17 +91,6 @@ export function createChatsRouter(
         return;
       }
       chat.characterIds = ids;
-    }
-    if (modelId !== undefined) chat.modelId = modelId;
-    // The vision model of this chat (the one that describes pictures). An empty
-    // pick is a real choice: it means "no own vision model — use the chat's
-    // model, or the first one that can see". A key the config does not know is
-    // dropped on the next read (ensureVisionModelId), so a hand-written body
-    // cannot leave the chat pointing at a model that is not there.
-    if (visionModelId !== undefined) {
-      const t = typeof visionModelId === "string" ? visionModelId.trim() : "";
-      if (t) chat.visionModelId = t;
-      else delete chat.visionModelId;
     }
     // Switching the active persona: old messages stay under their former
     // authors — the author is stored on every message.
@@ -224,9 +211,9 @@ export function createChatsRouter(
       res.status(400).json({ error: "The character is not a participant of the chat" });
       return;
     }
-    const model = reply.resolveChatModel(chat);
+    const model = reply.resolveChatModel();
     if (!model) {
-      res.status(400).json({ error: "No model configured for the chat" });
+      res.status(400).json({ error: "No LLM model is configured" });
       return;
     }
     const ctrl = reply.beginReply(chat.id);

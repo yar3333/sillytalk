@@ -113,7 +113,7 @@ export class ImageGenerationService {
   // ---- prompts ----
 
   // The generation prompts are always in English: if the text has Cyrillic,
-  // translate it with the chat's model; on translation failure use the original.
+  // translate it with the chat model; on translation failure use the original.
   async ensureEnglishPrompt(model: Model | null, prompt: string): Promise<string> {
     if (!model || !this.hasCyrillic(prompt)) return prompt;
     try {

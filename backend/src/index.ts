@@ -54,7 +54,6 @@ container.register(
   (c) =>
     new ChatsService(
       () => PathHelper.chatsDir(),
-      c.resolve(DI_CONFIGURATION_SERVICE),
       c.resolve(DI_IMAGE_META_SERVICE),
     ),
 );

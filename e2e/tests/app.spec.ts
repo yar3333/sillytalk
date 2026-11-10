@@ -208,7 +208,7 @@ test('the send button becomes the cancel while a reply is generating', async ({ 
   await new Promise<void>((r) => hanging.listen(0, '127.0.0.1', r));
   const port = (hanging.address() as { port: number }).port;
 
-  // Add the hanging model and create a chat that uses it.
+  // Add the hanging model and make it the app's chat model.
   const cfg = (await (await fetch(`${API}/config`)).json()) as {
     llmModels: Record<string, unknown>;
     [key: string]: unknown;
@@ -227,6 +227,7 @@ test('the send button becomes the cancel while a reply is generating', async ({ 
           supportsImages: false,
         },
       },
+      chatModel: 'hanging model',
     }),
   });
   await fetch(`${API}/chats`, {
@@ -234,7 +235,6 @@ test('the send button becomes the cancel while a reply is generating', async ({ 
     headers: JSON_HEADERS,
     body: JSON.stringify({
       characterIds: ['alice'],
-      modelId: 'hanging model',
       userId: 'carol',
     }),
   });
@@ -269,6 +269,7 @@ test('the send button becomes the cancel while a reply is generating', async ({ 
       [key: string]: unknown;
     };
     delete restored.llmModels['hanging model'];
+    delete restored.chatModel;
     await fetch(`${API}/config`, {
       method: 'PUT',
       headers: JSON_HEADERS,
@@ -533,7 +534,7 @@ test('deleting a message while the next reply is generating keeps it deleted', a
     await fetch(`${API}/chats`, {
       method: 'POST',
       headers: JSON_HEADERS,
-      body: JSON.stringify({ characterIds: ['alice', 'bob'], modelId: 'mock model', userId: 'carol' }),
+      body: JSON.stringify({ characterIds: ['alice', 'bob'], userId: 'carol' }),
     });
     await page.goto('/');
     await expect(page.getByTestId('input')).toBeVisible();

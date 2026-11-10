@@ -77,7 +77,6 @@ describe('chat labels (helpers.ts)', () => {
       createdAt: 0,
       characterIds: ['c1'],
       userId: 'u1',
-      modelId: 'm1',
       messageCount: 5,
       lastMessageAt: 0,
     };
@@ -159,7 +158,6 @@ describe('ImageStore — the background image generation', () => {
     createdAt: 0,
     characterIds: ['char-1'],
     userId: 'user-1',
-    modelId: 'model-1',
     messages: [
       {
         id: 'msg-1',
@@ -321,7 +319,6 @@ describe('InputPanel — message editing', () => {
       createdAt: 0,
       characterIds: ['c1'],
       userId: 'u1',
-      modelId: 'm1',
       messages: [message],
     });
     fixture.detectChanges();
@@ -488,7 +485,6 @@ describe('ChatStore — empty send ("another message from the AI")', () => {
     createdAt: 0,
     characterIds: ['char-1'],
     userId: 'user-1',
-    modelId: 'model-1',
     messages: [{ id: 'msg-1', role: 'user', text: 'hello', images: [], timestamp: 1 }],
   };
 
@@ -572,7 +568,6 @@ describe('ChatStore — canceling the generation', () => {
     createdAt: 0,
     characterIds: ['char-1', 'char-2'],
     userId: 'user-1',
-    modelId: 'model-1',
     messages: [{ id: 'msg-1', role: 'user', text: 'hello', images: [], timestamp: 1 }],
   };
 
@@ -860,7 +855,6 @@ const turnChat = (messages: ChatMessage[]): Chat => ({
   createdAt: CHAT_CREATED_AT,
   characterIds: ['c1'],
   userId: 'u1',
-  modelId: 'm1',
   messages,
 });
 const assistantLine: ChatMessage = {
@@ -1228,7 +1222,6 @@ describe('PictureDialog — the picture editor', () => {
       createdAt: 0,
       characterIds: ['c1'],
       userId: 'u1',
-      modelId: 'm1',
       messages: [message],
     };
     await TestBed.resetTestingModule();
@@ -1443,6 +1436,7 @@ describe('PictureLibrary — the picture browser', () => {
   let edited: { id: string; patch: Record<string, unknown> }[];
   let renamed: { id: string; newId: string }[];
   let forgotten: string[];
+  let describeCalls: { chatId: string; image?: string; data?: string }[];
   let renameFails: string | null;
   let reloadedChats: number;
   // How long the answer of a save takes to come back — the test of the form
@@ -1470,6 +1464,10 @@ describe('PictureLibrary — the picture browser', () => {
         forgotten.push(id);
         listed = listed.filter((p) => p.id !== id);
         return Promise.resolve({ forgotten: id });
+      },
+      describePicture: (chatId: string, body: { image?: string; data?: string }) => {
+        describeCalls.push({ chatId, ...body });
+        return Promise.resolve({ description: 'a red boat at dusk, as the model sees it' });
       },
       getChat: () => {
         reloadedChats += 1;
@@ -1505,7 +1503,6 @@ describe('PictureLibrary — the picture browser', () => {
       createdAt: 0,
       characterIds: ['c1'],
       userId: 'u1',
-      modelId: 'm1',
       messages: [],
     };
     listed = [
@@ -1516,6 +1513,7 @@ describe('PictureLibrary — the picture browser', () => {
     edited = [];
     renamed = [];
     forgotten = [];
+    describeCalls = [];
     renameFails = null;
     reloadedChats = 0;
     editDelayMs = 0;
@@ -1812,6 +1810,50 @@ describe('PictureLibrary — the picture browser', () => {
     expect(TestBed.inject(PictureLibraryStore).pictures().some((p) => p.id === lost)).toBe(false);
     expect(TestBed.inject(PictureLibraryStore).selectedId()).toBe(boat);
   });
+
+  // The library's own "Describe the picture": the chat's vision model looks at
+  // the selected picture and writes the caption, exactly as the card editor does
+  // for a message card — the answer lands in the form, Save is what writes it.
+  it('the model can write the description (the chat\'s vision model, the selected picture)', async () => {
+    const { fixture, el } = await render();
+    // the vision model comes from the open chat
+    TestBed.inject(ChatStore).applyChat(chat);
+    fixture.detectChanges();
+    const button = el.querySelector('[data-testid=picture-describe]') as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+
+    button.click();
+    await tick();
+
+    expect(describeCalls).toEqual([{ chatId: 'chat-1', image: boat }]);
+    const description = el.querySelector('[data-testid=picture-description]') as HTMLTextAreaElement;
+    expect(description.value).toBe('a red boat at dusk, as the model sees it');
+    // nothing is saved by the helper: the user is still the one pressing Save
+    expect(edited).toEqual([]);
+  });
+
+  it('hides the prompt of an automatically drawn picture and keeps it for a requested draw', async () => {
+    listed = listed.map((p) =>
+      p.id === boat
+        ? { ...p, prompt: 'a plan from the dialogue', source: 'auto' as const }
+        : p.id === anchor
+          ? { ...p, prompt: 'a portrait in the green coat', source: 'manual' as const }
+          : p,
+    );
+    const { el } = await render();
+    // the auto picture is selected: the plan belongs to the card, so neither the
+    // prompt nor the references it names are offered here
+    expect(el.querySelector('[data-testid=picture-prompt]')).toBeNull();
+    expect(el.querySelector('[data-testid=picture-ref-add]')).toBeNull();
+
+    const anchorRow = [...el.querySelectorAll('[data-testid=picture-row]')].find(
+      (r) => r.getAttribute('title') === anchor,
+    ) as HTMLElement;
+    anchorRow.click();
+    await tick();
+    // a draw the user asked for keeps its prompt — that text is theirs
+    expect(el.querySelector('[data-testid=picture-prompt]')).not.toBeNull();
+  });
 });
 
 // Toggling a character out of a chat is a reply-queue decision: it must not
@@ -1905,7 +1947,6 @@ describe('chatHintOf (helpers.ts)', () => {
     createdAt: 0,
     characterIds: ['c1'],
     userId: 'u1',
-    modelId: 'm1',
     messageCount: 3,
     lastMessageAt: 0,
   };
@@ -2133,7 +2174,6 @@ describe('The chat title and cloning a chat', () => {
       createdAt: CHAT_CREATED_AT,
       characterIds: ['c1', 'c2'],
       userId: 'u1',
-      modelId: 'm1',
       messageCount: 7,
       lastMessageAt: lastMessage,
     };
@@ -2162,8 +2202,9 @@ describe('The chat title and cloning a chat', () => {
   });
 });
 
-describe('ChatStore — the vision model of the chat', () => {
-  // The chat runs on the blind model; the config also has one that can see.
+describe('ChatStore — the global model picks', () => {
+  // The models are settings of the whole app (like the image generators): the
+  // header chips write them into the config, and a chat carries none.
   const blind = { id: 'b', baseUrl: 'http://x', contextSize: 100, supportsImages: false };
   const seer = { id: 's', baseUrl: 'http://x', contextSize: 100, supportsImages: true };
   const chat: Chat = {
@@ -2171,21 +2212,28 @@ describe('ChatStore — the vision model of the chat', () => {
     createdAt: 0,
     characterIds: ['char-1'],
     userId: 'user-1',
-    modelId: 'blind',
     messages: [{ id: 'msg-1', role: 'user', text: 'hello', images: [], timestamp: 1 }],
   };
   const tick = () => new Promise((r) => setTimeout(r, 0));
 
-  async function setup(extra: Record<string, unknown> = {}) {
+  async function setup(config: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) {
+    const puts: Record<string, unknown>[] = [];
     const api = {
       getConfig: () =>
-        Promise.resolve({ listen: '127.0.0.1:3210', llmModels: { blind, seer }, imageGenerators: [] }),
+        Promise.resolve({
+          listen: '127.0.0.1:3210',
+          llmModels: { blind, seer },
+          imageGenerators: [],
+          ...config,
+        }),
+      putConfig: (cfg: Record<string, unknown>) => {
+        puts.push(cfg);
+        return Promise.resolve(cfg);
+      },
       getChats: () => Promise.resolve([]),
       getCharacters: () => Promise.resolve([{ id: 'char-1', name: 'Alice', description: '' }]),
       getUsers: () => Promise.resolve([{ id: 'user-1', name: 'Me', description: '' }]),
       imageStatus: () => Promise.resolve({ available: false }),
-      patchChat: (_id: string, patch: Record<string, unknown>) =>
-        Promise.resolve({ ...chat, ...patch } as Chat),
       ...extra,
     };
     await TestBed.resetTestingModule();
@@ -2196,45 +2244,48 @@ describe('ChatStore — the vision model of the chat', () => {
     await configStore.loadAll();
     const store = TestBed.inject(ChatStore);
     store.chat.set(chat);
-    return { store, api };
+    return { store, api, puts };
   }
 
   it('names the chat model when it can see pictures', async () => {
-    const { store } = await setup();
-    store.chat.set({ ...chat, modelId: 'seer' });
+    const { store } = await setup({ chatModel: 'seer' });
+    expect(store.currentModel()?.name).toBe('seer');
     expect(store.visionModel()?.name).toBe('seer');
     expect(store.canDescribePictures()).toBe(true);
     expect(store.visionModelTitle()).toContain('seer');
   });
 
-  it('falls back to the first model that can see when the chat model is blind', async () => {
+  it('falls back to the first model for the chat, and to the first that can see for pictures', async () => {
     const { store } = await setup();
+    expect(store.currentModel()?.name).toBe('blind');
     expect(store.visionModel()?.name).toBe('seer');
     expect(store.canDescribePictures()).toBe(true);
   });
 
-  it('honours the chat pick, and its hint says that model cannot see', async () => {
-    const { store } = await setup();
-    store.chat.set({ ...chat, visionModelId: 'blind' });
+  it('honours the vision pick, and its hint says that model cannot see', async () => {
+    const { store } = await setup({ chatModel: 'blind', visionModel: 'blind' });
     expect(store.visionModel()?.name).toBe('blind');
     expect(store.canDescribePictures()).toBe(false);
     expect(store.visionModelTitle()).toContain('cannot see pictures');
   });
 
-  it('selectVisionModel patches the chat (an empty name is the default)', async () => {
-    const patches: Record<string, unknown>[] = [];
-    const { store } = await setup({
-      patchChat: (_id: string, patch: Record<string, unknown>) => {
-        patches.push(patch);
-        return Promise.resolve({ ...chat, ...patch } as Chat);
-      },
-    });
+  it('selectModel writes the global chat model', async () => {
+    const { store, puts } = await setup();
+    store.selectModel('seer');
+    await tick();
+    expect(puts[0]).toMatchObject({ chatModel: 'seer' });
+    expect(store.currentModel()?.name).toBe('seer');
+  });
+
+  it('selectVisionModel writes the global pick (an empty name is the default)', async () => {
+    const { store, puts } = await setup({ chatModel: 'blind' });
     store.selectVisionModel('seer');
     await tick();
-    expect(patches[0]).toEqual({ visionModelId: 'seer' });
+    expect(puts[0]).toMatchObject({ visionModel: 'seer' });
     store.selectVisionModel('');
     await tick();
-    expect(patches[1]).toEqual({ visionModelId: '' });
+    // the field is removed, which is what makes the default rule apply
+    expect(puts[1]).not.toHaveProperty('visionModel');
   });
 
   it('captions an attached picture the user gave no text to', async () => {
@@ -2251,18 +2302,21 @@ describe('ChatStore — the vision model of the chat', () => {
       messages: [...chat.messages, { ...card, text: 'a red boat on a calm lake' }],
     };
     const captionCalls: string[] = [];
-    const { store } = await setup({
-      postMessage: (_id: string, text: string) =>
-        Promise.resolve({
-          chat: { ...chat, messages: [...chat.messages, card] },
-          messages: [{ ...chat.messages[0], id: 'msg-1b', text }, card],
-        }),
-      captionPicture: (_chatId: string, messageId: string) => {
-        captionCalls.push(messageId);
-        return Promise.resolve({ chat: captioned });
+    const { store } = await setup(
+      {},
+      {
+        postMessage: (_id: string, text: string) =>
+          Promise.resolve({
+            chat: { ...chat, messages: [...chat.messages, card] },
+            messages: [{ ...chat.messages[0], id: 'msg-1b', text }, card],
+          }),
+        captionPicture: (_chatId: string, messageId: string) => {
+          captionCalls.push(messageId);
+          return Promise.resolve({ chat: captioned });
+        },
+        nextReply: () => Promise.resolve({ chat: captioned, reply: null }),
       },
-      nextReply: () => Promise.resolve({ chat: captioned, reply: null }),
-    });
+    );
     store.pendingImages.set(['data:image/png;base64,aGVsbG8=']);
     expect(store.send('look')).toBe(true);
     await tick();
@@ -2281,20 +2335,22 @@ describe('ChatStore — the vision model of the chat', () => {
       timestamp: 2,
     };
     const captionCalls: string[] = [];
-    const { store } = await setup({
-      getConfig: () =>
-        Promise.resolve({ listen: '127.0.0.1:3210', llmModels: { blind }, imageGenerators: [] }),
-      postMessage: () =>
-        Promise.resolve({
-          chat: { ...chat, messages: [...chat.messages, card] },
-          messages: [card],
-        }),
-      captionPicture: (_chatId: string, messageId: string) => {
-        captionCalls.push(messageId);
-        return Promise.resolve({ chat });
+    const { store } = await setup(
+      // nothing in the config can see
+      { llmModels: { blind } },
+      {
+        postMessage: () =>
+          Promise.resolve({
+            chat: { ...chat, messages: [...chat.messages, card] },
+            messages: [card],
+          }),
+        captionPicture: (_chatId: string, messageId: string) => {
+          captionCalls.push(messageId);
+          return Promise.resolve({ chat });
+        },
+        nextReply: () => Promise.resolve({ chat, reply: null }),
       },
-      nextReply: () => Promise.resolve({ chat, reply: null }),
-    });
+    );
     store.pendingImages.set(['data:image/png;base64,aGVsbG8=']);
     store.send('look');
     await tick();

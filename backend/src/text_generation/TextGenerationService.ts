@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { Chat, ChatSampling } from "../chats/Chat";
+import { ChatSampling } from "../chats/Chat";
 import { ChatMessage, isImageMessage } from "../chats/ChatMessage";
 import { Config } from "../configuration/Config";
 import { Model } from "../configuration/Model";
@@ -101,49 +101,57 @@ export class TextGenerationService {
   private static readonly IMAGE_REJECT_RE = /image input|images? (?:are |is )?not supported|mmproj|multimodal/i;
 
   // ---- model resolution ----
+  //
+  // The models are GLOBAL settings (config.json, written by the header chips):
+  // a chat does not carry its own pick any more, so every resolver takes the
+  // config and nothing else.
 
-  // The model a chat should use: the llmModels entry the chat references
-  // (chat.modelId is the llmModels key = Model.name), falling back to the
-  // first model so a chat whose model was renamed or deleted keeps working.
-  resolveModel(config: Config, chat: Chat): Model | null {
+  // The model the app talks with: the config's chatModel when it names an
+  // existing model, else the first one (a config with a single model needs no
+  // pick at all, and a pick whose entry was renamed away cannot strand the app).
+  resolveModel(config: Config): Model | null {
     const models = this.configuration.listModels(config);
-    return models.find((m) => m.name === chat.modelId) ?? models[0] ?? null;
+    if (config.chatModel) {
+      const picked = models.find((m) => m.name === config.chatModel);
+      if (picked) return picked;
+    }
+    return models[0] ?? null;
   }
 
-  // The model that looks at pictures for this chat (the one that writes card
-  // captions). Three cases, in order:
-  //  - the chat picked one (the header's vision menu) — that pick is honoured
+  // The model that looks at pictures (the one that writes card captions and
+  // answers the describe helpers). Three cases, in order:
+  //  - the config picked one (the header's vision menu) — that pick is honoured
   //    even when the model cannot see, so the caller's guard can say plainly
   //    "this model cannot see pictures" instead of quietly using another;
-  //  - the chat's own model can see — nothing to add, it does both jobs;
+  //  - the chat model can see — nothing to add, it does both jobs;
   //  - otherwise the first vision-capable model of the config, which is the
   //    user's own ranking: a roleplay model with no vision still gets the
   //    user's pictures described, and the caption is what such a model reads
   //    about them in the history.
   // Null when no model of the config can see at all.
-  resolveVisionModel(config: Config, chat: Chat): Model | null {
+  resolveVisionModel(config: Config): Model | null {
     const models = this.configuration.listModels(config);
-    if (chat.visionModelId) {
-      const picked = models.find((m) => m.name === chat.visionModelId);
+    if (config.visionModel) {
+      const picked = models.find((m) => m.name === config.visionModel);
       if (picked) return picked;
     }
-    const own = models.find((m) => m.name === chat.modelId);
+    const own = this.resolveModel(config);
     if (own?.supportsImages) return own;
     return models.find((m) => m.supportsImages) ?? null;
   }
 
   // The model that writes the picture prompts (the 📷 planner and the picture
   // editor's "From the chat"): the config's dedicated imagePromptModel when it
-  // names a model that exists, else the chat's own model. This is the one global
+  // names a model that exists, else the chat model. This is the one global
   // Settings pick — the user may want a strong prompt-writer that is not the
   // model running the roleplay — and when it is unset nothing changes.
-  resolveImagePromptModel(config: Config, chat: Chat): Model | null {
+  resolveImagePromptModel(config: Config): Model | null {
     const models = this.configuration.listModels(config);
     if (config.imagePromptModel) {
       const picked = models.find((m) => m.name === config.imagePromptModel);
       if (picked) return picked;
     }
-    return this.resolveModel(config, chat);
+    return this.resolveModel(config);
   }
 
   // ---- prompts and history ----

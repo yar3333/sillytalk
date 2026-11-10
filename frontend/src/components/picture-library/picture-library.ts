@@ -1,7 +1,9 @@
 import { Component, EffectRef, OnDestroy, inject, effect, signal, untracked } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ApiService, Picture } from '../../services/api';
+import { ChatStore } from '../../services/chat-store';
 import { PictureLibraryStore } from '../../services/picture-library-store';
+import { UiStore } from '../../services/ui-store';
 
 // The picture browser: the whole data folder of pictures in one list, each with
 // the row of the images table that describes it, and the editor of one of them —
@@ -105,43 +107,68 @@ import { PictureLibraryStore } from '../../services/picture-library-store';
               (input)="setDescription($event)"
             ></textarea>
           </label>
-
-          <label class="field col">
-            <span>Prompt</span>
-            <textarea
-              class="grow"
-              rows="4"
-              placeholder="English. Empty — the picture has nothing to be redrawn from."
-              data-testid="picture-prompt"
-              [value]="prompt()"
-              (input)="setPrompt($event)"
-            ></textarea>
-          </label>
-
-          <div class="field col">
-            <span>References the prompt names</span>
-            <div class="refs">
-              @for (ref of refs(); track $index) {
-                <span class="ref" [title]="ref">
-                  <img class="ref-thumb" [src]="media(ref)" alt="" loading="lazy" />
-                  <span class="ref-name">{{ baseName(ref) }}</span>
-                  <button
-                    class="ref-x"
-                    data-testid="picture-ref-remove"
-                    title="Remove this reference"
-                    (click)="removeRef($index)">✕</button>
-                </span>
-              } @empty {
-                <span class="refs-none">None — this prompt draws from nothing.</span>
-              }
-            </div>
-            <select class="ref-add" data-testid="picture-ref-add" (change)="addRef($event)">
-              <option value="" [selected]="true">Add a reference picture…</option>
-              @for (option of refOptions(); track option.id) {
-                <option [value]="option.id">{{ option.id }}</option>
-              }
-            </select>
+          <!-- The same "Describe the picture" the card editor has: the chat's
+               vision model looks at this picture and writes the caption. It needs
+               an open chat — that is where the vision model comes from. -->
+          <div class="row-actions">
+            <button
+              class="btn"
+              data-testid="picture-describe"
+              [disabled]="busy() !== null || !canDescribe()"
+              [title]="
+                canDescribe()
+                  ? 'Let the model say what is on this picture'
+                  : 'Open a chat first — its vision model describes the picture'
+              "
+              (click)="describe()"
+            >
+              {{ busy() === 'describe' ? 'Looking…' : 'Describe the picture' }}
+            </button>
           </div>
+
+          <!-- The prompt and the references it names are the picture's way to be
+               redrawn — and for a picture the app drew AUTOMATICALLY (the 📷 turn
+               picture) both are the planner's, not the user's: the card's own ✎
+               is where they are edited. A draw the user asked for (🎨) keeps its
+               prompt here, because that text is theirs. -->
+          @if (showsPrompt(p)) {
+            <label class="field col">
+              <span>Prompt</span>
+              <textarea
+                class="grow"
+                rows="4"
+                placeholder="English. Empty — the picture has nothing to be redrawn from."
+                data-testid="picture-prompt"
+                [value]="prompt()"
+                (input)="setPrompt($event)"
+              ></textarea>
+            </label>
+
+            <div class="field col">
+              <span>References the prompt names</span>
+              <div class="refs">
+                @for (ref of refs(); track $index) {
+                  <span class="ref" [title]="ref">
+                    <img class="ref-thumb" [src]="media(ref)" alt="" loading="lazy" />
+                    <span class="ref-name">{{ baseName(ref) }}</span>
+                    <button
+                      class="ref-x"
+                      data-testid="picture-ref-remove"
+                      title="Remove this reference"
+                      (click)="removeRef($index)">✕</button>
+                  </span>
+                } @empty {
+                  <span class="refs-none">None — this prompt draws from nothing.</span>
+                }
+              </div>
+              <select class="ref-add" data-testid="picture-ref-add" (change)="addRef($event)">
+                <option value="" [selected]="true">Add a reference picture…</option>
+                @for (option of refOptions(); track option.id) {
+                  <option [value]="option.id">{{ option.id }}</option>
+                }
+              </select>
+            </div>
+          }
 
           <div class="field col">
             <span>ID (the path of the file)</span>
@@ -211,6 +238,8 @@ import { PictureLibraryStore } from '../../services/picture-library-store';
 export class PictureLibraryComponent implements OnDestroy {
   readonly store = inject(PictureLibraryStore);
   private readonly api = inject(ApiService);
+  private readonly chatStore = inject(ChatStore);
+  private readonly ui = inject(UiStore);
 
   readonly filter = signal('');
   // The order of the list: the server sends it newest file first (an orphan row
@@ -222,6 +251,9 @@ export class PictureLibraryComponent implements OnDestroy {
   readonly prompt = signal('');
   readonly refs = signal<string[]>([]);
   readonly idField = signal('');
+  // Which LLM helper is running — the describe button says what it is doing and
+  // refuses a second click meanwhile.
+  readonly busy = signal<'describe' | null>(null);
   // What the fields were filled from, so "Discard" can put them back without
   // asking the server again.
   private loaded: Picture | null = null;
@@ -340,6 +372,42 @@ export class PictureLibraryComponent implements OnDestroy {
   // Puts the fields back to what the row said.
   reset(): void {
     this.fill(this.loaded);
+  }
+
+  // The describe helper needs a chat: the vision model is the chat's (its pick,
+  // else its own model, else the first one that can see). The library is opened
+  // from inside the app, so there is normally a chat — a fresh install with no
+  // chat at all is the one case the button stays disabled for.
+  canDescribe(): boolean {
+    return !!this.chatStore.chat();
+  }
+
+  // "Describe the picture": the chat's vision model looks at the selected
+  // picture and writes the description — the same call the card editor makes,
+  // just for a picture that belongs to no message (a character's photo, a file
+  // dropped into a folder). The answer is the form's text; Save writes it.
+  describe(): void {
+    const chat = this.chatStore.chat();
+    const id = this.store.selectedId();
+    if (!chat || !id) return;
+    this.busy.set('describe');
+    this.api
+      .describePicture(chat.id, { image: id })
+      .then((res) => {
+        // the user may have picked another picture while the model was looking
+        if (this.store.selectedId() === id) this.description.set(res.description);
+      })
+      .catch((e) => this.ui.error.set(String((e as Error).message)))
+      .finally(() => this.busy.set(null));
+  }
+
+  // The prompt (and the references it names) are the picture's way to be
+  // redrawn. A picture the app drew AUTOMATICALLY got both from the planner, so
+  // the browser shows only what is the user's to write there — the caption; the
+  // card's own ✎ edits the plan. A draw the user asked for keeps its prompt,
+  // because that text is theirs.
+  showsPrompt(p: Picture): boolean {
+    return p.source !== 'auto';
   }
 
   save(): void {

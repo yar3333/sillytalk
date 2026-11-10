@@ -3,9 +3,6 @@ import os from "os";
 import path from "path";
 import { CharactersService } from "../characters/CharactersService";
 import { ChatsService } from "../chats/ChatsService";
-import { ConfigurationService } from "../configuration/ConfigurationService";
-import { Config } from "../configuration/Config";
-import { Model } from "../configuration/Model";
 import { ImageMetaService } from "../images/ImageMetaService";
 import { PersonsService } from "../persons/PersonsService";
 import { EntityIdService } from "./EntityIdService";
@@ -33,27 +30,8 @@ function track<T extends { close(): void }>(service: T): T {
   return service;
 }
 
-function model(name: string): Model {
-  return {
-    name,
-    id: `${name}-id`,
-    baseUrl: "http://provider.test/v1",
-    contextSize: 8192,
-    supportsImages: false,
-    reasoning: false,
-    reasoningLevels: [],
-  };
-}
-
-class StubConfigurationService extends ConfigurationService {
-  loadConfig(): Config {
-    return {
-      listen: "127.0.0.1:3210",
-      llmModels: { m1: model("m1") },
-      imageGenerators: [],
-    };
-  }
-}
+// The entity catalog holds what a chat points at; the chats themselves no
+// longer carry a model pick (the models are global settings).
 
 // The file of a picture id, for the assertions about what is on disk.
 function fileOf(id: string): string {
@@ -87,7 +65,7 @@ beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "sillytalk-entityid-"));
   process.env.SILLYTALK_DATA_DIR = root;
   meta = track(new ImageMetaService(() => root));
-  chats = track(new ChatsService(() => PathHelper.chatsDir(), new StubConfigurationService(), meta));
+  chats = track(new ChatsService(() => PathHelper.chatsDir(), meta));
   characters = track(new CharactersService(() => PathHelper.charactersDir(), () => PathHelper.catalogsDatabaseFile()));
   persons = track(new PersonsService(() => PathHelper.personsDir(), () => PathHelper.catalogsDatabaseFile()));
   entityIds = new EntityIdService(characters, persons, chats, meta);
@@ -128,7 +106,7 @@ describe("renaming a character", () => {
     characters.save({ id: "alice", name: "Alice", description: "" });
     persons.save({ id: "carol", name: "Carol", description: "" });
     const photo = characterPhoto("alice", "photo1.jpg");
-    const chat = chats.create(["alice"], "m1", "carol");
+    const chat = chats.create(["alice"], "carol");
     chats.addUserMessage(chat, "hello");
     assistantLine(chat.id, "alice", "Hi there.");
     chats.addImageMessage(chats.get(chat.id)!, photo, {
@@ -153,7 +131,7 @@ describe("renaming a character", () => {
   it("follows the picture rows: the cast of her own pictures and the reference set of the ones drawn from them", () => {
     characters.save({ id: "alice", name: "Alice", description: "" });
     const photo = characterPhoto("alice", "photo1.jpg");
-    const chat = chats.create(["alice"], "m1", "me");
+    const chat = chats.create(["alice"], "me");
     const drawn = chats.saveImage(chat.id, PNG, { nameHint: "alice-in-the-garden" });
     meta.set(photo, { description: "alice in a green coat", depicts: ["char:alice"] });
     meta.set(drawn, {
@@ -204,7 +182,7 @@ describe("renaming a character", () => {
   it("refuses an ID that another character already has, and changes nothing", () => {
     characters.save({ id: "alice", name: "Alice", description: "" });
     characters.save({ id: "bob", name: "Bob", description: "a tall man" });
-    const chat = chats.create(["alice", "bob"], "m1", "me");
+    const chat = chats.create(["alice", "bob"], "me");
     assistantLine(chat.id, "alice", "Hi.");
 
     expect(() => entityIds.renameCharacter("alice", "bob")).toThrow(/already a character/);
@@ -228,7 +206,7 @@ describe("renaming a character", () => {
     // fields, so "sam" as a character and "sam" as a persona are two entities
     characters.save({ id: "sam", name: "Sam (character)", description: "" });
     persons.save({ id: "sam", name: "Sam (persona)", description: "" });
-    const chat = chats.create(["sam"], "m1", "sam");
+    const chat = chats.create(["sam"], "sam");
     chats.addUserMessage(chat, "hello");
     assistantLine(chat.id, "sam", "Hi.");
 
@@ -250,7 +228,7 @@ describe("renaming a persona", () => {
     fs.mkdirSync(path.dirname(avatarFile), { recursive: true });
     fs.writeFileSync(avatarFile, "img");
     const avatar = PathHelper.imageIdOf(avatarFile);
-    const chat = chats.create(["alice"], "m1", "carol");
+    const chat = chats.create(["alice"], "carol");
     chats.addUserMessage(chat, "this is me");
     chats.addImageMessage(chats.get(chat.id)!, avatar, {
       userId: "carol",

@@ -33,6 +33,35 @@ const base = (extra: Record<string, unknown> = {}) =>
     },
   });
 
+describe("the global model picks", () => {
+  // Two models, so the picks can name one and dangle on another.
+  const twoModels = {
+    listen: "127.0.0.1:3210",
+    llmModels: {
+      m: { id: "m", baseUrl: "http://x/v1", contextSize: 100, supportsImages: false },
+      writer: { id: "w", baseUrl: "http://x/v1", contextSize: 100, supportsImages: false },
+    },
+  };
+
+  it("keeps a pick that names a model of llmModels", () => {
+    const cfg = loadConfigWith(
+      JSON.stringify({ ...twoModels, chatModel: "m", visionModel: "m", imagePromptModel: "writer" }),
+    );
+    expect(cfg.chatModel).toBe("m");
+    expect(cfg.visionModel).toBe("m");
+    expect(cfg.imagePromptModel).toBe("writer");
+  });
+
+  it("drops a pick whose model is gone — the default rule applies instead", () => {
+    const cfg = loadConfigWith(
+      JSON.stringify({ ...twoModels, chatModel: "renamed-away", visionModel: "gone", imagePromptModel: "gone" }),
+    );
+    expect(cfg).not.toHaveProperty("chatModel");
+    expect(cfg).not.toHaveProperty("visionModel");
+    expect(cfg).not.toHaveProperty("imagePromptModel");
+  });
+});
+
 describe("the reasoning config fields", () => {
   it("default: reasoning off, the standard level set", () => {
     const cfg = loadConfigWith(base());

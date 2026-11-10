@@ -33,7 +33,7 @@ import { UiStore } from '../../services/ui-store';
           <!-- [selected] on the option: [value] on the <select> would be set
                before the @for options exist and silently fail. -->
           <select data-testid="settings-prompt-model" (change)="setPromptModel($event)">
-            <option value="" [selected]="!m()!.imagePromptModel">Default (the chat's model)</option>
+            <option value="" [selected]="!m()!.imagePromptModel">Default (the chat model)</option>
             @for (model of configStore.models(); track model.name) {
               <option [value]="model.name" [selected]="model.name === m()!.imagePromptModel">
                 {{ model.name }}
@@ -43,9 +43,9 @@ import { UiStore } from '../../services/ui-store';
         </label>
         <div class="hint">
           The model that plans the picture prompts — the 📷 "picture of my turn" and the editor's
-          "From the chat". Leave it on Default to use each chat's own model; pick a strong one here
-          to plan with it regardless of the chat. Replies and picture captions still use the chat's
-          models.
+          "From the chat". Leave it on Default to use the app's chat model (the model chip in the
+          header); pick a strong one here to plan with it instead. Replies and picture captions use
+          the chat model and the vision chip.
         </div>
 
         <h3>Image generation</h3>

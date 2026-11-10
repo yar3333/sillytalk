@@ -3,43 +3,11 @@ import os from "os";
 import path from "path";
 import { createHash } from "crypto";
 import { ChatsService } from "./ChatsService";
-import { ConfigurationService } from "../configuration/ConfigurationService";
 import { ImageMetaService } from "../images/ImageMetaService";
 import { PathHelper } from "../shared/PathHelper";
 import { Chat } from "./Chat";
-import { Config } from "../configuration/Config";
-import { Model } from "../configuration/Model";
-
-// The config is stubbed, so the tests point the model fallback at an
-// in-memory model list — no real config.json is involved.
-class StubConfigurationService extends ConfigurationService {
-  loadConfig(): Config {
-    return configOf(modelNames);
-  }
-}
-
-function model(name: string): Model {
-  return {
-    name,
-    id: `${name}-id`,
-    baseUrl: "http://provider.test/v1",
-    contextSize: 8192,
-    supportsImages: false,
-    reasoning: false,
-    reasoningLevels: [],
-  };
-}
-
-function configOf(names: string[]): Config {
-  return {
-    listen: "127.0.0.1:3210",
-    llmModels: Object.fromEntries(names.map((n) => [n, model(n)])),
-    imageGenerators: [],
-  };
-}
 
 let root: string;
-let modelNames: string[];
 let chats: ChatsService;
 // The one images table the chats write their picture data to — the test reads
 // it directly to see what the chat store actually stored.
@@ -49,7 +17,7 @@ let imageMeta: ImageMetaService;
 let open: { close(): void }[];
 
 function makeChats(): ChatsService {
-  const service = new ChatsService(() => root, new StubConfigurationService(), imageMeta);
+  const service = new ChatsService(() => root, imageMeta);
   open.push(service);
   return service;
 }
@@ -58,7 +26,7 @@ function makeChats(): ChatsService {
 // would see (proves the last write reached the database, not just some
 // in-memory state).
 function peek(id: string): Chat | null {
-  const fresh = new ChatsService(() => root, new StubConfigurationService(), imageMeta);
+  const fresh = new ChatsService(() => root, imageMeta);
   try {
     return fresh.get(id);
   } finally {
@@ -73,7 +41,6 @@ beforeEach(() => {
   // uses for the chats — otherwise every id of a test would escape the root and
   // be rejected.
   process.env.SILLYTALK_DATA_DIR = root;
-  modelNames = ["m1", "m2"];
   open = [];
   imageMeta = new ImageMetaService(() => root);
   open.push(imageMeta);
@@ -96,13 +63,12 @@ function writeChat(id: string, chat: Record<string, unknown>): void {
 
 describe("create / get / list", () => {
   it("creates the chat and reads it back", () => {
-    const chat = chats.create(["alice", "bob"], "m1", "me");
+    const chat = chats.create(["alice", "bob"], "me");
     expect(chat).toEqual({
       id: expect.any(String),
       createdAt: expect.any(Number),
       characterIds: ["alice", "bob"],
       userId: "me",
-      modelId: "m1",
       messages: [],
     });
     expect(chats.get(chat.id)).toEqual(chat);
@@ -113,15 +79,15 @@ describe("create / get / list", () => {
   });
 
   it("the data survives a reopen (a fresh service on the same root)", () => {
-    const chat = chats.create(["alice"], "m1", "me");
+    const chat = chats.create(["alice"], "me");
     chats.addUserMessage(chat, "hi");
     const seen = peek(chat.id);
     expect(seen?.messages.map((m) => m.text)).toEqual(["hi"]);
   });
 
   it("list returns summaries without the messages, newest first", () => {
-    const a = chats.create(["a"], "m1", "me");
-    const b = chats.create(["b"], "m1", "me");
+    const a = chats.create(["a"], "me");
+    const b = chats.create(["b"], "me");
     a.messages.push({ id: "1", role: "user", userId: "me", text: "hi", images: [], timestamp: 100 });
     b.messages.push({ id: "2", role: "user", userId: "me", text: "hey", images: [], timestamp: 200 });
     chats.save(a);
@@ -133,7 +99,6 @@ describe("create / get / list", () => {
       createdAt: b.createdAt,
       characterIds: ["b"],
       userId: "me",
-      modelId: "m1",
       messageCount: 1,
       lastMessageAt: 200,
     });
@@ -143,7 +108,7 @@ describe("create / get / list", () => {
     fs.mkdirSync(path.join(root, "empty"));
     fs.mkdirSync(path.join(root, "broken"));
     fs.writeFileSync(path.join(root, "broken", "chat.json"), "{oops", "utf-8");
-    const ok = chats.create(["a"], "m1", "me");
+    const ok = chats.create(["a"], "me");
     expect(chats.list().map((c) => c.id)).toEqual([ok.id]);
   });
 });
@@ -233,27 +198,31 @@ describe("the format guards", () => {
   });
 });
 
-describe("the model fallback", () => {
-  it("attaches the first model when the chat model disappeared from the config", () => {
-    writeChat("c1", { id: "c1", characterIds: ["a"], userId: "me", modelId: "renamed-away", messages: [] });
-    expect(chats.get("c1")?.modelId).toBe("m1");
-  });
-
-  it("keeps the model that is still in the config", () => {
-    writeChat("c1", { id: "c1", characterIds: ["a"], userId: "me", modelId: "m2", messages: [] });
-    expect(chats.get("c1")?.modelId).toBe("m2");
-  });
-
-  it("leaves the chat alone when the config has no models at all", () => {
-    modelNames = [];
-    writeChat("c1", { id: "c1", characterIds: ["a"], userId: "me", modelId: "gone", messages: [] });
-    expect(chats.get("c1")?.modelId).toBe("gone");
+// The models are global settings now (config.chatModel / config.visionModel):
+// a chat that still carries the retired per-chat picks loses them on the first
+// read, and the cleanup is persisted — there is no second copy of a setting.
+describe("the retired per-chat model picks", () => {
+  it("are stripped from a chat that still carries them, and the cleanup is saved", () => {
+    writeChat("c1", {
+      id: "c1",
+      characterIds: ["a"],
+      userId: "me",
+      modelId: "m1",
+      visionModelId: "m2",
+      messages: [],
+    });
+    const chat = chats.get("c1");
+    expect(chat).not.toHaveProperty("modelId");
+    expect(chat).not.toHaveProperty("visionModelId");
+    // a fresh service on the same root (a restart) sees the cleaned row too
+    expect(peek("c1")).not.toHaveProperty("modelId");
+    expect(peek("c1")).not.toHaveProperty("visionModelId");
   });
 });
 
 describe("delete", () => {
   it("deletes the chat with its folder and files", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     const filesDir = path.join(root, chat.id);
     fs.mkdirSync(filesDir, { recursive: true });
     fs.writeFileSync(path.join(filesDir, "img.png"), "x");
@@ -272,7 +241,7 @@ describe("the chat name and its creation date", () => {
 
   it("a new chat carries its creation date and no name", () => {
     const before = Date.now();
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     expect(chat.name).toBeUndefined();
     expect(chat.createdAt).toBeGreaterThanOrEqual(before);
     expect(peek(chat.id)?.createdAt).toBe(chat.createdAt);
@@ -305,7 +274,7 @@ describe("the chat name and its creation date", () => {
   });
 
   it("the name is stored trimmed; an empty one is dropped, so the date titles the chat again", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     const named = chats.get(chat.id)!;
     named.name = "  Road trip  ";
     chats.save(named);
@@ -320,7 +289,7 @@ describe("the chat name and its creation date", () => {
   });
 
   it("the name is a title: a picture file is still named by its own prompt slug", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     const withName = chats.get(chat.id)!;
     withName.name = "Важный чат";
     chats.save(withName);
@@ -330,53 +299,11 @@ describe("the chat name and its creation date", () => {
   });
 });
 
-describe("visionModelId (the model that looks at pictures)", () => {
-  it("survives save → read, and the clone carries it", () => {
-    const chat = chats.create(["a"], "m1", "me");
-    const configured = chats.get(chat.id)!;
-    configured.visionModelId = "m2";
-    chats.save(configured);
-    expect(peek(chat.id)?.visionModelId).toBe("m2");
-    expect(chats.clone(chat.id)?.visionModelId).toBe("m2");
-  });
-
-  it("keeps a pick the config knows, even a model that cannot see", () => {
-    // both stub models are blind: the pick is the user's explicit choice and
-    // survives — the describe call is what reports the model cannot look
-    const chat = chats.create(["a"], "m1", "me");
-    const configured = chats.get(chat.id)!;
-    configured.visionModelId = "m2";
-    chats.save(configured);
-    expect(chats.get(chat.id)?.visionModelId).toBe("m2");
-  });
-
-  it("is dropped when its model left the config — the chat goes back to the default", () => {
-    const chat = chats.create(["a"], "m1", "me");
-    const configured = chats.get(chat.id)!;
-    configured.visionModelId = "renamed-away";
-    chats.save(configured);
-    expect(chats.get(chat.id)?.visionModelId).toBeUndefined();
-    expect(peek(chat.id)?.visionModelId).toBeUndefined();
-  });
-
-  it("is removed by an empty pick", () => {
-    const chat = chats.create(["a"], "m1", "me");
-    const configured = chats.get(chat.id)!;
-    configured.visionModelId = "m2";
-    chats.save(configured);
-    const cleared = chats.get(chat.id)!;
-    cleared.visionModelId = "";
-    chats.save(cleared);
-    expect(peek(chat.id)?.visionModelId).toBeUndefined();
-    expect(peek(chat.id)).not.toHaveProperty("visionModelId");
-  });
-});
-
 describe("clone", () => {
   const PNG = "data:image/png;base64,aGVsbG8=";
 
   it("copies the messages, the participants and the settings under a new id", () => {
-    const chat = chats.create(["alice", "bob"], "m1", "me");
+    const chat = chats.create(["alice", "bob"], "me");
     const configured = chats.get(chat.id)!;
     configured.name = "Road trip";
     configured.sampling = { temperature: 0.7 };
@@ -401,7 +328,6 @@ describe("clone", () => {
     expect(copy.createdAt).toBeGreaterThanOrEqual(chat.createdAt);
     expect(copy.characterIds).toEqual(["alice", "bob"]);
     expect(copy.userId).toBe("me");
-    expect(copy.modelId).toBe("m1");
     expect(copy.sampling).toEqual({ temperature: 0.7 });
     expect(copy.systemSuffix).toBe("terse answers");
     expect(copy.messages.map((m) => m.text)).toEqual(["hi", "hey"]);
@@ -419,7 +345,7 @@ describe("clone", () => {
   });
 
   it("a nameless chat is cloned nameless, titled by its own creation date", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     const copy = chats.clone(chat.id)!;
     expect(copy.name).toBeUndefined();
     expect(peek(copy.id) as unknown as Record<string, unknown>).not.toHaveProperty("name");
@@ -427,7 +353,7 @@ describe("clone", () => {
   });
 
   it("copies the pictures into the copy's own folder and repoints the card, its refs and its row", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     const ref = chats.saveImage(chat.id, PNG, { nameHint: "a red boat" });
     const card = chats.saveImage(chat.id, PNG, { nameHint: "a fox" });
     chats.addImageMessage(chats.get(chat.id)!, card, {
@@ -464,7 +390,7 @@ describe("clone", () => {
   });
 
   it("a picture that was still being drawn becomes a broken card with a reason", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     const pending = chats.reservedImageId(chat.id, "a sunset");
     chats.addImageMessage(chats.get(chat.id)!, pending, {
       generation: { source: "auto" },
@@ -480,7 +406,7 @@ describe("clone", () => {
   });
 
   it("a failed or cancelled card keeps its state and its reason", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     const image = chats.reservedImageId(chat.id, "a sunset");
     chats.addImageMessage(chats.get(chat.id)!, image, {
       generation: { prompt: "a sunset", source: "manual" },
@@ -500,7 +426,7 @@ describe("clone", () => {
 
 describe("the message primitives", () => {
   it("addUserMessage appends a text message under the active persona and saves it", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     const msg = chats.addUserMessage(chat, "hi");
     expect(msg.role).toBe("user");
     expect(msg.kind).toBe("text");
@@ -513,7 +439,7 @@ describe("the message primitives", () => {
   });
 
   it("addUserMessage after a save appends after the stored messages", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     chat.messages.push({ id: "m1", role: "user", userId: "me", kind: "text", text: "first", images: [], timestamp: 1 });
     chats.save(chat);
     chats.addUserMessage(chat, "second");
@@ -521,7 +447,7 @@ describe("the message primitives", () => {
   });
 
   it("addImageMessage appends an image card and writes the picture's row", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     const image = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=", { nameHint: "a red boat" });
     const card = chats.addImageMessage(chat, image, {
       description: "a red boat on a calm lake",
@@ -549,7 +475,7 @@ describe("the message primitives", () => {
   });
 
   it("a pending card is stored before its file exists; a card with nothing to say gets no row", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     const id = chats.reservedImageId(chat.id, "a picture for the conversation");
     const card = chats.addImageMessage(chat, id, { status: "pending" });
     expect(card.imageStatus).toEqual({ [id]: "pending" });
@@ -565,7 +491,7 @@ describe("the message primitives", () => {
   });
 
   it("editMessage applies the text and saves (the caption of a card goes to its row)", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     const image = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=");
     chat.messages.push({
       id: "m1",
@@ -634,7 +560,7 @@ describe("the message primitives", () => {
   });
 
   it("editImageCard edits the description and the prompt together", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     const image = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=");
     const card = chats.addImageMessage(chat, image, {
       description: "as saved",
@@ -652,7 +578,7 @@ describe("the message primitives", () => {
   });
 
   it("editImageCard drops the generation fields from the row (the card is a plain file now)", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     const image = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=");
     chats.addImageMessage(chat, image, {
       description: "as saved",
@@ -670,7 +596,7 @@ describe("the message primitives", () => {
   });
 
   it("editImageCard replaces the generation block with the given one", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     const image = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=");
     chats.addImageMessage(chat, image, { description: "x", generation: { source: "upload" } });
     const fresh = chats.get(chat.id)!;
@@ -682,7 +608,7 @@ describe("the message primitives", () => {
   });
 
   it("setMessageText rewrites one row's caption (a background job has no message object)", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     chats.addUserMessage(chat, "one");
     const card = chats.addImageMessage(chat, chats.reservedImageId(chat.id, "a boat"), { status: "pending" });
     // the state of a job that started before the other message landed
@@ -693,7 +619,7 @@ describe("the message primitives", () => {
   });
 
   it("replaceMessageImageId repoints the card and moves its status and row", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     const placeholder = chats.reservedImageId(chat.id, "a picture for the conversation");
     const card = chats.addImageMessage(chat, placeholder, {
       description: "what it shows",
@@ -716,7 +642,7 @@ describe("the message primitives", () => {
   });
 
   it("replaceMessageImageId is a no-op for another chat, message or image", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     const id = chats.reservedImageId(chat.id, "a boat");
     chats.addImageMessage(chat, id);
     expect(chats.replaceMessageImageId("nope", "m1", id, "x.png")).toBe(false);
@@ -725,7 +651,7 @@ describe("the message primitives", () => {
   });
 
   it("deleteMessage trims the tail by default and the single message with single=true", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     chat.messages.push(
       { id: "m1", role: "user", userId: "me", text: "1", images: [], timestamp: 1 },
       { id: "m2", role: "user", userId: "me", text: "2", images: [], timestamp: 2 },
@@ -742,21 +668,21 @@ describe("the message primitives", () => {
   });
 
   it("deleteMessage returns false for a missing message and saves nothing", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     expect(chats.deleteMessage(chat, "nope")).toBe(false);
   });
 });
 
 describe("saveImage / reservedImageId", () => {
   it("saves a data URL into the chat files/ and returns its id (a path relative to the data folder)", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     const id = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=");
     expect(id).toMatch(new RegExp(`^${chat.id}/img-[0-9a-f]{6}\\.png$`));
     expect(fs.readFileSync(path.join(root, id))).toEqual(Buffer.from("aGVsbG8=", "base64"));
   });
 
   it("names the file after the hint and stores the metadata it was given", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     const id = chats.saveImage(chat.id, "data:image/jpeg;base64,aGVsbG8=", {
       nameHint: "A sunset over the sea",
       meta: { description: "the bay in the evening", prompt: "a sunset over the sea" },
@@ -771,19 +697,19 @@ describe("saveImage / reservedImageId", () => {
   });
 
   it("two saves of the same picture never share a file", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     const first = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=", { nameHint: "a red boat" });
     const second = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=", { nameHint: "a red boat" });
     expect(second).not.toBe(first);
   });
 
   it("throws on a string that is not a data URL", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     expect(() => chats.saveImage(chat.id, "not-a-data-url")).toThrow(/data URL/);
   });
 
   it("reservedImageId reserves a readable id without creating the file", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     const id = chats.reservedImageId(chat.id, "A red boat at dusk, finally");
     expect(id).toMatch(new RegExp(`^${chat.id}/a-red-boat-at-dusk-[0-9a-f]{6}\\.png$`));
     expect(fs.existsSync(path.join(root, id))).toBe(false);
@@ -802,7 +728,7 @@ describe("saveImage / reservedImageId", () => {
 
 describe("replaceMessageImage", () => {
   it("swaps the picture and drops the generation data together with the old file", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     const generated = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=", {
       nameHint: "a red fox",
       meta: { prompt: "a red fox in the snow" },
@@ -828,7 +754,7 @@ describe("replaceMessageImage", () => {
   });
 
   it("clears the status and the error of the picture it replaced", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     const failed = chats.reservedImageId(chat.id, "a first picture");
     const card = chats.addImageMessage(chat, failed, { status: "failed", error: "GPU exploded" });
     const replacement = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=");
@@ -842,7 +768,7 @@ describe("replaceMessageImage", () => {
 
 describe("importImage / importCharacterPhoto", () => {
   it("copies the file into the chat files/ under a readable name and returns its id", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     const photo = path.join(root, "outside", "Alisa portrait.png");
     fs.mkdirSync(path.dirname(photo), { recursive: true });
     fs.writeFileSync(photo, "img");
@@ -852,7 +778,7 @@ describe("importImage / importCharacterPhoto", () => {
   });
 
   it("an imported picture keeps the metadata of its source", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     const photo = PathHelper.resolveImageId("outside/harbour.png")!;
     fs.mkdirSync(path.dirname(photo), { recursive: true });
     fs.writeFileSync(photo, "img");
@@ -866,14 +792,14 @@ describe("importImage / importCharacterPhoto", () => {
   });
 
   it("returns null when the photo does not exist", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     expect(chats.importCharacterPhoto(chat.id, path.join(root, "nope.png"))).toBeNull();
   });
 });
 
 describe("normalizeImages", () => {
   it("saves data URLs and keeps the ids of pictures that are really there", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     const id = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=");
     const result = chats.normalizeImages(chat.id, ["data:image/png;base64,aGVsbG8=", id, 42, null, ""]);
     expect(result).toHaveLength(2);
@@ -882,7 +808,7 @@ describe("normalizeImages", () => {
   });
 
   it("drops a picture whose file is missing and anything outside the data folders", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     expect(chats.normalizeImages(chat.id, [`${chat.id}/missing.png`])).toEqual([]);
     // these files exist — they simply are not the app's pictures
     expect(chats.normalizeImages(chat.id, ["/etc/passwd", "../../etc/passwd", path.join(os.tmpdir(), "x.png")])).toEqual(
@@ -893,7 +819,7 @@ describe("normalizeImages", () => {
 
 describe("the picture data on read", () => {
   function chatWithCard(): { chatId: string; id: string; cardId: string } {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     const id = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=", { nameHint: "a red boat" });
     const card = chats.addImageMessage(chat, id, {
       description: "as saved",
@@ -919,7 +845,7 @@ describe("the picture data on read", () => {
   });
 
   it("a picture with no row reads as a card with an empty caption", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     const id = chats.reservedImageId(chat.id, "a red boat");
     chats.addImageMessage(chat, id);
     expect(imageMeta.get(id)).toBeNull();
@@ -959,7 +885,7 @@ describe("the picture data on read", () => {
     // an id is a path relative to the data folder, so a picture of ANOTHER chat
     // is a perfectly good reference; only resolveRefPaths drops what does not
     // resolve to a file when the job actually runs
-    const other = chats.create(["b"], "m1", "me");
+    const other = chats.create(["b"], "me");
     const elsewhere = chats.saveImage(other.id, "data:image/png;base64,aGVsbG8=", { nameHint: "another picture" });
     imageMeta.set(id, { refs: [elsewhere] });
     expect(chats.get(chatId)!.messages[0].generation?.refs).toEqual([elsewhere]);
@@ -968,7 +894,7 @@ describe("the picture data on read", () => {
 
 describe("setMessageImageStatus", () => {
   function chatWithPendingMessage(): { chat: Chat; messageId: string } {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     chat.messages.push({
       id: "m1",
       role: "assistant",
@@ -1012,25 +938,25 @@ describe("setMessageImageStatus", () => {
 
   it("is a silent no-op for a missing chat or message", () => {
     expect(() => chats.setMessageImageStatus("nope", "m1", "gen-1.png", "pending")).not.toThrow();
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     expect(() => chats.setMessageImageStatus(chat.id, "missing", "gen-1.png", "pending")).not.toThrow();
   });
 });
 
 describe("the chat ID (the date by default, the rename)", () => {
   it("names a new chat by its creation moment, not by a UUID", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     expect(chat.id).toMatch(/^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$/);
     expect(chats.isValidId(chat.id)).toBe(true);
     // two chats born in the same second are still two chats
-    const second = chats.create(["a"], "m1", "me");
+    const second = chats.create(["a"], "me");
     expect(second.id).not.toBe(chat.id);
     expect(second.id).toMatch(/^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}-\d+$/);
     expect(chats.list()).toHaveLength(2);
   });
 
   it("the clone of a chat gets a date id of its own", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     const copy = chats.clone(chat.id)!;
     expect(copy.id).toMatch(/^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}/);
     expect(copy.id).not.toBe(chat.id);
@@ -1050,7 +976,7 @@ describe("the chat ID (the date by default, the rename)", () => {
   });
 
   it("the rename moves the folder with its files, the rows and every picture id built on the old name", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     chats.addUserMessage(chat, "hello");
     const id = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=", { nameHint: "a red boat" });
     const card = chats.addImageMessage(chat, id, {
@@ -1059,7 +985,7 @@ describe("the chat ID (the date by default, the rename)", () => {
     });
     // another chat names this picture in the reference set of its own prompt —
     // a picture id is a path, so it must follow the folder like the card does
-    const other = chats.create(["a"], "m1", "me");
+    const other = chats.create(["a"], "me");
     const otherId = chats.saveImage(other.id, "data:image/png;base64,aGVsbG8=", { nameHint: "second" });
     const otherCard = chats.addImageMessage(other, otherId, {
       generation: { prompt: "like the first reference image", refs: [id], source: "manual" },
@@ -1093,7 +1019,7 @@ describe("the chat ID (the date by default, the rename)", () => {
   });
 
   it("the rename takes the orphan rows of the folder along (a file the user deleted by hand)", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     const gone = `${chat.id}/deleted-by-hand-1a2b3c.png`;
     imageMeta.set(gone, { description: "a picture of nothing" });
     chats.rename(chat.id, "cleaned");
@@ -1102,8 +1028,8 @@ describe("the chat ID (the date by default, the rename)", () => {
   });
 
   it("the rename refuses a name that is taken, a name that is not a folder name and a chat that is not there", () => {
-    const one = chats.create(["a"], "m1", "me");
-    const two = chats.create(["a"], "m1", "me");
+    const one = chats.create(["a"], "me");
+    const two = chats.create(["a"], "me");
     expect(() => chats.rename(one.id, two.id)).toThrow(/already a chat/);
     expect(() => chats.rename(one.id, "a/b")).toThrow(/not a valid ID/);
     expect(() => chats.rename(one.id, ".hidden")).toThrow(/not a valid ID/);
@@ -1118,7 +1044,7 @@ describe("the chat ID (the date by default, the rename)", () => {
   });
 
   it("the rename refuses while a picture of the chat is still being drawn", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     const pending = chats.reservedImageId(chat.id, "a boat");
     chats.addImageMessage(chat, pending, { status: "pending" });
     expect(() => chats.rename(chat.id, "too-soon")).toThrow(/still being generated/);
@@ -1128,7 +1054,7 @@ describe("the chat ID (the date by default, the rename)", () => {
 
 describe("saveImage de-duplication", () => {
   it("reuses the id of a picture already in the data folders (no second copy)", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     const bytes = Buffer.from("the very same picture bytes");
     const dataUrl = "data:image/png;base64," + bytes.toString("base64");
     // a picture the user already owns, with its facts in the row (what the disk
@@ -1154,7 +1080,7 @@ describe("saveImage de-duplication", () => {
   });
 
   it("writes a new file when no picture matches the bytes", () => {
-    const chat = chats.create(["a"], "m1", "me");
+    const chat = chats.create(["a"], "me");
     const dataUrl = "data:image/png;base64," + Buffer.from("a brand new picture").toString("base64");
     const id = chats.saveImage(chat.id, dataUrl);
     expect(id).toMatch(new RegExp(`^${chat.id}/img-[0-9a-f]{6}\\.png$`));

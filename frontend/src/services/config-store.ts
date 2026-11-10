@@ -43,7 +43,8 @@ export class ConfigStore {
   // edited (a null id — creating a new one).
   readonly entityDialog = signal<EntityDialog | null>(null);
 
-  // The llmModels key = the model name (the internal ID that chat.modelId references).
+  // The llmModels key = the model name (the internal ID the config's model picks
+  // reference).
   readonly models = computed<Model[]>(() => {
     const cfg = this.config();
     if (!cfg) return [];
@@ -137,6 +138,31 @@ export class ConfigStore {
       .putConfig(cfg)
       .then((saved) => this.config.set(saved))
       .catch((e) => this.ui.error.set(String((e as Error).message)));
+  }
+
+  // ---- the global model picks (the header chips) ----
+  // The models are settings of the whole app, not fields of a chat: the chip
+  // writes the llmModels key into the config. An empty name is a real choice —
+  // the field is removed, which is what makes the default rule apply (the first
+  // model for the chat, "the chat model if it can see, else the first that can"
+  // for the vision pick).
+
+  selectChatModel(name: string): void {
+    const cfg = this.config();
+    if (!cfg) return;
+    const next: AppConfig = { ...cfg };
+    if (name && cfg.llmModels[name]) next.chatModel = name;
+    else delete next.chatModel;
+    this.putConfig(next);
+  }
+
+  selectVisionModel(name: string): void {
+    const cfg = this.config();
+    if (!cfg) return;
+    const next: AppConfig = { ...cfg };
+    if (name && cfg.llmModels[name]) next.visionModel = name;
+    else delete next.visionModel;
+    this.putConfig(next);
   }
 
   // ---- characters (the characters/ folders — one card at a time) ----

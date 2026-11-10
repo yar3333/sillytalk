@@ -3,7 +3,6 @@ import os from "os";
 import path from "path";
 import { TextGenerationService } from "./TextGenerationService";
 import { ConfigurationService } from "../configuration/ConfigurationService";
-import { Chat } from "../chats/Chat";
 import { ChatMessage } from "../chats/ChatMessage";
 import { Config } from "../configuration/Config";
 import { Model } from "../configuration/Model";
@@ -33,10 +32,6 @@ function configOf(models: Model[]): Config {
   };
 }
 
-function chatWithModel(modelId: string): Chat {
-  return { id: "chat-1", createdAt: 0, characterIds: [], userId: "", modelId, messages: [] };
-}
-
 function jsonRes(body: unknown, status = 200) {
   return {
     ok: status < 400,
@@ -46,20 +41,26 @@ function jsonRes(body: unknown, status = 200) {
   };
 }
 
+// The models are GLOBAL settings: the config names the chat model, the vision
+// model and the picture-prompt model, and a chat carries none of them.
 describe("resolveModel", () => {
   const second: Model = { ...model, name: "second", id: "second-model" };
 
-  it("returns the model the chat references by the llmModels key", () => {
-    expect(textGenerationService.resolveModel(configOf([model, second]), chatWithModel("second"))).toEqual(second);
+  it("returns the model the config picks as the chat model", () => {
+    const config = { ...configOf([model, second]), chatModel: "second" };
+    expect(textGenerationService.resolveModel(config)).toEqual(second);
   });
 
-  it("falls back to the first model when the referenced one is gone", () => {
-    // the model was renamed or deleted from the config — the chat keeps working
-    expect(textGenerationService.resolveModel(configOf([model, second]), chatWithModel("renamed-away"))).toEqual(model);
+  it("falls back to the first model when the pick is unset or gone", () => {
+    // a config with one model needs no pick, and a pick whose entry was renamed
+    // away cannot strand the app
+    expect(textGenerationService.resolveModel(configOf([model, second]))).toEqual(model);
+    const dangling = { ...configOf([model, second]), chatModel: "renamed-away" };
+    expect(textGenerationService.resolveModel(dangling)).toEqual(model);
   });
 
   it("returns null when the config has no models at all", () => {
-    expect(textGenerationService.resolveModel(configOf([]), chatWithModel(""))).toBeNull();
+    expect(textGenerationService.resolveModel(configOf([]))).toBeNull();
   });
 });
 
@@ -67,39 +68,38 @@ describe("resolveVisionModel", () => {
   const blind: Model = { ...model, name: "blind", id: "blind", supportsImages: false };
   const seer: Model = { ...model, name: "seer", id: "seer", supportsImages: true };
 
-  // A chat whose model cannot see, optionally with its own vision pick.
-  function chatSeeing(visionModelId?: string): Chat {
-    return { ...chatWithModel("blind"), ...(visionModelId ? { visionModelId } : {}) };
-  }
-
-  it("uses the model the chat picked for looking at pictures", () => {
-    expect(textGenerationService.resolveVisionModel(configOf([blind, seer]), chatSeeing("seer"))).toEqual(seer);
+  it("uses the model the config picked for looking at pictures", () => {
+    const config = { ...configOf([blind, seer]), chatModel: "blind", visionModel: "seer" };
+    expect(textGenerationService.resolveVisionModel(config)).toEqual(seer);
   });
 
-  it("keeps the chat's own model when it can see", () => {
-    const chat = { ...chatWithModel("seer") };
-    expect(textGenerationService.resolveVisionModel(configOf([seer, blind]), chat)).toEqual(seer);
+  it("keeps the chat model when it can see", () => {
+    const config = { ...configOf([seer, blind]), chatModel: "seer" };
+    expect(textGenerationService.resolveVisionModel(config)).toEqual(seer);
   });
 
-  it("takes the first model that can see when the chat's own model is blind", () => {
-    // the point of the field: a roleplay model with no vision still gets the
-    // user's pictures described, without the user having to pick anything
-    expect(textGenerationService.resolveVisionModel(configOf([blind, seer]), chatSeeing())).toEqual(seer);
+  it("takes the first model that can see when the chat model is blind", () => {
+    // the point of the vision model: a roleplay model with no vision still gets
+    // the user's pictures described, without the user having to pick anything
+    const config = { ...configOf([blind, seer]), chatModel: "blind" };
+    expect(textGenerationService.resolveVisionModel(config)).toEqual(seer);
   });
 
   it("honours a pick that cannot see — the caller reports it instead of using another model", () => {
     // silently describing with a different model than the one in the header
     // would make the chip a liar
-    expect(textGenerationService.resolveVisionModel(configOf([blind, seer]), chatSeeing("blind"))).toEqual(blind);
+    const config = { ...configOf([blind, seer]), chatModel: "blind", visionModel: "blind" };
+    expect(textGenerationService.resolveVisionModel(config)).toEqual(blind);
   });
 
   it("falls back to the default when the picked model left the config", () => {
-    // (ChatsService drops such a key on read; the resolver must not hang on it)
-    expect(textGenerationService.resolveVisionModel(configOf([blind, seer]), chatSeeing("gone"))).toEqual(seer);
+    // (the config loader drops such a key on read; the resolver must not hang on it)
+    const config = { ...configOf([blind, seer]), chatModel: "blind", visionModel: "gone" };
+    expect(textGenerationService.resolveVisionModel(config)).toEqual(seer);
   });
 
   it("returns null when nothing in the config can see", () => {
-    expect(textGenerationService.resolveVisionModel(configOf([blind]), chatSeeing())).toBeNull();
+    expect(textGenerationService.resolveVisionModel(configOf([blind]))).toBeNull();
   });
 });
 
@@ -108,16 +108,15 @@ describe("resolveImagePromptModel", () => {
 
   it("uses the config's dedicated picture-prompt model when it names one", () => {
     const config = { ...configOf([model, writer]), imagePromptModel: "writer" };
-    // the chat runs its replies on "test", but the picture prompt is written by
-    // the dedicated model the Settings dialog picked
-    expect(textGenerationService.resolveImagePromptModel(config, chatWithModel("test"))).toEqual(writer);
+    // the replies run on "test", but the picture prompt is written by the
+    // dedicated model the Settings dialog picked
+    expect(textGenerationService.resolveImagePromptModel(config)).toEqual(writer);
   });
 
-  it("falls back to the chat's own model when the pick is unset or unknown", () => {
-    const chat = chatWithModel("test");
-    expect(textGenerationService.resolveImagePromptModel(configOf([model, writer]), chat)).toEqual(model);
+  it("falls back to the chat model when the pick is unset or unknown", () => {
+    expect(textGenerationService.resolveImagePromptModel(configOf([model, writer]))).toEqual(model);
     const dangling = { ...configOf([model]), imagePromptModel: "ghost" };
-    expect(textGenerationService.resolveImagePromptModel(dangling, chat)).toEqual(model);
+    expect(textGenerationService.resolveImagePromptModel(dangling)).toEqual(model);
   });
 });
 

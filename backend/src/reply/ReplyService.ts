@@ -43,25 +43,33 @@ export class ReplyService {
     private readonly configuration: ConfigurationService,
   ) {}
 
-  // The model a chat's replies should run on: the llmModels entry the chat
-  // references, falling back to the first model so a renamed/deleted model
-  // keeps the chat working. Null when the config has no models at all.
-  resolveChatModel(chat: Chat): Model | null {
-    return this.textGeneration.resolveModel(this.configuration.loadConfig(), chat);
+  // The model the replies run on: the config's global chatModel, else the first
+  // model of the config. Null when the config has no models at all. (The chat
+  // does not carry a model any more — the header's chip writes the setting for
+  // the whole app.)
+  resolveChatModel(): Model | null {
+    return this.textGeneration.resolveModel(this.configuration.loadConfig());
   }
 
-  // The model that describes pictures for this chat: its own pick (the header's
-  // vision menu), else the chat's model when it can see, else the first model of
-  // the config that can. Null when nothing in the config has vision.
-  resolveVisionModel(chat: Chat): Model | null {
-    return this.textGeneration.resolveVisionModel(this.configuration.loadConfig(), chat);
+  // The model that describes pictures: the config's visionModel, else the chat
+  // model when it can see, else the first model of the config that can. Null
+  // when nothing in the config has vision.
+  resolveVisionModel(): Model | null {
+    return this.textGeneration.resolveVisionModel(this.configuration.loadConfig());
   }
 
   // The model that writes the picture prompts (the 📷 planner and "From the
-  // chat"): the global Settings pick when it names a model, else the chat's own
-  // model. The rule lives in TextGenerationService; this is the chat-aware entry.
-  resolveImagePromptModel(chat: Chat): Model | null {
-    return this.textGeneration.resolveImagePromptModel(this.configuration.loadConfig(), chat);
+  // chat"): the config's imagePromptModel when it names a model, else the chat
+  // model. The rule lives in TextGenerationService.
+  resolveImagePromptModel(): Model | null {
+    return this.textGeneration.resolveImagePromptModel(this.configuration.loadConfig());
+  }
+
+  // The name recorded with a picture ("which model wrote this prompt"): the
+  // global chat model's key, or "" when the config has none (an empty value is
+  // dropped from the row, so it never becomes a field that says nothing).
+  private chatModelName(): string {
+    return this.resolveChatModel()?.name ?? "";
   }
 
   // The in-flight reply per chat: the controller is registered here so the
@@ -231,13 +239,13 @@ export class ReplyService {
   // persona is saved right away with its reserved id and the "pending" status,
   // and the generation runs in the background — the client polls and the file
   // appears. The prompt is required in English, so a non-English one is
-  // translated with the chat's model first; the file name is made of the
+  // translated with the chat model (the global pick) first; the file name is made of the
   // prompt's first words, so a picture is recognisable in the files folder.
   //
   // Returns the saved chat and the new message, or null when the chat was
   // deleted while the translation ran (nothing to save into).
   async manualImage(chat: Chat, prompt: string, refs: string[]): Promise<{ chat: Chat; message: ChatMessage } | null> {
-    const spoken = await this.imageGeneration.ensureEnglishPrompt(this.resolveChatModel(chat), prompt);
+    const spoken = await this.imageGeneration.ensureEnglishPrompt(this.resolveChatModel(), prompt);
     const finalPrompt = this.withChatStyle(chat, spoken);
     const id = this.chats.reservedImageId(chat.id, spoken);
     const fresh = this.chats.get(chat.id);
@@ -246,7 +254,7 @@ export class ReplyService {
       prompt: finalPrompt,
       refs: refs.length > 0 ? refs : undefined,
       source: "manual",
-      model: chat.modelId,
+      model: this.chatModelName(),
       createdAt: new Date().toISOString(),
     };
     const message = this.chats.addImageMessage(fresh, id, {
@@ -258,7 +266,7 @@ export class ReplyService {
       prompt: finalPrompt,
       refs,
       source: "manual",
-      model: chat.modelId,
+      model: this.chatModelName(),
     });
     return { chat: fresh, message };
   }
@@ -282,7 +290,7 @@ export class ReplyService {
     const placeholder = this.chats.reservedImageId(fresh.id, "a picture for the conversation");
     const message = this.chats.addImageMessage(fresh, placeholder, {
       userId: fresh.userId,
-      generation: { source: "auto", model: fresh.modelId, createdAt: new Date().toISOString() },
+      generation: { source: "auto", model: this.chatModelName(), createdAt: new Date().toISOString() },
       status: "pending",
     });
     void this.runUserTurnImage(fresh.id, message.id, placeholder);
@@ -301,7 +309,7 @@ export class ReplyService {
     try {
       const chat = this.chats.get(chatId);
       if (!chat) return;
-      const model = this.resolveImagePromptModel(chat);
+      const model = this.resolveImagePromptModel();
       if (!model) {
         giveUp("No model configured for the chat");
         return;
@@ -331,7 +339,8 @@ export class ReplyService {
         prompt: done.prompt,
         refs: done.refs.length > 0 ? done.refs : undefined,
         source: "auto",
-        model: chat.modelId,
+        // the PLANNER wrote this prompt — that is what the row remembers
+        model: model.name,
         createdAt: new Date().toISOString(),
       };
       // Who is on the picture goes in before the caption: both writes go to the
@@ -343,7 +352,7 @@ export class ReplyService {
         prompt: done.prompt,
         refs: done.refs,
         source: "auto",
-        model: chat.modelId,
+        model: model.name,
       });
     } catch (err) {
       giveUp((err as Error).message);
@@ -687,7 +696,7 @@ export class ReplyService {
   async regenerateImage(chat: Chat, message: ChatMessage, image: string, promptOverride?: string): Promise<Chat | null> {
     const rawPrompt =
       (promptOverride && promptOverride.trim()) || message.generation?.prompt || message.text.trim() || "image";
-    const spoken = await this.imageGeneration.ensureEnglishPrompt(this.resolveChatModel(chat), rawPrompt);
+    const spoken = await this.imageGeneration.ensureEnglishPrompt(this.resolveChatModel(), rawPrompt);
     // The chat's look rides along with the redraw (withChatStyle leaves a
     // prompt that already carries it alone, so a redraw does not stack it).
     const prompt = this.withChatStyle(chat, spoken);
@@ -709,7 +718,7 @@ export class ReplyService {
       prompt,
       refs,
       source: fmsg.generation.source ?? "manual",
-      model: chat.modelId,
+      model: this.chatModelName(),
     });
     return fresh;
   }
@@ -823,7 +832,7 @@ export class ReplyService {
   ): Promise<{ prompt: string; description: string; refs: string[] } | null> {
     const chat = this.chats.get(chatId);
     if (!chat) return null;
-    const model = this.resolveImagePromptModel(chat);
+    const model = this.resolveImagePromptModel();
     if (!model) return null;
     const maxRefs = this.imageGeneration.maxReferenceCount();
     const material = this.pictureMaterial(chat, messageId, maxRefs);
@@ -841,12 +850,12 @@ export class ReplyService {
   }
 
   // Rewrites a typed prompt for the generator — English + tuned (the "Make it
-  // English" button). The chat's model does the work with the chat's sampling;
+  // English" button). The chat model does the work with the chat's sampling;
   // null when the chat is gone (a model error propagates to the route).
   async tunePicturePrompt(chatId: string, prompt: string): Promise<string | null> {
     const chat = this.chats.get(chatId);
     if (!chat) return null;
-    const model = this.resolveChatModel(chat);
+    const model = this.resolveChatModel();
     if (!model) throw new Error("No model configured for the chat");
     return (await this.textGeneration.tunePrompt(model, prompt, chat.sampling)).trim();
   }
@@ -861,7 +870,7 @@ export class ReplyService {
   ): Promise<string | null> {
     const chat = this.chats.get(chatId);
     if (!chat) return null;
-    const model = this.resolveVisionModel(chat);
+    const model = this.resolveVisionModel();
     if (!model || !model.supportsImages) throw new Error(ReplyService.noVisionMessage(model));
     return (await this.textGeneration.describePicture(model, input, chat.sampling)).trim();
   }
@@ -895,7 +904,7 @@ export class ReplyService {
     if (!card || !isImageMessage(card) || !image || card.text.trim()) {
       return this.chats.get(chatId);
     }
-    const model = this.resolveVisionModel(chat);
+    const model = this.resolveVisionModel();
     if (!model || !model.supportsImages) return this.chats.get(chatId);
     let description = "";
     try {

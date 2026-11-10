@@ -10,7 +10,6 @@ import { HttpHelper } from "../shared/HttpHelper";
 import { ImageMeta, IMAGE_GENERATION_KEYS } from "../shared/ImageMeta";
 import { FileFacts } from "../shared/FileFacts";
 import { ImageMetaService } from "../images/ImageMetaService";
-import { ConfigurationService } from "../configuration/ConfigurationService";
 import { createToken } from "../di";
 
 // The DI token of the chat service (registered in index.ts).
@@ -31,9 +30,8 @@ type MessageRow = { data: string };
 // table (ImageMetaService), which is what an image card is filled from on
 // read. The root folder is read through the accessor (not injected as a
 // value), so the service always sees the current SILLYTALK_CHATS_DIR / data
-// root, and tests can point it at a temp dir; the configuration service is
-// injected the same way (the model fallback in get() needs the current model
-// list).
+// root, and tests can point it at a temp dir. The models are global settings,
+// so this service has no business with the config at all.
 //
 // The database is opened lazily on first use; at open the legacy per-chat
 // chat.json folders are imported once. Every write is a single statement or
@@ -44,7 +42,6 @@ type MessageRow = { data: string };
 export class ChatsService {
   constructor(
     private readonly chatsRoot: () => string,
-    private readonly configuration: ConfigurationService,
     private readonly imageMeta: ImageMetaService,
   ) {}
 
@@ -154,8 +151,6 @@ export class ChatsService {
       createdAt: chat.createdAt,
       characterIds: chat.characterIds,
       userId: chat.userId,
-      modelId: chat.modelId,
-      visionModelId: chat.visionModelId,
       sampling: chat.sampling,
       systemSuffix: chat.systemSuffix,
       stylePrompt: chat.stylePrompt,
@@ -183,7 +178,6 @@ export class ChatsService {
           createdAt: chat.createdAt,
           characterIds: chat.characterIds,
           userId: chat.userId,
-          modelId: chat.modelId,
           messageCount: row.messageCount,
           lastMessageAt: row.lastMessageAt,
         });
@@ -220,14 +214,10 @@ export class ChatsService {
       .prepare("SELECT data FROM messages WHERE chat_id = ? ORDER BY seq")
       .all(chatId) as MessageRow[];
     chat.messages = rows.map((m) => JSON.parse(m.data) as ChatMessage);
-    // Called as methods (not as a bare-function array) — ensureModelId
-    // needs the instance (the injected config loader). All three run before
-    // they are OR-ed, so a chat that needed a normalize fix still loses a
-    // vision pick whose model is gone.
-    const normalized = this.normalize(chat);
-    const remapped = this.ensureModelId(chat);
-    const vision = this.ensureVisionModelId(chat);
-    const dirty = normalized || remapped || vision;
+    // The format guard: a chat that still carries the retired per-chat model
+    // picks loses them here, and the repaired chat is saved back. The models
+    // are global settings now (Config.chatModel / Config.visionModel).
+    const dirty = this.normalize(chat);
     if (dirty) this.save(chat);
     // The picture data comes from the images table, on every read — including
     // the client's polling, so a picture edited elsewhere shows up here.
@@ -246,6 +236,8 @@ export class ChatsService {
     delete legacy.updatedAt;
     delete legacy.characterId;
     delete legacy.userIds;
+    delete legacy.modelId;
+    delete legacy.visionModelId;
     const db = this.db();
     const upsert = db.prepare(
       "INSERT INTO chats (id, data) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data",
@@ -273,13 +265,12 @@ export class ChatsService {
     return JSON.stringify(card);
   }
 
-  create(characterIds: string[], modelId: string, userId: string): Chat {
+  create(characterIds: string[], userId: string): Chat {
     const chat: Chat = {
       id: this.newChatId(),
       createdAt: Date.now(),
       characterIds: [...characterIds],
       userId,
-      modelId,
       messages: [],
     };
     this.save(chat);
@@ -456,8 +447,6 @@ export class ChatsService {
       createdAt: Date.now(),
       characterIds: [...source.characterIds],
       userId: source.userId,
-      modelId: source.modelId,
-      ...(source.visionModelId ? { visionModelId: source.visionModelId } : {}),
       ...(source.sampling ? { sampling: { ...source.sampling } } : {}),
       ...(source.systemSuffix ? { systemSuffix: source.systemSuffix } : {}),
       ...(source.stylePrompt ? { stylePrompt: source.stylePrompt } : {}),
@@ -1304,17 +1293,15 @@ export class ChatsService {
       chat.userId = "";
       dirty = true;
     }
-    // visionModelId: the same rule as the name — a trimmed non-empty string or
-    // nothing at all (nothing means "describe with the chat's own model, or
-    // with the first model that can see"). An empty pick is a real edit: the
-    // chat goes back to that default, so the cleanup is flagged dirty.
-    if (chat.visionModelId !== undefined) {
-      const t = typeof chat.visionModelId === "string" ? chat.visionModelId.trim() : "";
-      if (t) chat.visionModelId = t;
-      else {
-        delete chat.visionModelId;
-        dirty = true;
-      }
+    // The per-chat model picks are retired fields (the models are global
+    // settings now): a stored blob that still carries them loses them on the
+    // first read, so a hand-edited database cannot keep a shadow of a setting
+    // that no longer exists.
+    const legacy = chat as Record<string, unknown>;
+    if ("modelId" in legacy || "visionModelId" in legacy) {
+      delete legacy.modelId;
+      delete legacy.visionModelId;
+      dirty = true;
     }
     // sampling: keep only the valid numeric fields (an all-empty object is
     // dropped entirely so the blob stays small).
@@ -1356,28 +1343,6 @@ export class ChatsService {
       }
     }
     return dirty;
-  }
-
-  // The chat's model may have disappeared from the config (renamed/deleted) —
-  // attach the first available one so the chat keeps working.
-  private ensureModelId(chat: Chat): boolean {
-    const models = this.configuration.listModels(this.configuration.loadConfig());
-    if (models.length === 0 || models.some((m) => m.name === chat.modelId)) return false;
-    chat.modelId = models[0].name;
-    return true;
-  }
-
-  // The vision pick of a chat may name a model that was renamed or deleted —
-  // unlike the chat's own model it has no replacement to be re-attached to, so
-  // the field is simply dropped and the chat goes back to the default
-  // (its own model, else the first one that can see). Keeping a dead key would
-  // leave the header chip naming a model that no longer exists.
-  private ensureVisionModelId(chat: Chat): boolean {
-    if (!chat.visionModelId) return false;
-    const models = this.configuration.listModels(this.configuration.loadConfig());
-    if (models.some((m) => m.name === chat.visionModelId)) return false;
-    delete chat.visionModelId;
-    return true;
   }
 
   // The file extension for the image MIME types the uploads may carry.
