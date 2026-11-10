@@ -2340,6 +2340,7 @@ describe('ChatStore — the global model picks', () => {
       getCharacters: () => Promise.resolve([{ id: 'char-1', name: 'Alice', description: '' }]),
       getUsers: () => Promise.resolve([{ id: 'user-1', name: 'Me', description: '' }]),
       imageStatus: () => Promise.resolve({ available: false }),
+      listPictures: () => Promise.resolve({ pictures: [] as Picture[] }),
       ...extra,
     };
     await TestBed.resetTestingModule();
@@ -2462,6 +2463,56 @@ describe('ChatStore — the global model picks', () => {
     await tick();
     await tick();
     expect(captionCalls).toEqual([]);
+  });
+
+  // The banner the 📎 used to raise ("The model "x" does not support images —
+  // the photos will not be passed") judged by the chat model alone. A picture
+  // still reaches the model through the vision model's caption or through the
+  // row of a picture the user already owns, and neither silenced it.
+  const hello = 'data:image/png;base64,aGVsbG8='; // the 5 bytes "hello"
+  async function sha256Hex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  it('does not claim the photos are lost when the vision model will caption them', async () => {
+    const { store } = await setup({ chatModel: 'blind', visionModel: 'seer' });
+    const ui = TestBed.inject(UiStore);
+    store.onImagesAdded([hello]);
+    await tick();
+    await tick();
+    expect(ui.error()).toBe('');
+  });
+
+  it('does not claim the photos are lost when the bytes are a picture already described', async () => {
+    const picture: Picture = {
+      id: 'chats/chat-1/a-red-boat-1a2b3c.png',
+      description: 'a red boat on a calm lake',
+      exists: true,
+      fileSize: 5,
+      fileHash: await sha256Hex(new TextEncoder().encode('hello')),
+    };
+    const { store } = await setup(
+      { llmModels: { blind } }, // nothing in the config can see
+      { listPictures: () => Promise.resolve({ pictures: [picture] }) },
+    );
+    const ui = TestBed.inject(UiStore);
+    store.onImagesAdded([hello]);
+    await tick();
+    await tick();
+    await tick();
+    expect(ui.error()).toBe('');
+  });
+
+  it('says what the model will really get when nothing can see and nobody described the picture', async () => {
+    const { store } = await setup({ llmModels: { blind } });
+    const ui = TestBed.inject(UiStore);
+    store.onImagesAdded([hello]);
+    await tick();
+    await tick();
+    await tick();
+    expect(ui.error()).toContain('No model that can see pictures');
+    expect(ui.error()).toContain('blind');
   });
 });
 

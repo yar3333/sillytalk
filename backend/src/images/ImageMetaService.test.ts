@@ -1,6 +1,7 @@
 ﻿import fs from "fs";
 import os from "os";
 import path from "path";
+import { createHash } from "crypto";
 import { ImageMetaService } from "./ImageMetaService";
 import { PathHelper } from "../shared/PathHelper";
 
@@ -216,6 +217,49 @@ describe("the leftover sidecar files of the old format", () => {
     meta.set(id, { description: "written in the browser" });
     expect(meta.get(id)?.description).toBe("written in the browser");
     expect(fs.readFileSync(sidecar, "utf-8")).toBe(body);
+  });
+});
+
+describe("the content lookup a disk pick is de-duplicated by", () => {
+  const write = (relative: string, bytes: string): string => {
+    const file = path.join(root, relative.split("/").join(path.sep));
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, bytes);
+    return PathHelper.imageIdOf(file);
+  };
+  const hashOf = (bytes: string): string => createHash("sha256").update(bytes).digest("hex");
+
+  it("finds the row that remembers these bytes when its file is still there", () => {
+    const bytes = "the very same picture bytes";
+    const id = write("chats/c1/a-red-boat-1a2b3c.png", bytes);
+    meta.set(id, { fileSize: bytes.length, fileHash: hashOf(bytes) });
+    expect(meta.findPictureByContent(bytes.length, hashOf(bytes))).toBe(id);
+  });
+
+  it("ignores a row whose file is gone and matches a file that really holds these bytes", () => {
+    const bytes = "the very same picture bytes";
+    const lost = write("chats/c1/a-lost-1a2b3c.png", "other bytes entirely");
+    meta.set(lost, { fileSize: bytes.length, fileHash: hashOf(bytes) });
+    fs.rmSync(path.join(root, "chats/c1/a-lost-1a2b3c.png"));
+    const real = write("characters/alice/a-photo-1a2b3c.png", bytes);
+    expect(meta.findPictureByContent(bytes.length, hashOf(bytes))).toBe(real);
+  });
+
+  it("finds a file the table has never seen — the bytes are the identity", () => {
+    // a picture the user dropped into a folder: no row, no facts, no sync yet
+    const bytes = "a picture nobody has registered";
+    const id = write("users/carol/a-face-1a2b3c.png", bytes);
+    expect(meta.list()).toEqual([]);
+    expect(meta.findPictureByContent(bytes.length, hashOf(bytes))).toBe(id);
+    // and nothing was written to the table by looking
+    expect(meta.list()).toEqual([]);
+  });
+
+  it("answers null when no picture of the data folders holds these bytes", () => {
+    write("chats/c1/a-red-boat-1a2b3c.png", "a red boat");
+    expect(meta.findPictureByContent(11, hashOf("not a picture"))).toBeNull();
+    // the size matches, the content does not — the file is not a hit
+    expect(meta.findPictureByContent(10, hashOf("not a pictur"))).toBeNull();
   });
 });
 

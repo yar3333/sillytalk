@@ -265,6 +265,20 @@ describe("avatar (an image id in the row)", () => {
     expect(svc.pictureIdsOf("alice")).toEqual([]);
   });
 
+  it("reuses a picture the table has not registered yet (a file dropped into a folder)", () => {
+    // the user copied the photo into a folder himself: no row, no facts yet
+    const existing = "chats/room/a-boat-1a2b3c.png";
+    const abs = path.join(root, "chats", "room", "a-boat-1a2b3c.png");
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, pngBytes);
+    expect(meta.get(existing)).toBeNull();
+    const id = svc.setAvatarImage("alice", { dataUrl: PNG });
+    expect(id).toBe(existing);
+    expect(svc.getAvatarId("alice")).toBe(existing);
+    // no second file in the character folder
+    expect(svc.pictureIdsOf("alice")).toEqual([]);
+  });
+
   it("points the avatar at an existing picture id directly (no copy)", () => {
     const abs = path.join(root, "characters", "alice", "face.png");
     fs.writeFileSync(abs, "img");

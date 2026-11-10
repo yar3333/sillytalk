@@ -255,17 +255,15 @@ export class PersonsService {
 
   // Places the bytes of a picked file: a byte-identical picture already in the
   // data folders gives its id back; otherwise a new file lands in the persona's
-  // folder with a row carrying its facts.
+  // folder with a row carrying its facts. The lookup is by CONTENT, not by a row
+  // of the table alone — a picture the user just dropped into a folder (or one
+  // whose row predates the file facts) is still the same picture
+  // (ImageMetaService.findPictureByContent).
   private storePickedPicture(
     id: string,
     picked: { buffer: Buffer; ext: string; hash: string },
   ): string {
-    const duplicate = this.imageMeta
-      ?.findByHash(picked.buffer.length, picked.hash)
-      .find((candidate) => {
-        const file = PathHelper.resolvePictureId(candidate);
-        return file !== null && fs.existsSync(file);
-      });
+    const duplicate = this.imageMeta?.findPictureByContent(picked.buffer.length, picked.hash);
     if (duplicate) return duplicate;
     const dir = PathHelper.personDir(id, this.personsRoot());
     fs.mkdirSync(dir, { recursive: true });

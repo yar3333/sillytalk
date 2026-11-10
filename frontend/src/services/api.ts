@@ -191,6 +191,12 @@ export interface Picture extends ImageGenerationData {
   // had, and a name is a path, so the table keeps both; the browser says so
   // instead of hiding it. Computed on every read.
   sameAs?: string[];
+  // The facts of the file the images table keeps (see shared/ImageMeta.ts): its
+  // size and sha256 identify the picture's BYTES wherever the file sits, which
+  // is how a disk pick is recognised as a picture the user already owns before
+  // it is uploaded.
+  fileSize?: number;
+  fileHash?: string;
 }
 
 export interface Chat {

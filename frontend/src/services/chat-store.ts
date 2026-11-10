@@ -1,5 +1,5 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
-import { ApiService, Character, Chat, ChatMessage, ChatSummary, Model, User } from './api';
+import { ApiService, Character, Chat, ChatMessage, ChatSummary, Model, Picture, User } from './api';
 import { ConfigStore } from './config-store';
 import { chatTitleOf } from './helpers';
 import { UiStore } from './ui-store';
@@ -467,15 +467,80 @@ export class ChatStore {
     return prev === -1 ? 0 : (prev + 1) % ids.length;
   }
 
-  // Images read by the input panel (data URLs).
+  // Images read by the input panel (data URLs) or picked by id.
   onImagesAdded(urls: string[]): void {
     this.pendingImages.set([...this.pendingImages(), ...urls]);
+    void this.notePicturesTheModelWillNotSee(urls);
+  }
+
+  // Warns only when the added pictures will really reach the model as
+  // "[A picture without a description]" — the check the old banner skipped,
+  // which made it claim that photos "will not be passed" even when they were.
+  // A picture reaches the model in three ways, and any one of them is enough:
+  //   the chat model sees it itself (the image goes into the prompt);
+  //   the vision model will caption it (the card's sentence is what a text
+  //     model reads — ChatStore.captionAttachments writes it on send);
+  //   the bytes are already a picture of the data folder WITH a description
+  //     (the backend de-dups an identical file by size + sha256, so the card
+  //     arrives carrying the row's caption from images.db).
+  // The last one needs the catalog and a hash, so the answer is async: the
+  // banner is raised only if the attachments are still waiting to be sent.
+  private async notePicturesTheModelWillNotSee(urls: string[]): Promise<void> {
     const model = this.currentModel();
-    if (model && !model.supportsImages) {
-      this.ui.error.set(
-        `The model "${model.name}" does not support images — the photos will not be passed`,
-      );
+    if (!model || model.supportsImages) return;
+    if (this.canDescribePictures()) return;
+    const unseen = await this.picturesWithoutDescription(urls);
+    // Every one of them is already described — nothing is lost, the app is quiet.
+    if (unseen.length === 0) return;
+    if (!unseen.some((u) => this.pendingImages().includes(u))) return; // sent/removed meanwhile
+    const seer = this.visionModel();
+    this.ui.error.set(
+      seer
+        ? `"${seer.name}" cannot see pictures, so "${model.name}" will be told only that a picture is there — not what is on it. Pick a model with vision (👁) or write the picture's description.`
+        : `No model that can see pictures is configured: "${model.name}" will be told only that a picture is there — not what is on it. Pick one with 👁 or write the picture's description.`,
+    );
+  }
+
+  // The added pictures whose description the model will not get: the ones
+  // matched by the catalog (a data URL by size + sha256, an id by its path)
+  // that carry no description, plus everything the catalog does not know.
+  private async picturesWithoutDescription(urls: string[]): Promise<string[]> {
+    let pictures: Picture[] = [];
+    try {
+      pictures = (await this.api.listPictures()).pictures;
+    } catch {
+      // No catalog to ask — nothing is known to be described, so the banner
+      // takes the safe side (the send itself will report the real failure).
     }
+    const byId = new Map(pictures.map((p) => [p.id, p]));
+    const byFacts = new Map<string, Picture>();
+    for (const p of pictures) {
+      if (p.fileHash && typeof p.fileSize === 'number') {
+        byFacts.set(`${p.fileSize}:${p.fileHash}`, p);
+      }
+    }
+    const unseen: string[] = [];
+    for (const url of urls) {
+      const facts = url.startsWith('data:') ? await ChatStore.dataUrlFacts(url) : null;
+      const known = facts ? byFacts.get(`${facts.size}:${facts.hash}`) : byId.get(url);
+      if (!known?.description?.trim()) unseen.push(url);
+    }
+    return unseen;
+  }
+
+  // The size and the sha256 of a `data:image/…;base64,…` URL — the pair the
+  // images table recognises a picture by (fileSize + fileHash), so a file the
+  // user already owns is recognised before it is uploaded again.
+  private static async dataUrlFacts(url: string): Promise<{ size: number; hash: string } | null> {
+    const match = /^data:[^,]*;base64,(.+)$/s.exec(url);
+    const subtle = globalThis.crypto?.subtle;
+    if (!match || !subtle) return null;
+    const binary = atob(match[1]);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const digest = await subtle.digest('SHA-256', bytes);
+    const hash = Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
+    return { size: bytes.length, hash };
   }
 
   removePending(index: number): void {

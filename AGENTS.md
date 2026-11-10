@@ -131,7 +131,13 @@ backend/               Express API; also serves the built frontend
                        one source an image card is filled from on read; merge-
                        on-write where undefined/empty removes a field and a row
                        left saying nothing is deleted; get/getMany/list/set/
-                       remove/move/copy/removeUnder/repointRefs; nothing is
+                       remove/move/copy/removeUnder/repointRefs, plus the
+                       content lookup a disk pick is de-duplicated by —
+                       findByHash (the rows) and findPictureByContent (the rows,
+                       then the files themselves, because the BYTES are the
+                       identity: a picture the user dropped into a folder, or
+                       one whose row predates the file facts, is still the same
+                       picture); nothing is
                        migrated into it — the old format (the <image>.png.json
                        sidecar next to a picture) is not supported, so those
                        leftover files are neither read nor rewritten nor
@@ -191,7 +197,9 @@ backend/               Express API; also serves the built frontend
                        clearAvatar/repointAvatar, the picture picked from disk or
                        from an existing id, a byte-identical picture already in
                        the data folders reused rather than copied through the
-                       image-metadata service's findByHash), the list with photos
+                       image-metadata service's findPictureByContent — the rows
+                       first, then the files themselves, so a picture the table
+                       has not registered yet is recognised too), the list with photos
                        + the avatar id (listWithPhotos), the picture ids of the
                        folder (pictureIdsOf); DI token
                        DI_CHARACTERS_SERVICE, the root folder, the database
@@ -236,7 +244,7 @@ backend/               Express API; also serves the built frontend
                        the chat files (saveImage with an English
                        name hint that de-duplicates by content (a byte-identical
                        picture already in the data folders is reused, not copied —
-                       the image-metadata findByHash size+sha256 check),
+                       the image-metadata findPictureByContent size+sha256 lookup),
                        reservedImageId, importImage, normalizeImages — every
                        picture is
                        addressed by its data-root-relative ID, never by an
@@ -745,7 +753,9 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   `ChatStore.send` calls `POST /api/image/caption` `{ chatId, messageId }` for every 📎 card that
   has no caption (`ReplyService.captionPicture`), which writes the vision model's sentence into the
   picture's row (`description` — what the card shows as its `text`); an empty caption, a config with nothing that can see and a model that
-  failed all leave the card as it is (no error banner — an unlabelled picture is a normal state).
+  failed all leave the card as it is (a FAILED caption is never a banner — an unlabelled picture is
+  a normal state; the only banner near this path is the attach-time one that says the picture will
+  arrive undescribed, see "Pictures belong to the user" below).
   That caption is what a chat model without vision reads about the picture in the history and what
   the 📷 planner reads in its catalogue, so it is not decoration.
 - **A separate planner model (`Config.imagePromptModel`).** The model that writes a picture's
@@ -792,6 +802,19 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   references it used (`image-card` / `card-caption` / `card-prompt` / `card-refs`); a model that
   supports images receives the card as an image part plus a `A picture you are shown, it shows: …`
   text part, and as `[A picture: …]` in the history text of a model without vision.
+  **Attaching a picture is only a warning when the picture will really arrive undescribed**
+  (`ChatStore.onImagesAdded`). The old banner judged by the CHAT model alone ("The model "x" does
+  not support images — the photos will not be passed") and was wrong twice: a text-only chat model
+  still gets the picture as a sentence, either the caption the VISION model writes on send or the
+  description the picture's row already holds — the backend's de-dup reuses a byte-identical file
+  (size + sha256), so the card comes back carrying the images-table caption. The check therefore
+  asks three questions and stays quiet when any answers yes: the chat model sees pictures itself;
+  `canDescribePictures()` (the vision rule) is true; or every added picture is already a described
+  picture of the data folder — a data URL matched against the catalog of `GET /api/pictures` by
+  `fileSize` + `fileHash`, an id by its path. Only when none holds does it say what the model will
+  actually be told (naming the vision pick that cannot see, or that none is configured) and point at
+  the 👁 and the card's ✎. The lookup is async (the catalog + a SHA-256 of the data URL, computed
+  with `crypto.subtle`), so the banner is skipped once the attachments were sent or removed.
 - **The picture of the user's turn (📷).** The button appears in the input bar when a generator is
   available AND it is the user's turn (the last message is a non-error assistant one —
   `ChatStore.isUserTurn`). One click calls `POST /api/chats/:id/auto-image`, which
@@ -902,8 +925,10 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   an orphan at the path the file left, and neither is lost. A record without stored facts cannot be
   judged, so it keeps its path. Every writer of a picture — a save, an import, a
   generated picture, a disk pick — records those facts at the moment it writes the file
-  (`shared/FileFacts.ts`), so a row is never blind to its own file and the de-dup (`findByHash`)
-  sees a fresh picture before anyone opens the browser; the sync keeps the same facts fresh for
+  (`shared/FileFacts.ts`), so a row is never blind to its own file and the de-dup
+  (`findPictureByContent`) sees a fresh picture before anyone opens the browser — and a file the
+  user drops in is recognised by its bytes even before the sync has registered it; the sync keeps
+  the same facts fresh for
   the files the user drops in. A row without a stored hash is never guessed at (it
   stays an orphan), and one file can only carry one row — byte-identical copies leave the others as
   pictures of their own. These fields are row bookkeeping, not generation data: they are NOT in
@@ -1016,8 +1041,11 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   and the preview is served by the one `/api/media?path=<id>` route — there is no `avatar.jpg`
   file and no avatar GET route any more. Picking an avatar (`setAvatarImage`) takes a disk file
   (a data URL) or an existing picture id; a disk file whose bytes match a picture already in the
-  data folders (the image-metadata `findByHash` size+sha256 check) is **reused rather than
-  copied**, so the row points at the file the user already has. `clearAvatar` NULLs the column
+  data folders is **reused rather than copied** — `ImageMetaService.findPictureByContent` asks the
+  table first and then the files themselves (size, then sha256), so a picture the table has not
+  registered yet, or one whose row was written before the file facts existed, is recognised too —
+  so the row points at the file the user already has and no second record is created.
+  `clearAvatar` NULLs the column
   and keeps the file.
   The pictures and the avatar are addressed by
   an image id (`characters/alice/photo1.jpg`) like any other — there is no separate reference

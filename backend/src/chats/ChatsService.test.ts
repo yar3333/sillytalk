@@ -1086,4 +1086,20 @@ describe("saveImage de-duplication", () => {
     expect(id).toMatch(new RegExp(`^${chat.id}/img-[0-9a-f]{6}\\.png$`));
     expect(fs.existsSync(PathHelper.resolveImageId(id)!)).toBe(true);
   });
+
+  it("reuses a picture the table has not registered yet (a file dropped into a folder)", () => {
+    const chat = chats.create(["a"], "me");
+    const bytes = Buffer.from("a picture nobody described yet");
+    const dataUrl = "data:image/png;base64," + bytes.toString("base64");
+    // the user put the file there himself: no row, no facts, no sync ran
+    const owned = path.join(root, "characters", "alice", "a-photo-1a2b3c.png");
+    fs.mkdirSync(path.dirname(owned), { recursive: true });
+    fs.writeFileSync(owned, bytes);
+
+    const id = chats.saveImage(chat.id, dataUrl);
+    expect(id).toBe("characters/alice/a-photo-1a2b3c.png");
+    // no second copy in the chat folder, and no row invented for the picture
+    expect(fs.existsSync(path.join(root, chat.id))).toBe(false);
+    expect(imageMeta.list()).toEqual([]);
+  });
 });

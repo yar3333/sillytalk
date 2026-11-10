@@ -817,13 +817,10 @@ export class ChatsService {
   // The id of a picture already in the data folders whose row says it has this
   // exact size and content hash, or null. The first hit whose file really is
   // there wins; this is how a disk pick is de-duplicated against what the user
-  // already owns.
+  // already owns — and it also matches a file the table has not registered yet,
+  // because the bytes are the identity (ImageMetaService.findPictureByContent).
   private findExistingByHash(size: number, hash: string): string | null {
-    for (const id of this.imageMeta.findByHash(size, hash)) {
-      const file = PathHelper.resolvePictureId(id);
-      if (file && fs.existsSync(file)) return id;
-    }
-    return null;
+    return this.imageMeta.findPictureByContent(size, hash);
   }
 
   // The id a generated image will be saved under in the chat folder (the file

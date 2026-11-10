@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { DatabaseSync } from "node:sqlite";
 import { ImageMeta } from "../shared/ImageMeta";
+import { FileFacts } from "../shared/FileFacts";
 import { PathHelper } from "../shared/PathHelper";
 import { createToken } from "../di";
 
@@ -169,6 +170,38 @@ export class ImageMetaService {
       .prepare("SELECT id FROM images WHERE file_size = ? AND file_hash = ?")
       .all(size, hash) as Array<{ id: string }>;
     return rows.map((row) => row.id);
+  }
+
+  // The id of a picture of the data folders that holds exactly these bytes, or
+  // null. This is what a disk pick is de-duplicated by — an avatar, a chat
+  // attachment, the picture a card is pointed at — so a picture the user already
+  // owns is reused instead of becoming a second file and a second row.
+  //
+  // The rows are asked first (cheap, and they cover every picture the app wrote
+  // or the disk sync registered), but a row is only bookkeeping: the BYTES are
+  // the identity. A file the user just dropped into a folder has no row yet, and
+  // one written before the file facts existed remembers none, so the lookup then
+  // walks the picture folders and compares the files themselves — the size
+  // first, the sha256 only for the candidates that could match. That is the only
+  // way "the picture I already have" is recognised before the picture browser's
+  // sync has ever run.
+  findPictureByContent(size: number, hash: string): string | null {
+    for (const id of this.findByHash(size, hash)) {
+      const file = PathHelper.resolvePictureId(id);
+      if (file && fs.existsSync(file)) return id;
+    }
+    for (const id of PathHelper.listPictureIds()) {
+      const file = PathHelper.resolvePictureId(id);
+      if (!file) continue;
+      try {
+        if (fs.statSync(file).size !== size) continue;
+      } catch {
+        continue; // gone between the listing and the stat
+      }
+      const facts = FileFacts.of(file);
+      if (facts && facts.fileHash === hash) return id;
+    }
+    return null;
   }
 
   // Every row of the table as `{ id, ...meta }` — the picture browser, newest

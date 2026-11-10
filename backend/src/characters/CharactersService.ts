@@ -261,17 +261,15 @@ export class CharactersService {
   // Places the bytes of a picked file: a byte-identical picture already in the
   // data folders gives its id back (the file is not written again), otherwise a
   // new file lands in the character's folder and gets a row carrying its facts,
-  // so the next sync and the next dedup see it.
+  // so the next sync and the next dedup see it. The lookup is by CONTENT, not by
+  // a row of the table alone — a picture the user just dropped into a folder (or
+  // one whose row predates the file facts) is still the same picture
+  // (ImageMetaService.findPictureByContent).
   private storePickedPicture(
     id: string,
     picked: { buffer: Buffer; ext: string; hash: string },
   ): string {
-    const duplicate = this.imageMeta
-      ?.findByHash(picked.buffer.length, picked.hash)
-      .find((candidate) => {
-        const file = PathHelper.resolvePictureId(candidate);
-        return file !== null && fs.existsSync(file);
-      });
+    const duplicate = this.imageMeta?.findPictureByContent(picked.buffer.length, picked.hash);
     if (duplicate) return duplicate;
     const dir = PathHelper.characterDir(id, this.charactersRoot());
     fs.mkdirSync(dir, { recursive: true });
