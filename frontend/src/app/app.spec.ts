@@ -10,10 +10,12 @@ import {
   Character,
   ChatSummary,
   Picture,
+  PictureLanguage,
   User,
 } from '../services/api';
 import { InputPanel } from '../components/input-panel/input-panel';
 import { MessageRow } from '../components/message-row/message-row';
+import { Settings } from '../components/settings/settings';
 import { TopBar } from '../components/top-bar/top-bar';
 import { ChatSettingsDialog } from '../components/chat-settings-dialog/chat-settings-dialog';
 import { PictureDialog } from '../components/picture-dialog/picture-dialog';
@@ -2460,5 +2462,76 @@ describe('ChatStore — the global model picks', () => {
     await tick();
     await tick();
     expect(captionCalls).toEqual([]);
+  });
+});
+
+// The Settings dialog: the language a picture's DESCRIPTION is written in. The
+// list of languages is the backend's (it is the one that tells a model to write
+// in a language), so the pick can never offer something the prompt cannot say;
+// the config stores the code.
+describe('Settings — the language of the picture descriptions', () => {
+  let saved: AppConfig | undefined;
+  const languages: PictureLanguage[] = [
+    { code: 'en', name: 'English' },
+    { code: 'ru', name: 'Russian' },
+    { code: 'ja', name: 'Japanese' },
+  ];
+  const fakeApi = {
+    putConfig: (cfg: AppConfig) => {
+      saved = cfg;
+      return Promise.resolve(cfg);
+    },
+    imageStatus: () => Promise.resolve({ available: false, comfyUiModels: [], pictureLanguages: languages }),
+  };
+
+  beforeEach(async () => {
+    saved = undefined;
+    await TestBed.resetTestingModule();
+    await TestBed.configureTestingModule({
+      imports: [Settings],
+      providers: [{ provide: ApiService, useValue: fakeApi }],
+    }).compileComponents();
+  });
+
+  async function open(): Promise<{ el: HTMLElement; store: ConfigStore }> {
+    const store = TestBed.inject(ConfigStore);
+    store.config.set({ listen: '0.0.0.0:3210', llmModels: {}, imageGenerators: [] });
+    store.pictureLanguages.set(languages);
+    store.openSettings();
+    const fixture = TestBed.createComponent(Settings);
+    fixture.detectChanges();
+    return { el: fixture.nativeElement as HTMLElement, store };
+  }
+
+  it('offers the languages of the backend and saves the code of the picked one', async () => {
+    const { el } = await open();
+    const select = el.querySelector('[data-testid=settings-picture-language]') as HTMLSelectElement;
+    expect([...select.options].map((o) => o.textContent?.trim())).toEqual(['English', 'Russian', 'Japanese']);
+    // a config without the field means English
+    expect(select.value).toBe('en');
+
+    select.value = 'ru';
+    select.dispatchEvent(new Event('change'));
+    (el.querySelector('.actions .btn.primary') as HTMLButtonElement).click();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(saved?.pictureLanguage).toBe('ru');
+  });
+
+  it('shows the language the config already names', async () => {
+    const store = TestBed.inject(ConfigStore);
+    store.config.set({
+      listen: '0.0.0.0:3210',
+      llmModels: {},
+      imageGenerators: [],
+      pictureLanguage: 'ja',
+    });
+    store.pictureLanguages.set(languages);
+    store.openSettings();
+    const fixture = TestBed.createComponent(Settings);
+    fixture.detectChanges();
+    const select = (fixture.nativeElement as HTMLElement).querySelector(
+      '[data-testid=settings-picture-language]',
+    ) as HTMLSelectElement;
+    expect(select.value).toBe('ja');
   });
 });

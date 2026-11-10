@@ -298,17 +298,21 @@ export class TextGenerationService {
     );
   }
 
-  // Describes a picture with a model that can see: one sentence in English
-  // saying what is on it — the "Describe the picture" button of the editor.
-  // The text becomes the card's caption, which is also what a model without
-  // vision is told about the picture in the history.
+  // Describes a picture with a model that can see: one sentence saying what is
+  // on it — the "Describe the picture" button of the editor. The text becomes
+  // the card's caption, which is also what a model without vision is told about
+  // the picture in the history.
   //
   // The picture comes either as an image id of the data folder (a picture the
   // chat already has, or one picked from the catalog) or as a data URL (a file
   // the user just picked from disk).
+  //
+  // The SENTENCE is written in the language the config asks for (input.language
+  // — the name, "Russian"; English when nothing is given). It is the user's
+  // caption, not a prompt: the generator never sees it.
   async describePicture(
     model: Model,
-    input: { imageId?: string; dataUrl?: string },
+    input: { imageId?: string; dataUrl?: string; language?: string },
     sampling?: ChatSampling,
   ): Promise<string> {
     if (!model.supportsImages) {
@@ -324,13 +328,14 @@ export class TextGenerationService {
       url = TextGenerationService.imageDataUrl(file);
     }
     if (!url) throw new Error("No picture to describe");
+    const language = input.language?.trim() || "English";
     const answer = await this.requestCompletion(
       model,
       [
         {
           role: "system",
           content:
-            "You describe pictures for a roleplay chat. Answer with ONE short sentence in English, " +
+            `You describe pictures for a roleplay chat. Answer with ONE short sentence in ${language}, ` +
             "present tense: who or what is on the picture, what happens, the setting and the light. " +
             "No preamble, no quotes, no lists.",
         },
@@ -379,12 +384,18 @@ export class TextGenerationService {
       maxRefs?: number;
       // The look every picture of this chat shares (the chat's style setting).
       style?: string;
+      // The name of the language the plan's DESCRIPTION (the card's caption) is
+      // written in — "Russian"; English when nothing is given. The name, the
+      // prompt and the subject phrases stay English: the generator reads the
+      // prompt, and the file name is an English slug.
+      language?: string;
       signal?: AbortSignal;
       sampling?: ChatSampling;
     },
   ): Promise<ImagePromptPlan | null> {
     const castRefs = new Set((input.cast ?? []).map((c) => c.ref));
     const maxRefs = input.maxRefs ?? 2;
+    const language = input.language?.trim() || "English";
     const list =
       input.images.length === 0
         ? "There are no pictures to draw from, so the picture must come from the text alone."
@@ -426,13 +437,13 @@ export class TextGenerationService {
             "it understands only a visual description and the reference images it is given.\n" +
             "Answer with ONE JSON object and nothing else:\n" +
             '{"name": "2-5 english words naming the picture", ' +
-            '"description": "one sentence saying what the finished picture shows", ' +
+            `"description": "one sentence saying what the finished picture shows, in ${language}", ` +
             '"prompt": "the image generation prompt, in english, 1-3 sentences: subjects, action, setting, lighting, style", ' +
             '"refs": [numbers of the pictures below to draw from], ' +
             '"cast": [the ids of the people who appear in the picture], ' +
             '"subjects": [{"id": "the cast id", "noun": "the 2-4 word english phrase the prompt uses for them"}]}\n' +
             "Rules:\n" +
-            "- everything in english;\n" +
+            `- the name, the prompt and the subject phrases are in english; the description is in ${language};\n` +
             "- the prompt describes a single concrete scene, not a story;\n" +
             "- NEVER write a person's name in the prompt. Call a person by how they look " +
             '(the "look" line of their cast entry: "the red-haired woman in a green coat") or by their ' +

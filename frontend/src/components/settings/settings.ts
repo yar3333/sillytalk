@@ -3,6 +3,7 @@ import {
   AppConfig,
   ComfyUiSettings,
   ImageGenerator,
+  PictureLanguage,
   SdApiSettings,
   isComfyUiGenerator,
 } from '../../services/api';
@@ -25,6 +26,27 @@ import { UiStore } from '../../services/ui-store';
         <div class="hint">
           Models, characters and personas are edited in the menus on the header (the name or the
           model chip) — with per-item dialogs.
+        </div>
+
+        <h3>Picture descriptions</h3>
+        <label class="field">
+          <span>Language</span>
+          <!-- The list comes from the backend (it is the one that tells the
+               model to write in that language), and [selected] goes on the
+               option — [value] on the <select> would be set before the @for
+               options exist and silently fail. -->
+          <select data-testid="settings-picture-language" (change)="setPictureLanguage($event)">
+            @for (lang of languages(); track lang.code) {
+              <option [value]="lang.code" [selected]="lang.code === pictureLanguage()">
+                {{ lang.name }}
+              </option>
+            }
+          </select>
+        </label>
+        <div class="hint">
+          The language of a picture's DESCRIPTION: the vision model's "Describe the picture", the
+          caption of an attached picture and the caption the 📷 plan gives its own picture. The
+          generation PROMPT is always English — that is what the generators read.
         </div>
 
         <h3>Picture prompt model</h3>
@@ -144,6 +166,24 @@ export class Settings implements OnInit {
     const name = (e.target as HTMLSelectElement).value;
     if (name) c.imagePromptModel = name;
     else delete c.imagePromptModel;
+    this.m.set({ ...c });
+  }
+
+  // ---- picture descriptions (the language of the captions) ----
+  // The languages the backend can ask a model to write in; the pick stores the
+  // code, and the name travels with it, so the prompt and the list cannot
+  // disagree.
+  languages(): PictureLanguage[] {
+    return this.configStore.pictureLanguages();
+  }
+  // English is what a config without the field means.
+  pictureLanguage(): string {
+    return this.m()?.pictureLanguage || 'en';
+  }
+  private setPictureLanguage(e: Event): void {
+    const c = this.m();
+    if (!c) return;
+    c.pictureLanguage = (e.target as HTMLSelectElement).value;
     this.m.set({ ...c });
   }
 

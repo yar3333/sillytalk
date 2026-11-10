@@ -334,6 +334,19 @@ describe("describePicture", () => {
     expect(parts[1].image_url?.url).toBe("data:image/jpeg;base64,aGVsbG8=");
   });
 
+  // The caption is for the user, so its language is a setting of the app — the
+  // model is asked for the NAME of the language ("Russian"), not a tag.
+  it("asks for the sentence in the language the caller names", async () => {
+    const fetchMock = jest.fn().mockResolvedValue(jsonRes({ choices: [{ message: { content: "Красная лодка." } }] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const out = await textGenerationService.describePicture(model, { imageId: picture, language: "Russian" });
+    expect(out).toBe("Красная лодка.");
+    const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
+    const system = (JSON.parse(init.body) as { messages: Array<{ content: string }> }).messages[0].content;
+    expect(system).toContain("ONE short sentence in Russian");
+  });
+
   it("refuses a model without vision, a non-picture data URL and an unknown id — without calling the provider", async () => {
     const fetchMock = jest.fn();
     global.fetch = fetchMock as unknown as typeof fetch;
@@ -652,6 +665,48 @@ describe("composeImagePrompt", () => {
     const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
     expect(asked(init.body).messages[1].content).toContain("no pictures to draw from");
     expect(plan?.refs).toEqual([]);
+  });
+
+  // The plan's DESCRIPTION becomes the card's caption, so it is written in the
+  // language of the descriptions — while the prompt, the file name and the
+  // subject phrases stay English (the generator reads the prompt).
+  it("asks for the plan's description in the language of the descriptions and keeps the prompt English", async () => {
+    const fetchMock = jest.fn().mockResolvedValue(
+      jsonRes({
+        choices: [
+          {
+            message: {
+              content:
+                '{"name": "a red boat", "description": "Красная лодка на озере.", "prompt": "a red boat on a lake", "refs": []}',
+            },
+          },
+        ],
+      }),
+    );
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const plan = await textGenerationService.composeImagePrompt(model, {
+      scene: "Alice: hi",
+      images: [],
+      language: "Russian",
+    });
+    const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
+    const system = asked(init.body).messages[0].content;
+    expect(system).toContain("the description is in Russian");
+    expect(system).toContain("the name, the prompt and the subject phrases are in english");
+    expect(plan?.description).toBe("Красная лодка на озере.");
+  });
+
+  it("asks for an English description when no language is given", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(jsonRes({ choices: [{ message: { content: '{"prompt": "a boat", "refs": []}' } }] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await textGenerationService.composeImagePrompt(model, { scene: "Alice: hi", images: [] });
+    const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
+    const system = asked(init.body).messages[0].content;
+    expect(system).toContain("the description is in English");
   });
 
   it("reads a plan wrapped in a code fence and prose, and keeps the name and description", async () => {

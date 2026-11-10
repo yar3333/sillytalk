@@ -322,6 +322,11 @@ test('the model menu and the settings dialog', async ({ page }) => {
   await page.getByTestId('menu').click();
   await page.getByTestId('settings').click();
   await expect(page.locator('.settings-body')).toBeVisible();
+  // The language of the picture descriptions is the backend's list (the model is
+  // told a language NAME, so the pick cannot be a second copy of it).
+  await expect(
+    page.getByTestId('settings-picture-language').locator('option', { hasText: 'Russian' }),
+  ).toHaveCount(1);
   await page.screenshot({ path: `${SHOTS}/04b-settings.png` });
 });
 

@@ -104,7 +104,19 @@ export interface AppConfig {
   // The llmModels key of the model that WRITES the picture prompts (the 📷
   // planner and "From the chat"); empty/absent — the chat model is used.
   imagePromptModel?: string;
+  // The language of a picture's DESCRIPTION — a code of the list the backend
+  // reports in imageStatus().pictureLanguages ("en", "ru"…); empty/absent —
+  // English. It is what the vision captions and the 📷 plan's caption say; the
+  // generation PROMPT stays English.
+  pictureLanguage?: string;
   imageGenerators: ImageGenerator[];
+}
+
+// A language a picture's description can be written in: the code the config
+// stores, and the name the Settings pick shows (the backend owns the list).
+export interface PictureLanguage {
+  code: string;
+  name: string;
 }
 
 export interface ChatMessage {
@@ -606,11 +618,20 @@ export class ApiService {
     return this.req(`/chats/${chatId}/auto-image`, { method: 'POST' });
   }
 
-  // Whether an image generator is available (any enabled one that answers),
-  // and the image models a ComfyUI generator can be pointed at — the models
-  // the app ships a workflow for.
-  imageStatus(): Promise<{ available: boolean; comfyUiModels?: string[] }> {
-    return this.req<{ available: boolean; comfyUiModels?: string[] }>('/image/status');
+  // Whether an image generator is available (any enabled one that answers), the
+  // image models a ComfyUI generator can be pointed at (the models the app
+  // ships a workflow for) and the languages a picture's description can be
+  // written in.
+  imageStatus(): Promise<{
+    available: boolean;
+    comfyUiModels?: string[];
+    pictureLanguages?: PictureLanguage[];
+  }> {
+    return this.req<{
+      available: boolean;
+      comfyUiModels?: string[];
+      pictureLanguages?: PictureLanguage[];
+    }>('/image/status');
   }
 
   // The URL of an image by its id (a path relative to the data folder).

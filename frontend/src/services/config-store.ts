@@ -1,5 +1,5 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
-import { ApiService, AppConfig, Character, LlmModel, Model, User } from './api';
+import { ApiService, AppConfig, Character, LlmModel, Model, PictureLanguage, User } from './api';
 import { UiStore } from './ui-store';
 
 // The entity edit dialogs (character / persona / model): which one is open
@@ -34,6 +34,10 @@ export class ConfigStore {
   // The image models a ComfyUI generator can run — the backend knows which
   // workflows the app ships, the settings dialog offers exactly these.
   readonly comfyUiModels = signal<string[]>([]);
+  // The languages a picture's description can be written in — also the
+  // backend's list: the name of a language is what the model is told, so the
+  // pick must not be a second copy of it.
+  readonly pictureLanguages = signal<PictureLanguage[]>([]);
 
   // The "Settings" dialog: open + the copy of the config being edited.
   readonly settingsOpen = signal(false);
@@ -63,6 +67,7 @@ export class ConfigStore {
       .then((status) => {
         this.imageGenAvailable.set(status.available);
         this.comfyUiModels.set(status.comfyUiModels ?? []);
+        this.pictureLanguages.set(status.pictureLanguages ?? []);
         return this.api.getCharacters();
       })
       .then((chars) => {
@@ -323,8 +328,9 @@ export class ConfigStore {
     }
   }
 
-  // The settings dialog saves the listen address and the image generators
-  // only — the models/characters/personas have their own dialogs now.
+  // The settings dialog saves the listen address, the picture settings and the
+  // image generators only — the models/characters/personas have their own
+  // dialogs now.
   saveSettings(config: AppConfig): void {
     this.api
       .putConfig(config)
@@ -335,6 +341,7 @@ export class ConfigStore {
       .then((status) => {
         this.imageGenAvailable.set(status.available);
         this.comfyUiModels.set(status.comfyUiModels ?? []);
+        this.pictureLanguages.set(status.pictureLanguages ?? []);
         this.settingsOpen.set(false);
       })
       .catch((e) => this.ui.error.set(String((e as Error).message)));

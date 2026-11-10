@@ -288,7 +288,12 @@ backend/               Express API; also serves the built frontend
                        pick/clear);
                        PersonsService.test.ts — jest unit tests
     configuration/     the configuration domain: the types (Config.ts,
-                       LlmModel.ts, Model.ts, and the generator settings —
+                       LlmModel.ts, Model.ts, PictureLanguage.ts — the languages
+                       a picture's description can be written in: the code the
+                       config stores, the name the model is told, and the one
+                       normalizer/namer of it, so the config, the prompt and
+                       the Settings list cannot disagree — and the generator
+                       settings —
                        ImageGenerator.ts, the union of SdApiSettings.ts /
                        ComfyUiSettings.ts + the isSdApiGenerator /
                        isComfyUiGenerator guards on the `kind` discriminator:
@@ -300,10 +305,12 @@ backend/               Express API; also serves the built frontend
                        parsing, the flat-model helpers, the legacy-field
                        cleanup (prepareLegacyConfig), normalizeGenerators (an
                        entry without a known `kind` is dropped — a generator
-                       the app cannot run is not a generator), and the model-pick
-                       cleanup (the three global keys — chatModel, visionModel,
-                       imagePromptModel — each dropped when it names a model no
-                       longer in llmModels); DI token
+                       the app cannot run is not a generator), and the
+                       pick/language cleanup (the three global model keys —
+                       chatModel, visionModel, imagePromptModel — each dropped
+                       when it names a model no longer in llmModels, and
+                       pictureLanguage dropped when the app cannot name it);
+                       DI token
                        DI_CONFIGURATION_SERVICE);
                        config.routes.ts — the /config routes;
                        ConfigurationService.test.ts — jest unit tests
@@ -594,6 +601,13 @@ or through the in-app **Settings** dialog. Paths may use `~` (resolved by `expan
   // my turn" and the editor's "From the chat"); unset or a model that is gone = the
   // chat model plans. It does not affect replies or picture captions.
   "imagePromptModel": "",
+  // the language the DESCRIPTIONS of pictures are written in — a code of
+  // configuration/PictureLanguage.ts, which the Settings dialog offers as a list
+  // (en, ru, uk, de, fr, es, it, pt, pl, tr, zh, ja, ko); unset or unknown = English.
+  // It covers the vision captions (the "Describe the picture" helpers, the caption
+  // of an attached picture) and the caption the 📷 plan writes; the generation
+  // PROMPT stays English, because that is what the generators read.
+  "pictureLanguage": "en",
   // generation backends: kind = "sdapi" | "comfyui" decides the type; every
   // enabled + available one is used in parallel, the jobs of one SERVER are
   // queued (enabled defaults to true)
@@ -658,10 +672,13 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   concurrently). This is why the driver carries TWO ids: `key` (the generator's identity — written
   into the picture row's `generator` and shown in the hover hint) and `queueKey` (the queue identity:
   `comfyui:<url>` for ComfyUI, so two generators of one server share one queue; for SD API it is
-  its own `key`). `GET /api/image/status` returns `{ available, comfyUiModels }` for the UI —
+  its own `key`). `GET /api/image/status` returns `{ available, comfyUiModels, pictureLanguages }`
+  for the UI —
   `available` is true when at least one generator is available and `comfyUiModels` is
   `comfyUiModelNames()`, the list the Settings dialog fills its model pick from (the frontend does
-  not mirror the model names). Config changes via `PUT /api/config` recompute the available
+  not mirror the model names); `pictureLanguages` is `PICTURE_LANGUAGES` (the codes and the names a
+  picture's description can be written in — see the language bullet below), mirrored for the same
+  reason. Config changes via `PUT /api/config` recompute the available
   generators.
 - **A ComfyUI workflow is a JSON file, not compiled code** (`image_generation/comfyui/`, ported
   from the PowerShell scripts that used to sit next to the app). The app ships
@@ -743,6 +760,21 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   `llmModels`, and the Settings pick writes an empty value as "Default" (the field removed → the
   chat model plans). Replies and picture captions are unaffected — they use `chatModel` and
   `visionModel`.
+- **The descriptions of pictures have a language of their own (`Config.pictureLanguage`).** A
+  caption is for the user, not for the generator, so it does not have to be English: a GLOBAL field
+  (the Settings dialog's "Picture descriptions → Language" pick, `settings-picture-language`) whose
+  value is a code of `configuration/PictureLanguage.ts` — en, ru, uk, de, fr, es, it, pt, pl, tr, zh,
+  ja, ko. The LIST lives in the backend and reaches the UI through `GET /api/image/status`
+  (`pictureLanguages`), just like `comfyUiModels`: the model is told the language NAME ("Russian",
+  never "ru"), so a second copy of the list on the frontend would be a second thing to keep true.
+  `normalizePictureLanguage` drops a code the app cannot name on load (English is what the field
+  means when it is absent), and `ReplyService.resolvePictureLanguage()` is the one rule every
+  caller uses: `describePicture` — the editor's "Describe the picture", the picture browser's own
+  helper and the caption of an attached picture (`captionPicture`) — and the 📷 plan
+  (`composeImagePrompt`, whose `description` becomes the card's caption). The plan's `name`, its
+  `prompt` and its subject phrases stay ENGLISH regardless: the generator reads the prompt, and the
+  name is the English slug of the file. `translatePrompt`/`tunePrompt` ("Make it English") are
+  untouched — they exist to produce an English generation prompt.
 - **Pictures belong to the user; the model is text-only.** There is no `[IMG:…]` /
   `[PHOTO:…]` protocol and no `accessAllImages` flag anymore: `systemPromptFor` states plainly that
   the character cannot send or create images. A picture enters a chat in exactly three ways, and all
@@ -1240,7 +1272,9 @@ that needs the databases resolves them here — the one place allowed to.
   item-id`, so the dialog component is recreated and re-initializes when the item changes).
   Model clone — a duplicate entry under a free "<name> copy" key (the dialog still closes). The
   settings dialog does NOT manage them — it keeps the
-  listen address, the global picture-prompt model pick and the image generators (with a hint
+  listen address, the language of the picture descriptions (`settings-picture-language`, a pick fed by
+  `GET /api/image/status`'s `pictureLanguages`), the global picture-prompt model pick and the image
+  generators (with a hint
   pointing at the header menus): "+ ComfyUI"
   adds a `{ kind: 'comfyui' }` entry (URL + the model **pick** + the GPU device + width/height — the
   pick is fed by `GET /api/image/status`'s `comfyUiModels` rather than a hardcoded frontend list, and

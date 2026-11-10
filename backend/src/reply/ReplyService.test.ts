@@ -59,12 +59,15 @@ class StubConfigurationService extends ConfigurationService {
   extra: Record<string, LlmModel> = {};
   chatModel?: string;
   visionModel?: string;
+  // The language of the picture descriptions (a code of PICTURE_LANGUAGES).
+  pictureLanguage?: string;
   loadConfig(): Config {
     return {
       listen: "127.0.0.1:3210",
       llmModels: { m1: { ...model(), supportsImages: this.vision }, ...this.extra },
       ...(this.chatModel ? { chatModel: this.chatModel } : {}),
       ...(this.visionModel ? { visionModel: this.visionModel } : {}),
+      ...(this.pictureLanguage ? { pictureLanguage: this.pictureLanguage } : {}),
       imageGenerators: [],
     };
   }
@@ -88,8 +91,14 @@ class StubTextGeneration extends TextGenerationService {
     cast: [],
     subjects: [],
   };
-  planInput: { scene: string; images: ImageBrief[]; cast: ImageCastMember[]; maxRefs: number; style?: string } | null =
-    null;
+  planInput: {
+    scene: string;
+    images: ImageBrief[];
+    cast: ImageCastMember[];
+    maxRefs: number;
+    style?: string;
+    language?: string;
+  } | null = null;
   planCalls = 0;
   planGate: Promise<void> = Promise.resolve();
 
@@ -105,7 +114,14 @@ class StubTextGeneration extends TextGenerationService {
 
   async composeImagePrompt(
     _model: Model,
-    input: { scene: string; images: ImageBrief[]; cast?: ImageCastMember[]; maxRefs?: number; style?: string },
+    input: {
+      scene: string;
+      images: ImageBrief[];
+      cast?: ImageCastMember[];
+      maxRefs?: number;
+      style?: string;
+      language?: string;
+    },
   ): Promise<ImagePromptPlan | null> {
     this.planCalls++;
     this.planInput = {
@@ -114,6 +130,7 @@ class StubTextGeneration extends TextGenerationService {
       cast: input.cast ?? [],
       maxRefs: input.maxRefs ?? 0,
       ...(input.style !== undefined ? { style: input.style } : {}),
+      ...(input.language !== undefined ? { language: input.language } : {}),
     };
     await this.planGate;
     return this.plan;
@@ -123,7 +140,7 @@ class StubTextGeneration extends TextGenerationService {
   tunedPrompt = "a tuned english prompt";
   tuneInput: string | null = null;
   description = "a small red boat on a calm lake";
-  describeInput: { imageId?: string; dataUrl?: string } | null = null;
+  describeInput: { imageId?: string; dataUrl?: string; language?: string } | null = null;
   // The model that was handed to the last describe call: the vision tests check
   // that the chat's pick, not its chat model, is what looked at the picture.
   describeModel: string | null = null;
@@ -135,7 +152,10 @@ class StubTextGeneration extends TextGenerationService {
     return this.tunedPrompt;
   }
 
-  async describePicture(model: Model, input: { imageId?: string; dataUrl?: string }): Promise<string> {
+  async describePicture(
+    model: Model,
+    input: { imageId?: string; dataUrl?: string; language?: string },
+  ): Promise<string> {
     this.describeInput = input;
     this.describeModel = model.name;
     await this.describeGate;
@@ -1095,15 +1115,49 @@ describe("the picture editor's LLM helpers", () => {
     expect(await reply.describePicture(chat.id, { imageId: "chats/x/files/a.png" })).toBe(
       "a small red boat on a calm lake",
     );
-    expect(textGeneration.describeInput).toEqual({ imageId: "chats/x/files/a.png" });
+    expect(textGeneration.describeInput).toEqual({
+      imageId: "chats/x/files/a.png",
+      language: "English",
+    });
     await reply.describePicture(chat.id, { dataUrl: "data:image/png;base64,aGVsbG8=" });
-    expect(textGeneration.describeInput).toEqual({ dataUrl: "data:image/png;base64,aGVsbG8=" });
+    expect(textGeneration.describeInput).toEqual({
+      dataUrl: "data:image/png;base64,aGVsbG8=",
+      language: "English",
+    });
 
     configuration.vision = false;
     await expect(reply.describePicture(chat.id, { imageId: "a.png" })).rejects.toThrow(
       /No model that can see pictures/,
     );
     expect(await reply.describePicture("nope", { imageId: "a.png" })).toBeNull();
+  });
+
+  // The language of the descriptions is a global setting: the app writes the
+  // caption in it (a caption is for the user, not for the generator) — the
+  // generation prompt itself stays English.
+  it("writes the descriptions in the language the config names, English by default", async () => {
+    configuration.vision = true;
+    const { chat } = chatWithCard();
+    expect(reply.resolvePictureLanguage()).toBe("English");
+
+    configuration.pictureLanguage = "ru";
+    expect(reply.resolvePictureLanguage()).toBe("Russian");
+    await reply.describePicture(chat.id, { imageId: "a.png" });
+    expect(textGeneration.describeInput).toEqual({ imageId: "a.png", language: "Russian" });
+
+    // the caption of an attached picture rides along
+    const upload = chatWithUpload();
+    configuration.vision = true;
+    await reply.captionPicture(upload.chat.id, upload.message.id);
+    expect(textGeneration.describeInput?.language).toBe("Russian");
+
+    // ...and so does the description of the 📷 plan
+    await reply.planPicturePrompt(chat.id);
+    expect(textGeneration.planInput?.language).toBe("Russian");
+
+    // a code the app does not know is not a language: English
+    configuration.pictureLanguage = "klingon";
+    expect(reply.resolvePictureLanguage()).toBe("English");
   });
 });
 

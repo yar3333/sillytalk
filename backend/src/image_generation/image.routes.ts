@@ -1,6 +1,7 @@
 import express from "express";
 import fs from "fs";
 import { ChatsService } from "../chats/ChatsService";
+import { PICTURE_LANGUAGES } from "../configuration/PictureLanguage";
 import { ReplyService } from "../reply/ReplyService";
 import { HttpHelper } from "../shared/HttpHelper";
 import { PathHelper } from "../shared/PathHelper";
@@ -27,6 +28,10 @@ export function createImageRouter(
       // The image models a ComfyUI generator can be pointed at: what the app
       // ships a workflow for (the settings dialog offers exactly these).
       comfyUiModels: comfyUiModelNames(),
+      // The languages a picture's description can be written in — the Settings
+      // dialog fills its pick from here, so the list of what the model can be
+      // asked for lives in one place (configuration/PictureLanguage.ts).
+      pictureLanguages: PICTURE_LANGUAGES,
     });
   });
 

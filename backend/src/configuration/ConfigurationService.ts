@@ -5,6 +5,7 @@ import { Config } from "./Config";
 import { ImageGenerator } from "./ImageGenerator";
 import { LlmModel } from "./LlmModel";
 import { Model } from "./Model";
+import { DEFAULT_PICTURE_LANGUAGE, normalizePictureLanguage } from "./PictureLanguage";
 import { PathHelper } from "../shared/PathHelper";
 
 // The DI token of the configuration service (registered in index.ts).
@@ -52,6 +53,7 @@ export class ConfigurationService {
           reasoning: false,
         },
       },
+      pictureLanguage: DEFAULT_PICTURE_LANGUAGE,
       imageGenerators: [],
     };
   }
@@ -133,12 +135,17 @@ export class ConfigurationService {
       const chatModel = pick(parsed.chatModel);
       const visionModel = pick(parsed.visionModel);
       const imagePromptModel = pick(parsed.imagePromptModel);
+      // A language the app cannot name is dropped like a dangling model pick:
+      // the prompt would have nothing to say and the descriptions are English
+      // by default anyway.
+      const pictureLanguage = normalizePictureLanguage(parsed.pictureLanguage);
       return {
         listen: typeof parsed.listen === "string" && parsed.listen ? parsed.listen : def.listen,
         llmModels,
         ...(chatModel ? { chatModel } : {}),
         ...(visionModel ? { visionModel } : {}),
         ...(imagePromptModel ? { imagePromptModel } : {}),
+        ...(pictureLanguage ? { pictureLanguage } : {}),
         imageGenerators: this.normalizeGenerators(parsed.imageGenerators),
       };
     } catch (err) {

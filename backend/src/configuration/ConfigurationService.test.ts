@@ -3,6 +3,7 @@ import os from "os";
 import path from "path";
 import { ConfigurationService } from "./ConfigurationService";
 import { Config } from "./Config";
+import { pictureLanguageName } from "./PictureLanguage";
 
 // One service instance for the whole suite — the service is stateless, the
 // data root is read from the env on every load.
@@ -59,6 +60,22 @@ describe("the global model picks", () => {
     expect(cfg).not.toHaveProperty("chatModel");
     expect(cfg).not.toHaveProperty("visionModel");
     expect(cfg).not.toHaveProperty("imagePromptModel");
+  });
+});
+
+describe("the language of the picture descriptions", () => {
+  it("keeps a language the app knows, lower-cased", () => {
+    const cfg = loadConfigWith(JSON.stringify({ ...JSON.parse(base()), pictureLanguage: " RU " }));
+    expect(cfg.pictureLanguage).toBe("ru");
+    // ...and the name the model is told comes from the same list
+    expect(pictureLanguageName(cfg.pictureLanguage)).toBe("Russian");
+  });
+
+  it("drops a language it cannot name — the descriptions stay English", () => {
+    const cfg = loadConfigWith(JSON.stringify({ ...JSON.parse(base()), pictureLanguage: "klingon" }));
+    expect(cfg).not.toHaveProperty("pictureLanguage");
+    expect(pictureLanguageName(cfg.pictureLanguage)).toBe("English");
+    expect(pictureLanguageName(undefined)).toBe("English");
   });
 });
 

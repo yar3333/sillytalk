@@ -6,6 +6,7 @@ import { ChatMessage, ImageGenerationData, isImageMessage } from "../chats/ChatM
 import { ChatsService } from "../chats/ChatsService";
 import { ConfigurationService } from "../configuration/ConfigurationService";
 import { Model } from "../configuration/Model";
+import { pictureLanguageName } from "../configuration/PictureLanguage";
 import { PathHelper } from "../shared/PathHelper";
 import { createToken } from "../di";
 import { ImageBrief, ImageCastMember, ImagePromptPlan, TextGenerationService } from "../text_generation/TextGenerationService";
@@ -63,6 +64,15 @@ export class ReplyService {
   // model. The rule lives in TextGenerationService.
   resolveImagePromptModel(): Model | null {
     return this.textGeneration.resolveImagePromptModel(this.configuration.loadConfig());
+  }
+
+  // The language of a picture's DESCRIPTION — the config's pictureLanguage,
+  // English when it is absent or names a language the app does not know. It
+  // covers every caption the app writes: the vision helpers, the caption of an
+  // attached picture and the description of the 📷 plan. The generation prompt
+  // is English regardless — the generators expect English.
+  resolvePictureLanguage(): string {
+    return pictureLanguageName(this.configuration.loadConfig().pictureLanguage);
   }
 
   // The name recorded with a picture ("which model wrote this prompt"): the
@@ -321,6 +331,7 @@ export class ReplyService {
         images: material.images,
         cast: material.cast,
         maxRefs,
+        language: this.resolvePictureLanguage(),
         ...(chat.stylePrompt ? { style: chat.stylePrompt } : {}),
         sampling: chat.sampling,
       });
@@ -841,6 +852,7 @@ export class ReplyService {
       images: material.images,
       cast: material.cast,
       maxRefs,
+      language: this.resolvePictureLanguage(),
       ...(chat.stylePrompt ? { style: chat.stylePrompt } : {}),
       sampling: chat.sampling,
     });
@@ -863,7 +875,8 @@ export class ReplyService {
   // Describes a picture with the chat's vision model — the "Describe the
   // picture" button: an existing picture of the data folder or a data URL of a
   // file the user just picked. Null when the chat is gone (a model error — no
-  // vision, no model — propagates to the route).
+  // vision, no model — propagates to the route). The sentence is written in the
+  // language of the config's pictureLanguage.
   async describePicture(
     chatId: string,
     input: { imageId?: string; dataUrl?: string },
@@ -872,7 +885,13 @@ export class ReplyService {
     if (!chat) return null;
     const model = this.resolveVisionModel();
     if (!model || !model.supportsImages) throw new Error(ReplyService.noVisionMessage(model));
-    return (await this.textGeneration.describePicture(model, input, chat.sampling)).trim();
+    return (
+      await this.textGeneration.describePicture(
+        model,
+        { ...input, language: this.resolvePictureLanguage() },
+        chat.sampling,
+      )
+    ).trim();
   }
 
   // The wording of "this chat has nothing to look at pictures with" — shared by
@@ -908,7 +927,13 @@ export class ReplyService {
     if (!model || !model.supportsImages) return this.chats.get(chatId);
     let description = "";
     try {
-      description = (await this.textGeneration.describePicture(model, { imageId: image }, chat.sampling)).trim();
+      description = (
+        await this.textGeneration.describePicture(
+          model,
+          { imageId: image, language: this.resolvePictureLanguage() },
+          chat.sampling,
+        )
+      ).trim();
     } catch {
       return this.chats.get(chatId);
     }

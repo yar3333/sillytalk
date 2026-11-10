@@ -20,5 +20,11 @@ export type Config = {
   // planner and "From the chat"). A global pick that may differ from the model
   // running the replies; absent or unknown — the chat model is used.
   imagePromptModel?: string;
+  // The language the DESCRIPTIONS of pictures are written in — a code of
+  // PICTURE_LANGUAGES (configuration/PictureLanguage.ts): the vision captions
+  // (the "Describe the picture" helpers, the caption of an attached picture)
+  // and the caption the 📷 plan gives its picture. Absent or unknown —
+  // English. The generation PROMPT is English whatever this says.
+  pictureLanguage?: string;
   imageGenerators: ImageGenerator[];
 };
