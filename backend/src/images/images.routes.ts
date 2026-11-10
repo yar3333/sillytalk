@@ -71,7 +71,10 @@ export function createPicturesRouter(library: PictureLibraryService): express.Ro
   });
 
   // Renames a picture: the file moves, its row moves with it, and every chat
-  // card and reference list that named the old path now names the new one.
+  // card and reference list that named the old path now names the new one. A
+  // record whose file is gone (an orphan) still renames — the row moves, and it
+  // attaches to a file that already lives at the new id, which is how a
+  // description comes back to a picture the user renamed outside the app.
   router.post("/rename", (req, res) => {
     const { id, newId } = req.body ?? {};
     if (typeof id !== "string" || typeof newId !== "string" || !newId.trim()) {
@@ -91,7 +94,27 @@ export function createPicturesRouter(library: PictureLibraryService): express.Ro
       res.json({ picture });
     } catch (err) {
       // The service says why the name is not usable (already taken, not a
-      // picture path) — the banner can show it as it is.
+      // picture path, a job still drawing it) — the banner can show it as it is.
+      res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
+  // Forgets the record of a picture whose file is gone — the only delete the
+  // browser has, so an orphan row does not have to live forever. The service
+  // refuses a picture whose file still exists: the app does not delete pictures.
+  router.delete("/", (req, res) => {
+    const { id } = req.body ?? {};
+    if (typeof id !== "string" || !PathHelper.resolvePictureId(id)) {
+      res.status(400).json({ error: "Unknown picture" });
+      return;
+    }
+    try {
+      if (!library.forget(id)) {
+        res.status(404).json({ error: `Unknown picture "${id}"` });
+        return;
+      }
+      res.json({ forgotten: id });
+    } catch (err) {
       res.status(400).json({ error: (err as Error).message });
     }
   });

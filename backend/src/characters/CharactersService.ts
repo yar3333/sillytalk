@@ -199,29 +199,6 @@ export class CharactersService {
     return newId;
   }
 
-  // Brings the set of characters in line with the given list:
-  // creates new ones, updates existing ones, deletes the extras.
-  sync(characters: Character[]): void {
-    const keep = new Set<string>();
-    for (const character of characters) {
-      this.save(character);
-      keep.add(character.id);
-    }
-    for (const existing of this.list()) {
-      if (!keep.has(existing.id)) this.delete(existing.id);
-    }
-    // A folder the list does not name is removed with it, as before the move
-    // into the database: a leftover folder is no character's pictures.
-    const root = this.charactersRoot();
-    if (!fs.existsSync(root)) return;
-    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-      if (!PathHelper.isDirEntry(root, entry)) continue;
-      if (!keep.has(entry.name)) {
-        fs.rmSync(path.join(root, entry.name), { recursive: true, force: true });
-      }
-    }
-  }
-
   // ---- avatar (an image id the row keeps in its `avatar` column) ----
   //
   // The avatar is not a special file any more: it is one of the character's

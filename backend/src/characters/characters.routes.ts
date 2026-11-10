@@ -1,12 +1,11 @@
 import express from "express";
-import { Character } from "./Character";
 import { CharactersService } from "./CharactersService";
 import { EntityIdService } from "../entities/EntityIdService";
 
-// The /characters routes: the catalog CRUD (the full-list sync), the clone, the
-// ID rename and the avatar. A character's pictures are ordinary files of its
-// folder (served by the /media route), so there is no photo route here. The
-// domain logic lives in
+// The /characters routes: the catalog CRUD (one character at a time), the
+// clone, the ID rename and the avatar. A character's pictures are ordinary
+// files of its folder (served by the /media route), so there is no photo route
+// here. The domain logic lives in
 // CharactersService (the catalogs table and the picture folders) and in
 // EntityIdService (what a new ID drags along); this file is the thin HTTP layer
 // (validation, status codes, streaming).
@@ -20,34 +19,53 @@ export function createCharactersRouter(
     res.json(characters.listWithPhotos());
   });
 
-  // Full sync: creates/updates/deletes characters to match the list.
-  router.put("/", (req, res) => {
-    const { characters: chars } = req.body ?? {};
-    if (!Array.isArray(chars)) {
-      res.status(400).json({ error: "Expected a list of characters" });
+  // Creates or updates ONE character. The ID is the primary key of the row AND
+  // the name of the folder of its pictures, so it travels in the URL and is not
+  // a field of this call: a rename is its own operation (POST /:id/rename),
+  // because it moves the folder and drags the chats and the picture ids along.
+  // The answer is the whole catalog (the shape GET returns), so the client can
+  // replace what it shows without a second read.
+  router.put("/:id", (req, res) => {
+    const id = String(req.params.id);
+    if (!characters.isValidId(id)) {
+      res.status(400).json({ error: `Invalid character ID: ${id}` });
       return;
     }
-    const list: Character[] = [];
-    const seen = new Set<string>();
-    for (const entry of chars) {
-      if (!entry || typeof entry !== "object") {
-        res.status(400).json({ error: "Invalid character entry" });
+    const { name, description } = req.body ?? {};
+    for (const [field, value] of [
+      ["name", name],
+      ["description", description],
+    ] as const) {
+      if (value !== undefined && typeof value !== "string") {
+        res.status(400).json({ error: `Expected ${field} (string)` });
         return;
       }
-      const c = entry as Partial<Character>;
-      if (!characters.isValidId(c.id) || seen.has(c.id)) {
-        res.status(400).json({ error: `Invalid or duplicate character ID: ${String(c.id)}` });
-        return;
-      }
-      seen.add(c.id);
-      list.push({
-        id: c.id,
-        name: typeof c.name === "string" ? c.name : c.id,
-        description: typeof c.description === "string" ? c.description : "",
-      });
     }
-    characters.sync(list);
+    const existing = characters.get(id);
+    try {
+      characters.save({
+        id,
+        name: typeof name === "string" ? name : (existing?.name ?? id),
+        description: typeof description === "string" ? description : (existing?.description ?? ""),
+      });
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+      return;
+    }
     res.json(characters.listWithPhotos());
+  });
+
+  // Deletes the character: the row and its folder (its pictures and the avatar
+  // file go with it — they are the character's, and its id is their folder).
+  // Nothing else is deleted; a folder no row names is never touched.
+  router.delete("/:id", (req, res) => {
+    const id = String(req.params.id);
+    if (!characters.isValidId(id)) {
+      res.status(400).json({ error: `Invalid character ID: ${id}` });
+      return;
+    }
+    const deleted = characters.delete(id);
+    res.json({ deleted, characters: characters.listWithPhotos() });
   });
 
   // Clones the character — its row and its folder (the photos and the avatar

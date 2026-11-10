@@ -135,6 +135,15 @@
   white-space: nowrap;
 }
 
+/* the same bytes at another path — a cloned chat owns a copy of every picture it
+   had (a name is a path), so the list says the copies exist rather than hiding
+   two identical rows under different ids */
+.lib-same {
+  font-size: 10px;
+  color: var(--fg-dim, #99a);
+  white-space: nowrap;
+}
+
 /* the id is the whole path of the file — shown in full, not a tail: the id is
    where the file lives, what the ID field edits and what the filter matches, so
    the row shows all of it and wraps it onto more lines when the column is
@@ -231,6 +240,26 @@ select {
     background: var(--accent);
     border-color: var(--accent);
     color: #fff;
+  }
+
+  /* the one destructive action of this dialog, and the only one that cannot
+     lose a picture file: it drops the record of a file that is already gone */
+  &.danger {
+    color: var(--danger, #e55);
+    border-color: var(--danger, #e55);
+
+    &:hover:not(:disabled) {
+      background: color-mix(in srgb, var(--danger, #e55) 14%, transparent);
+      border-color: var(--danger, #e55);
+    }
+
+    /* the armed state of the two-click confirm (the first click paints it red,
+       the second one acts) — the same rule the message delete buttons follow */
+    &.armed {
+      background: var(--danger, #e55);
+      border-color: var(--danger, #e55);
+      color: #fff;
+    }
   }
 }
 
@@ -361,6 +390,13 @@ select {
 /* how many pictures use this one as a reference — the number the server counts
    on every read; it is what tells the user whether a rename has followers */
 .lib-usedby {
+  margin-top: 5px;
+  color: var(--fg-dim, #9a9);
+}
+
+/* what an orphan row is — a record whose file is gone, which the list shows on
+   purpose (it is the description the user can still hand to a file, or forget) */
+.lib-orphan {
   margin-top: 5px;
   color: var(--fg-dim, #9a9);
 }

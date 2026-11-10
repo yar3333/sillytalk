@@ -47,11 +47,12 @@ export type ImageMeta = {
   // ISO timestamps of the first write and the last change.
   createdAt?: string;
   updatedAt?: string;
-  // Facts about the FILE on disk, kept by the library's disk sync
+  // Facts about the FILE on disk: the size, the modification time (ms) and the
+  // sha256 hex of the content. Written when the app writes the picture itself
+  // (shared/FileFacts.ts) and kept fresh by the library's disk sync
   // (PictureLibraryService.sync, run at startup and whenever the picture
-  // browser opens): the size, the modification time (ms) and the sha256 hex of
-  // the content. The row of every picture on disk carries them — which is also
-  // how a picture renamed OUTSIDE the app is recognised again: a file nobody's
+  // browser opens) for the files the user drops into a folder. They are what
+  // lets a picture renamed OUTSIDE the app be recognised again: a file nobody's
   // row points at, whose extension, size and hash match a row whose file is
   // gone, is that same picture at a new path, and the row (and every card and
   // reference list naming the old path) follows it.

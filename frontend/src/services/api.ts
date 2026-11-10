@@ -166,6 +166,11 @@ export interface Picture extends ImageGenerationData {
   // (their rows' refs) — the browser shows it, so the user sees what depends
   // on the picture before renaming it. Computed on every read.
   referencedBy?: number;
+  // The other pictures whose bytes are this picture's (the same extension, size
+  // and sha256 at another path) — a cloned chat owns a copy of each picture it
+  // had, and a name is a path, so the table keeps both; the browser says so
+  // instead of hiding it. Computed on every read.
+  sameAs?: string[];
 }
 
 export interface Chat {
@@ -244,11 +249,20 @@ export class ApiService {
     return this.req<Character[]>('/characters');
   }
 
-  // Full sync of the character list (create/update/delete).
-  putCharacters(characters: Character[]): Promise<Character[]> {
-    return this.req<Character[]>('/characters', {
+  // Creates or updates ONE character; the id is the path segment (it is also the
+  // folder of its pictures, so a rename is renameCharacter, not this). The
+  // answer is the whole catalog, the shape GET returns.
+  putCharacter(character: Character): Promise<Character[]> {
+    return this.req<Character[]>('/characters/' + character.id, {
       method: 'PUT',
-      body: JSON.stringify({ characters }),
+      body: JSON.stringify({ name: character.name, description: character.description }),
+    });
+  }
+
+  // Deletes one character and its folder; answers with the updated catalog.
+  deleteCharacter(id: string): Promise<{ deleted: boolean; characters: Character[] }> {
+    return this.req<{ deleted: boolean; characters: Character[] }>('/characters/' + id, {
+      method: 'DELETE',
     });
   }
 
@@ -256,9 +270,18 @@ export class ApiService {
     return this.req<User[]>('/persons');
   }
 
-  // Full sync of the user list (create/update/delete).
-  putUsers(users: User[]): Promise<User[]> {
-    return this.req<User[]>('/persons', { method: 'PUT', body: JSON.stringify({ users }) });
+  // Creates or updates ONE persona — the mirror of putCharacter (the domain name
+  // is person, the body/response keys stay "users").
+  putUser(user: User): Promise<User[]> {
+    return this.req<User[]>('/persons/' + user.id, {
+      method: 'PUT',
+      body: JSON.stringify({ name: user.name, description: user.description }),
+    });
+  }
+
+  // Deletes one persona and its folder; answers with the updated catalog.
+  deleteUser(id: string): Promise<{ deleted: boolean; users: User[] }> {
+    return this.req<{ deleted: boolean; users: User[] }>('/persons/' + id, { method: 'DELETE' });
   }
 
   // Picks the avatar of a user/character from a picture the user chose: either a
@@ -452,6 +475,16 @@ export class ApiService {
     return this.req<{ picture: Picture }>('/pictures/rename', {
       method: 'POST',
       body: JSON.stringify({ id, newId }),
+    });
+  }
+
+  // Drops the record of a picture whose file is gone. The one delete the browser
+  // has: the app never removes a picture file, so a picture that still exists
+  // comes back as a 400 with the reason instead of losing its caption.
+  forgetPicture(id: string): Promise<{ forgotten: string }> {
+    return this.req<{ forgotten: string }>('/pictures', {
+      method: 'DELETE',
+      body: JSON.stringify({ id }),
     });
   }
 

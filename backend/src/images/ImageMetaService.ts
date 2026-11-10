@@ -226,10 +226,19 @@ export class ImageMetaService {
 
   // Renames a row along with its picture: what is known about a picture belongs
   // to the picture, not to its file name. Missing source row — nothing to move.
+  //
+  // A target that already HAS a row is refused rather than merged into: the row
+  // of one picture (its caption, its cast, the faces on it) must never become
+  // part of another picture's row. Every caller moves into a folder or a name it
+  // has just proven free; this is the backstop that keeps a hand-edited table or
+  // a future caller from silently fusing two pictures.
   move(fromId: string, toId: string): ImageMeta | null {
     const meta = this.get(fromId);
-    this.remove(fromId);
     if (!meta) return null;
+    if (fromId !== toId && this.get(toId)) {
+      throw new Error(`There is already a record for "${toId}" — a move never merges two pictures`);
+    }
+    this.remove(fromId);
     return this.set(toId, meta);
   }
 
@@ -250,10 +259,33 @@ export class ImageMetaService {
       .run(prefix.length, prefix);
   }
 
+  // Exchanges the rows of two ids without moving any file. Used when a picture
+  // the user moved lands on a path whose record remembers DIFFERENT bytes (its
+  // own file is gone): the file keeps its own record — the description of what is
+  // actually there — and the stranded record takes the path the file left, where
+  // it is an orphan like it was before. Neither description is lost, and neither
+  // id claims bytes it does not describe.
+  swap(firstId: string, secondId: string): void {
+    if (!firstId || !secondId || firstId === secondId) return;
+    const first = this.get(firstId);
+    const second = this.get(secondId);
+    if (!first && !second) return;
+    this.remove(firstId);
+    this.remove(secondId);
+    if (first) this.set(secondId, first);
+    if (second) this.set(firstId, second);
+  }
+
   // Points every reference list at a renamed picture, so a prompt that says
   // "the first reference image shows …" keeps naming a picture that exists.
   repointRefs(fromId: string, toId: string): void {
-    this.repointList("refs", fromId, toId);
+    this.repointList("refs", ImageMetaService.pairMap(fromId, toId));
+  }
+
+  // The same for several pictures at once — a rename that trades two ids (see
+  // swap) must be applied in ONE pass, or the second repoint would undo the first.
+  repointRefsMap(pairs: Map<string, string>): void {
+    this.repointList("refs", pairs);
   }
 
   // Points every picture's cast at a person that got a new ID: a row that says
@@ -261,14 +293,20 @@ export class ImageMetaService {
   // after her folder is renamed, or the next plan stops offering the card as
   // her anchor and the generator draws a stranger.
   repointDepicts(fromRef: string, toRef: string): void {
-    this.repointList("depicts", fromRef, toRef);
+    this.repointList("depicts", ImageMetaService.pairMap(fromRef, toRef));
   }
 
-  // Replaces one entry of a list column in every row that names it. The scan is
-  // over the whole table (the lists are short and the table is one user's
-  // pictures), so a row whose own id is not involved still gets fixed.
-  private repointList(column: "refs" | "depicts", fromValue: string, toValue: string): void {
-    if (!fromValue || !toValue || fromValue === toValue) return;
+  // One replacement as the map the list rewrite speaks.
+  private static pairMap(fromValue: string, toValue: string): Map<string, string> {
+    return !fromValue || !toValue || fromValue === toValue ? new Map() : new Map([[fromValue, toValue]]);
+  }
+
+  // Replaces the entries of a list column that the map names, in every row. The
+  // scan is over the whole table (the lists are short and the table is one user's
+  // pictures), so a row whose own id is not involved still gets fixed. A row is
+  // rewritten only when one of its entries really changes.
+  private repointList(column: "refs" | "depicts", pairs: Map<string, string>): void {
+    if (pairs.size === 0) return;
     const db = this.db();
     const rows = db.prepare(`SELECT id, ${column} AS value FROM images`).all() as Array<{
       id: string;
@@ -283,8 +321,15 @@ export class ImageMetaService {
       } catch {
         continue;
       }
-      if (!Array.isArray(list) || !list.includes(fromValue)) continue;
-      update.run(JSON.stringify(list.map((x) => (x === fromValue ? toValue : x))), row.id);
+      if (!Array.isArray(list)) continue;
+      let changed = false;
+      const next = list.map((entry) => {
+        const moved = typeof entry === "string" ? pairs.get(entry) : undefined;
+        if (moved === undefined) return entry;
+        changed = true;
+        return moved;
+      });
+      if (changed) update.run(JSON.stringify(next), row.id);
     }
   }
 

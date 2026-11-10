@@ -72,7 +72,9 @@ export class PictureLibraryStore {
   // Renames the selected picture: a file move on the server, with the chat cards
   // and the stored reference lists following the new path — which is why the
   // catalog is re-read rather than patched (every neighbouring id may have
-  // changed shape and the renamed picture is a new id).
+  // changed shape and the renamed picture is a new id). A record whose file is
+  // gone renames too: it moves the record, or attaches it to a file that already
+  // lives at the new id.
   renamePicture(newId: string): void {
     const id = this.selectedId();
     if (!id || !newId.trim() || newId === id) return;
@@ -82,6 +84,25 @@ export class PictureLibraryStore {
         this.selectedId.set(res.picture.id);
         this.refresh();
         this.refreshCurrentChat();
+      })
+      .catch((e) => this.ui.error.set(String((e as Error).message)));
+  }
+
+  // Drops the record of a picture whose file is gone — an orphan row is what is
+  // left of a picture the user removed outside the app, and the browser is the
+  // only place it can be cleared. The server refuses a picture whose file still
+  // exists (the app does not delete pictures), so the refusal is the banner.
+  forgetPicture(): void {
+    const id = this.selectedId();
+    if (!id) return;
+    const known = this.pictures();
+    this.api
+      .forgetPicture(id)
+      .then(() => {
+        // The selection moves on to the next picture the list still has.
+        const rest = known.filter((p) => p.id !== id);
+        this.selectedId.set(rest[0]?.id ?? '');
+        this.refresh();
       })
       .catch((e) => this.ui.error.set(String((e as Error).message)));
   }

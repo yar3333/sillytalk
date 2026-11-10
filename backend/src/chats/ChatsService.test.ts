@@ -933,11 +933,25 @@ describe("the picture data on read", () => {
 
   it("a row that says nothing is deleted, not stored empty", () => {
     const { id } = chatWithCard();
-    imageMeta.set(id, { description: undefined, prompt: undefined, refs: undefined, source: undefined });
+    // The facts of the file are row bookkeeping, not something to say: they are
+    // what finds the row from the file (the disk sync, the de-dup), so they keep
+    // it alive with no words in it. Clearing the words AND the facts is the true
+    // "says nothing" case.
+    imageMeta.set(id, {
+      description: undefined,
+      prompt: undefined,
+      refs: undefined,
+      source: undefined,
+      fileSize: undefined,
+      fileModifiedAt: undefined,
+      fileHash: undefined,
+    });
     expect(imageMeta.get(id)).toBeNull();
     // clearing the prompt of a card is a real edit: the row then has no prompt
+    imageMeta.set(id, { description: "a boat", prompt: "a red boat at dusk" });
     imageMeta.set(id, { prompt: "" });
     expect(imageMeta.get(id)?.prompt).toBeUndefined();
+    expect(imageMeta.get(id)?.description).toBe("a boat");
   });
 
   it("a row whose refs name another chat's picture keeps them: the generator, not the store, decides", () => {

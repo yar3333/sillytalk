@@ -106,38 +106,6 @@ describe("pictureIdsOf", () => {
   });
 });
 
-describe("sync", () => {
-  it("creates new ones, updates changed ones, deletes the extras", () => {
-    characters.save({ id: "one", name: "One", description: "old" });
-    characters.save({ id: "two", name: "Two", description: "" });
-    characters.sync([
-      { id: "one", name: "One", description: "new" },
-      { id: "three", name: "Three", description: "" },
-    ]);
-    expect(
-      characters
-        .list()
-        .map((c) => c.id)
-        .sort(),
-    ).toEqual(["one", "three"]);
-    expect(characters.get("one")?.description).toBe("new");
-  });
-
-  it("deletes the character together with the photos", () => {
-    characters.save({ id: "one", name: "One", description: "" });
-    fs.writeFileSync(path.join(dir, "one", "a.png"), "x");
-    characters.sync([]);
-    expect(fs.existsSync(path.join(dir, "one"))).toBe(false);
-  });
-
-  it("removes a leftover folder no row names", () => {
-    fs.mkdirSync(path.join(dir, "stranger"), { recursive: true });
-    characters.sync([{ id: "ok", name: "OK", description: "" }]);
-    expect(fs.existsSync(path.join(dir, "stranger"))).toBe(false);
-    expect(characters.list().map((c) => c.id)).toEqual(["ok"]);
-  });
-});
-
 describe("rename", () => {
   it("moves the row and the folder with everything in it", () => {
     characters.save({ id: "alice", name: "Alice", description: "a kind fairy" });
@@ -210,6 +178,17 @@ describe("delete", () => {
     expect(fs.existsSync(path.join(dir, "a"))).toBe(false);
     expect(characters.delete("a")).toBe(false);
     expect(characters.delete("a/b")).toBe(false);
+  });
+
+  // The catalog owns the folder of a character it knows and nothing else: a
+  // folder no row names may be the user's (pictures dropped in by hand, a copy
+  // of a character not created yet), so deleting a character never sweeps the
+  // folders around it.
+  it("leaves a folder no row names alone", () => {
+    fs.mkdirSync(path.join(dir, "stranger"), { recursive: true });
+    characters.save({ id: "a", name: "A", description: "" });
+    characters.delete("a");
+    expect(fs.existsSync(path.join(dir, "stranger"))).toBe(true);
   });
 });
 

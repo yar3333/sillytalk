@@ -138,22 +138,39 @@ backend/               Express API; also serves the built frontend
                        folders with their
                        rows + the orphan rows last, every entry with its
                        referencedBy count — how many other rows' refs name it,
-                       computed on every read, never stored, sync() = the disk
+                       computed on every read, never stored — and its sameAs
+                       list (the other files holding exactly these bytes: same
+                       extension, size and sha256; computed on read too, never a
+                       constraint), sync() = the disk
                        reconciliation (a file without a row gets one with the
                        facts of its file size/mtime/sha256; a row whose file is
-                       gone matches an unowned file by extension + size + hash
-                       and FOLLOWS it — meta.move + ChatsService.repointImageId),
+                       gone matches a file by SIZE + HASH — the name, its folder
+                       and even its extension may change, the bytes are the
+                       picture — and FOLLOWS it: meta.move + the batched
+                       ChatsService.repointImageIds; if that path already carries
+                       a record of different bytes, the two records trade places
+                       through meta.swap, so the file keeps its own description
+                       and the stranded one becomes an orphan),
                        edit() = the
                        description/
                        prompt/refs of any picture of the data folder, rename()
-                       = the file move whose new id the chat cards and the
-                       stored reference lists follow through
-                       ChatsService.repointImageId; the refusal of a name that
-                       is taken or outside the picture folders is an error the
-                       banner shows; DI token DI_PICTURE_LIBRARY_SERVICE);
+                       = a move of WHAT IS THERE: a picture with a file moves the
+                       file, a record whose file is gone moves the row (and
+                       attaches to a file that already lives at the new id — how
+                       a description comes back to a picture renamed outside the
+                       app); the new folder must already exist, the target must
+                       have neither a file nor a record, and a picture still
+                       being generated waits. The chat cards and the stored
+                       reference lists follow through
+                       ChatsService.repointImageId; the refusal is an error the
+                       banner shows; forget() = drops the record of a picture
+                       whose file is gone (an existing file is refused — the app
+                       never deletes pictures); DI token
+                       DI_PICTURE_LIBRARY_SERVICE);
                        images.routes.ts — the /pictures routes (GET the catalog,
-                       PATCH the edit, POST /rename); the id travels in the body,
-                       never in the URL; PictureLibraryService.test.ts +
+                       PATCH the edit, POST /rename, DELETE = forget); the id
+                       travels in the body, never in the URL;
+                       PictureLibraryService.test.ts +
                        ImageMetaService.test.ts — jest unit tests
     characters/        the character domain: the Character.ts type and the
                        top-level service class (CharactersService.ts — the
@@ -161,8 +178,9 @@ backend/               Express API; also serves the built frontend
                        catalogs.db SQLite database (node:sqlite; the card — id
                        (also the folder name of the entity's pictures), name,
                        description, avatar (an image id); the characters/<id>/ folders hold only the
-                       pictures — a leftover character.json is not read): CRUD,
-                       clone, the full-list sync, the migration from the old
+                       pictures — a leftover character.json is not read): CRUD
+                       (one card at a time — save/delete), clone, the migration
+                       from the old
                        config format, the ID validation, the ID rename (the row
                        + the folder move together), the avatar (an image id kept
                        in the row's `avatar` column — getAvatarId/setAvatarImage/
@@ -175,8 +193,10 @@ backend/               Express API; also serves the built frontend
                        DI_CHARACTERS_SERVICE, the root folder, the database
                        file and the image-metadata service injected, close() is
                        final);
-                       characters.routes.ts — the /characters routes (the
-                       catalog sync, the clone, the avatar pick/clear; the
+                       characters.routes.ts — the /characters routes (GET the
+                       catalog, PUT /:id create-or-update, DELETE /:id — which
+                       takes the character's folder and nothing else —, the
+                       clone, the avatar pick/clear; the
                        pictures are served by the one /media route by id);
                        CharactersService.test.ts — jest unit tests
     chats/             the chat domain: the Chat.ts / ChatMessage.ts /
@@ -228,7 +248,9 @@ backend/               Express API; also serves the built frontend
                        the chat-exists check a queued image job asks for
                        (exists()) and the rename support for the picture
                        browser (repointImageId — the cards and the status maps
-                       of every chat follow a renamed picture);
+                       of every chat follow a renamed picture; repointImageIds
+                       applies several replacements in ONE pass, which is what a
+                       trade of two ids needs — and is what the disk sync calls);
                        DI token DI_CHATS_SERVICE, the root folder, the
                        configuration service and the image-metadata service
                        injected); chats.routes.ts — the
@@ -246,8 +268,9 @@ backend/               Express API; also serves the built frontend
                        catalogs.db (the card — id (also the folder name of the
                        picture folder under users/), name, description, avatar (an
                        image id); a
-                       leftover user.json is not read): CRUD, clone, the
-                       full-list sync, the ID validation, the ID rename (the row
+                       leftover user.json is not read): CRUD (one card at a
+                       time — save/delete), clone, the ID validation, the ID
+                       rename (the row
                        + the folder move together), the avatar (an image id kept
                        in the row's `avatar` column — getAvatarId/setAvatarImage/
                        clearAvatar/repointAvatar, deduped through the image-
@@ -256,7 +279,8 @@ backend/               Express API; also serves the built frontend
                        (pictureIdsOf); DI token DI_PERSONS_SERVICE, the root
                        folder, the database file and the image-metadata service
                        injected, close() is final); persons.routes.ts —
-                       the /persons routes (the persona catalog + the avatar
+                       the /persons routes (GET the catalog, PUT /:id
+                       create-or-update, DELETE /:id, the clone, the avatar
                        pick/clear);
                        PersonsService.test.ts — jest unit tests
     configuration/     the configuration domain: the types (Config.ts,
@@ -309,6 +333,12 @@ backend/               Express API; also serves the built frontend
                        a normalised file extension and its sha256 hash; the
                        avatar and chat-attachment paths both go through it, so
                        the same bytes hash the same way for the de-dup),
+                       FileFacts.ts (of(file) — the size, the modification time
+                       and the sha256 of a picture file, the facts the images
+                       table recognises a moved file by; written by every place
+                       that writes a picture — a save, an import, a generated
+                       picture — as well as by the disk sync, so a row is never
+                       blind to its own file),
                        HttpHelper.ts (sendImage — the file
                        streaming and the picture-format guard isImage, both a
                        routes-layer concern; every file response of the app
@@ -811,11 +841,22 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   and a file that has no row gets one carrying exactly those facts (the `files/` folders themselves
   stay plain pictures; nothing is written next to a file). A file whose row still vouches for it
   (same size, same modification time) is **not hashed again** — the content read only happens for
-  new or changed files. The facts are also what recognises a picture **renamed outside the app**:
-  a row whose file is gone and a file no row points at with the same extension, size and hash are
-  the same picture moved — the row FOLLOWS the file (`meta.move` + `ChatsService.repointImageId`,
-  the same trail the app's own Rename walks), so the chat cards and the stored reference lists name
-  the new path and the picture keeps working. A row without a stored hash is never guessed at (it
+  new or changed files. The facts are also what recognises a picture **renamed or moved outside the
+  app**: a row whose file is gone and a file with the same size and hash are the same picture — the
+  bytes are the identity, so the folder, the file name and even its extension may have changed —
+  and the row FOLLOWS the file (`meta.move` + `ChatsService.repointImageIds`, the same trail the
+  app's own Rename walks), so the chat cards and the stored reference lists name the new path and
+  the picture keeps working. The user may therefore sort the pictures into folders himself. A file
+  keeps its path only when the record there already remembers THESE bytes (a copy of the same
+  picture); when it carries a record of DIFFERENT bytes, that description is stranded and the two
+  records **trade places** (`ImageMetaService.swap`, repointed in one pass — a swap cannot be two
+  single repoints): the file keeps the description of what is really in it, the stranded one becomes
+  an orphan at the path the file left, and neither is lost. A record without stored facts cannot be
+  judged, so it keeps its path. Every writer of a picture — a save, an import, a
+  generated picture, a disk pick — records those facts at the moment it writes the file
+  (`shared/FileFacts.ts`), so a row is never blind to its own file and the de-dup (`findByHash`)
+  sees a fresh picture before anyone opens the browser; the sync keeps the same facts fresh for
+  the files the user drops in. A row without a stored hash is never guessed at (it
   stays an orphan), and one file can only carry one row — byte-identical copies leave the others as
   pictures of their own. These fields are row bookkeeping, not generation data: they are NOT in
   `IMAGE_GENERATION_KEYS`, so a "this is just a file" edit keeps them.
@@ -824,14 +865,29 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   orphan rows — a row whose file is gone — last, visible so the user can clear them),
   `PATCH /api/pictures` edits the `description` / `prompt` / `refs` of ANY picture (a caption
   written for a character's photo is what a chat card of that photo shows — one source), and
-  `POST /api/pictures/rename` renames one: the file move, the row move, and the cards of every chat
-  plus the stored reference lists following the new path (`PictureLibraryService.rename` →
-  `ChatsService.repointImageId`). A name that is taken, outside the picture folders or not a
-  picture format is a 400 with the reason — a rename must never overwrite a picture. The id
-  travels in the body, never in the URL (it is a path).
+  `POST /api/pictures/rename` renames one. An id is a path, so a rename moves **what is there**:
+  a picture with a file moves the file (the row, the cards of every chat and the stored reference
+  lists follow through `ChatsService.repointImageId`), while a record whose file is gone moves the
+  ROW — and when a file already lives at the new id it attaches to it, its facts are re-read from
+  that file, which is how a description comes back to a picture renamed outside the app in a way
+  the sync could not recognise (another extension, rewritten bytes, a row without facts). Both
+  never create and never destroy: the new folder must already exist (a rename that invented
+  `characters/<new-id>/` would make a folder that is not a character — no row names it, nothing reads
+  it, and the picture in it belongs to nobody), the
+  target must have no file (a rename must never overwrite a picture) and no record (two pictures
+  never fuse — `ImageMetaService.move` refuses a target row as the backstop), and a picture that is
+  still being generated waits (`ChatsService.hasPendingImage`, the same guard a chat rename
+  applies, because a running job writes to the path it was given). A name that is taken, outside
+  the picture folders or not a picture format is a 400 with the reason.
+  `DELETE /api/pictures` (body `{ id }`) forgets the record of a picture whose file is gone —
+  the one delete the browser has; a picture whose file still exists is refused, because the app
+  never removes a picture file. The id travels in the body, never in the URL (it is a path).
   Every entry also carries `referencedBy` — how many OTHER pictures name it in the reference set
-  of their prompt. The number is **computed on every read, never stored**: a reference is a fact
-  about another row and a stored counter would be a second copy that could disagree.
+  of their prompt — and `sameAs` — the other files holding exactly these bytes (same extension,
+  size and sha256). Both are **computed on every read, never stored**: a reference is a fact
+  about another row and a stored counter would be a second copy that could disagree, and two
+  byte-identical files are two pictures (a cloned chat owns its copy, a name is a path), so the
+  table does not forbid them — it says they exist, which is what a user needs before deleting one.
   `PictureLibraryService.browse` counts with one pass over the table (`refCounts` over all rows),
   `get` scans once per read; a row naming itself (a hand-edited table) does not count itself.
 - **Image generation runs in the BACKGROUND.** Each generation (a gen-mode draw, the picture of the
@@ -920,9 +976,12 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   machinery for them and no "access to all images" flag (the characters do not attach pictures at
   all). They ARE, however, what the picture planner offers as a person's **look references** (see the
   cast bullet above).
-  CRUD lives in `characters/CharactersService.ts`; `GET/PUT /api/characters` read/sync the table
-  (PUT performs a full
-  sync: create/update/delete — a sync also deletes a folder no row names). The old
+  CRUD lives in `characters/CharactersService.ts`; the routes edit **one card at a time** —
+  `PUT /api/characters/:id` creates or updates it, `DELETE /api/characters/:id` removes the row and
+  the character's folder (its pictures), and there is no list-wide PUT: a client can only change the
+  card it names, and the app never sweeps a folder it does not own (a `characters/<id>/` folder
+  nothing names is the user's pictures, not a character — and saving a card under that id adopts the
+  folder, so a hand-made folder of photos becomes a character's starter set). The old
   `character.json` files are **not supported and not read** — a leftover file is just a file, the
   card is the row (the existing files were converted into rows once by a throwaway script, and the
   user deletes them by hand). An on-disk `characters` field in an old config.json is migrated to
@@ -939,7 +998,8 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   model has to invent a face from). The old `user.json` files are **not supported and not read**
   (converted into rows once by a throwaway script, deleted by the user by hand). CRUD lives in
   `persons/PersonsService.ts` (the
-  domain concept in the code is `person`/`persons`, type `Person`); `GET/PUT /api/persons` mirror the
+  domain concept in the code is `person`/`persons`, type `Person`); `PUT /api/persons/:id` and
+  `DELETE /api/persons/:id` mirror the
   character endpoints — the `users` JSON body/response fields, the `userId` fields and the on-disk
   picture layout (`users/`) stay "user"-named. There is **no selected/current user** in the
   config anymore: each chat stores the **active** persona (whose name new messages are sent under) in
@@ -1243,7 +1303,15 @@ that needs the databases resolves them here — the one place allowed to.
   followers. Renaming is not a label:
   an id is a path, so it moves the file and the server repoints every chat card and stored reference
   list at the new path; a name that is taken or points outside the picture folders comes back as a
-  visible error (the banner) and changes nothing. This dialog edits the picture, not a message — the
+  visible error (the banner) and changes nothing. The field works on a row whose file is gone too:
+  then it moves only the record, and pointing it at a file that is already there attaches the
+  description to that picture — which is what the hint under the field says, together with the
+  **Forget record** button (`picture-forget`, shown only for such a row: the one delete the browser
+  has, and the only one that cannot lose a picture file — it confirms with the same two-click armed
+  state as the message deletes, because dropping a description is irreversible). A row whose bytes live at another path as
+  well carries a **"N copies"** badge (`sameAs`, with the other ids in its hover hint) — the table
+  keeps byte-identical files as separate pictures, so the browser names them instead of letting the
+  user find out by accident. This dialog edits the picture, not a message — the
   card's own ✎ (`picture-dialog`) is for pointing a card at a file/attaching; this one is for the
   words and the name, for a picture that may belong to no chat at all (a character's photo).
 - **📷 is a turn affordance, not a generator switch.** It shows only when a generator is available
@@ -1526,12 +1594,14 @@ that needs the databases resolves them here — the one place allowed to.
   opens the `picture-library` modal, closed by `picture-library-close`): `picture-filter` (the search),
   `picture-sort` (the order pick: `newest` / `id`),
   `picture-row` (one picture in the list, `.on` = selected, `.gone` = its file is gone, with a
-  `.lib-thumb-gone` ✕ inside and a `.lib-refs` "N ref(s)" badge when other pictures use it),
+  `.lib-thumb-gone` ✕ inside, a `.lib-refs` "N ref(s)" badge when other pictures use it and a
+  `.lib-same` "N copy/copies" badge when the same bytes live at another path),
   `picture-empty`, `picture-preview`, then the editor of the selected
   picture — `picture-description`, `picture-prompt`, the reference chips (`picture-ref-remove` per
   chip) and `picture-ref-add` (the `<select>` of catalog ids), the `picture-id-input` with
   `picture-rename` right of the field (disabled until the id differs), the
-  `picture-used-by` hint line under it and `picture-reset` / `picture-save` at its bottom.
+  `picture-used-by` hint line under it, the `picture-forget` button of a row whose file is gone
+  (absent for a real picture) and `picture-reset` / `picture-save` at its bottom.
   The entity dialogs: `character-dialog`/`user-dialog`/
   `model-dialog` + `char-name-input`/`user-name-input`/`model-name-input`/`model-id-input` and
   `char-save`/`char-clone`/`char-delete` (the `user-*`/`model-*` analogues); the entity dialogs also

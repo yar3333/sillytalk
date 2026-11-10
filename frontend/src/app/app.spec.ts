@@ -673,46 +673,57 @@ describe('ChatStore — canceling the generation', () => {
 });
 
 describe('ConfigStore — the entity CRUD (models / characters / users)', () => {
-  // The requests are recorded; the fake answers with the sent payload, so the
-  // store signals mirror the last request (like the real server).
+  // The fake mirrors the SERVER catalog: one card is written or deleted per call
+  // and the answer is the whole list, exactly as the per-item endpoints behave.
+  // Seeding the initial catalog is the test's job (it sets the fake's list).
   let lastConfig: AppConfig | undefined;
-  let lastCharacters: Character[] | undefined;
-  let lastUsers: User[] | undefined;
+  let serverCharacters: Character[] = [];
+  let serverUsers: User[] = [];
   const cloneCalls: string[] = [];
   const fakeApi = {
     putConfig: (cfg: AppConfig) => {
       lastConfig = cfg;
       return Promise.resolve(cfg);
     },
-    putCharacters: (chars: Character[]) => {
-      lastCharacters = chars;
-      return Promise.resolve(chars);
+    putCharacter: (character: Character) => {
+      serverCharacters = serverCharacters.some((c) => c.id === character.id)
+        ? serverCharacters.map((c) => (c.id === character.id ? character : c))
+        : [...serverCharacters, character];
+      return Promise.resolve(serverCharacters);
     },
-    putUsers: (users: User[]) => {
-      lastUsers = users;
-      return Promise.resolve(users);
+    deleteCharacter: (id: string) => {
+      serverCharacters = serverCharacters.filter((c) => c.id !== id);
+      return Promise.resolve({ deleted: true, characters: serverCharacters });
+    },
+    putUser: (user: User) => {
+      serverUsers = serverUsers.some((u) => u.id === user.id)
+        ? serverUsers.map((u) => (u.id === user.id ? user : u))
+        : [...serverUsers, user];
+      return Promise.resolve(serverUsers);
+    },
+    deleteUser: (id: string) => {
+      serverUsers = serverUsers.filter((u) => u.id !== id);
+      return Promise.resolve({ deleted: true, users: serverUsers });
     },
     cloneCharacter: (id: string) => {
       cloneCalls.push('character:' + id);
-      const chars = lastCharacters ?? [];
-      const src = chars.find((c) => c.id === id);
+      const src = serverCharacters.find((c) => c.id === id);
       const copy: Character = {
         id: id + '-copy',
         name: (src?.name ?? '?') + ' (copy)',
         description: src?.description ?? '',
       };
-      return Promise.resolve({ id: copy.id, characters: [...chars, copy] });
+      return Promise.resolve({ id: copy.id, characters: [...serverCharacters, copy] });
     },
     cloneUser: (id: string) => {
       cloneCalls.push('user:' + id);
-      const users = lastUsers ?? [];
-      const src = users.find((u) => u.id === id);
+      const src = serverUsers.find((u) => u.id === id);
       const copy: User = {
         id: id + '-copy',
         name: (src?.name ?? '?') + ' (copy)',
         description: src?.description ?? '',
       };
-      return Promise.resolve({ id: copy.id, users: [...users, copy] });
+      return Promise.resolve({ id: copy.id, users: [...serverUsers, copy] });
     },
   };
 
@@ -720,8 +731,8 @@ describe('ConfigStore — the entity CRUD (models / characters / users)', () => 
 
   beforeEach(async () => {
     lastConfig = undefined;
-    lastCharacters = undefined;
-    lastUsers = undefined;
+    serverCharacters = [];
+    serverUsers = [];
     cloneCalls.length = 0;
     await TestBed.resetTestingModule();
     await TestBed.configureTestingModule({
@@ -760,23 +771,25 @@ describe('ConfigStore — the entity CRUD (models / characters / users)', () => 
     expect(Object.keys(lastConfig!.llmModels).sort()).toEqual(['renamed', 'renamed copy', 'renamed copy 2']);
   });
 
-  it('character: create, update, delete and clone (the full list sync)', async () => {
+  it('character: create, update, delete and clone (one card per request)', async () => {
     const store = TestBed.inject(ConfigStore);
-    store.characters.set([
+    // the catalog the server holds (the store shows what the server answers)
+    serverCharacters = [
       { id: 'a', name: 'A', description: '' },
       { id: 'b', name: 'B', description: '' },
-    ]);
+    ];
+    store.characters.set(serverCharacters);
 
     // create: the id is generated here
     store.saveCharacter(null, 'C', 'desc');
     await tick();
-    expect(lastCharacters!.map((c) => c.name).sort()).toEqual(['A', 'B', 'C']);
-    const created = lastCharacters!.find((c) => c.name === 'C')!;
+    expect(serverCharacters.map((c) => c.name).sort()).toEqual(['A', 'B', 'C']);
+    const created = serverCharacters.find((c) => c.name === 'C')!;
     expect(created.id).toMatch(/^c\d+$/);
 
     store.saveCharacter('a', 'A2', 'new desc');
     await tick();
-    expect(lastCharacters!.find((c) => c.id === 'a')).toEqual({
+    expect(serverCharacters.find((c) => c.id === 'a')).toEqual({
       id: 'a',
       name: 'A2',
       description: 'new desc',
@@ -784,7 +797,8 @@ describe('ConfigStore — the entity CRUD (models / characters / users)', () => 
 
     store.deleteCharacter('b');
     await tick();
-    expect(lastCharacters!.map((c) => c.id)).toEqual(['a', created.id]);
+    expect(serverCharacters.map((c) => c.id)).toEqual(['a', created.id]);
+    expect(store.characters().map((c) => c.id)).toEqual(['a', created.id]);
 
     const cloned = store.cloneCharacter('a');
     await tick();
@@ -794,19 +808,28 @@ describe('ConfigStore — the entity CRUD (models / characters / users)', () => 
     expect(store.characters().map((c) => c.id)).toEqual(['a', created.id, 'a-copy']);
   });
 
-  it('user: create, delete and clone (the full list sync)', async () => {
+  it('user: create, update, delete and clone (one card per request)', async () => {
     const store = TestBed.inject(ConfigStore);
-    store.users.set([{ id: 'u1', name: 'U1', description: '' }]);
+    serverUsers = [{ id: 'u1', name: 'U1', description: '' }];
+    store.users.set(serverUsers);
 
     store.saveUser(null, 'U2', '');
     await tick();
-    expect(lastUsers!.map((u) => u.name).sort()).toEqual(['U1', 'U2']);
-    const created = lastUsers!.find((u) => u.name === 'U2')!;
+    expect(serverUsers.map((u) => u.name).sort()).toEqual(['U1', 'U2']);
+    const created = serverUsers.find((u) => u.name === 'U2')!;
     expect(created.id).toMatch(/^u\d+$/);
+
+    store.saveUser('u1', 'U1 renamed', 'describes the persona');
+    await tick();
+    expect(serverUsers.find((u) => u.id === 'u1')).toEqual({
+      id: 'u1',
+      name: 'U1 renamed',
+      description: 'describes the persona',
+    });
 
     store.deleteUser('u1');
     await tick();
-    expect(lastUsers!.map((u) => u.id)).toEqual([created.id]);
+    expect(serverUsers.map((u) => u.id)).toEqual([created.id]);
 
     const cloned = store.cloneUser(created.id);
     await tick();
@@ -1419,6 +1442,7 @@ describe('PictureLibrary — the picture browser', () => {
   let listed: Picture[];
   let edited: { id: string; patch: Record<string, unknown> }[];
   let renamed: { id: string; newId: string }[];
+  let forgotten: string[];
   let renameFails: string | null;
   let reloadedChats: number;
   // How long the answer of a save takes to come back — the test of the form
@@ -1441,6 +1465,11 @@ describe('PictureLibrary — the picture browser', () => {
         const row = listed.find((p) => p.id === id)!;
         listed = listed.map((p) => (p.id === id ? { ...p, id: newId } : p));
         return Promise.resolve({ picture: { ...row, id: newId } });
+      },
+      forgetPicture: (id: string) => {
+        forgotten.push(id);
+        listed = listed.filter((p) => p.id !== id);
+        return Promise.resolve({ forgotten: id });
       },
       getChat: () => {
         reloadedChats += 1;
@@ -1486,6 +1515,7 @@ describe('PictureLibrary — the picture browser', () => {
     ];
     edited = [];
     renamed = [];
+    forgotten = [];
     renameFails = null;
     reloadedChats = 0;
     editDelayMs = 0;
@@ -1733,6 +1763,54 @@ describe('PictureLibrary — the picture browser', () => {
     expect(rows[2].querySelector('.lib-refs')).toBeNull();
     // and the editor of the selected picture states the same number in words
     expect(el.querySelector('[data-testid=picture-used-by]')!.textContent).toContain('by 1 other');
+  });
+
+  it('says when the same bytes live at another path (a copy the user or a clone made)', async () => {
+    const copy = 'chat-2/a-red-boat-4d5e6f.png';
+    listed = listed.map((p) => (p.id === boat ? { ...p, sameAs: [copy] } : p));
+    const { el } = await render();
+    const rows = [...el.querySelectorAll('[data-testid=picture-row]')];
+    const badge = rows[0].querySelector('.lib-same')!;
+    expect(badge.textContent!.trim()).toBe('1 copy');
+    // the badge names the other file, so the user can decide which one to keep
+    expect(badge.getAttribute('title')).toContain(copy);
+    // a picture that is the only copy of its bytes carries no badge
+    expect(rows[1].querySelector('.lib-same')).toBeNull();
+  });
+
+  it('the record of a lost picture can be forgotten, and only that record', async () => {
+    const lost = 'chat-9/gone-1a2b3c.png';
+    const { fixture, el } = await render();
+    // the boat has its file: there is nothing to forget, and the app never
+    // deletes a picture file
+    expect(el.querySelector('[data-testid=picture-forget]')).toBeNull();
+
+    const orphan = [...el.querySelectorAll('[data-testid=picture-row]')].find(
+      (r) => r.getAttribute('title') === lost,
+    ) as HTMLElement;
+    orphan.click();
+    await tick();
+    const forget = el.querySelector('[data-testid=picture-forget]') as HTMLButtonElement;
+    expect(forget).not.toBeNull();
+    // the dialog says what it is looking at: a record whose file is gone
+    expect(el.querySelector('.lib-orphan')).not.toBeNull();
+
+    // the first click only arms the button — the same two-click confirm the
+    // message deletes use — so a stray click cannot drop a description
+    forget.click();
+    await tick();
+    fixture.detectChanges();
+    expect(forgotten).toEqual([]);
+    expect(forget.classList.contains('armed')).toBe(true);
+    expect(forget.textContent).toContain('Click again');
+
+    forget.click();
+    await tick();
+
+    expect(forgotten).toEqual([lost]);
+    // the row is gone from the catalog and the selection moved to a picture
+    expect(TestBed.inject(PictureLibraryStore).pictures().some((p) => p.id === lost)).toBe(false);
+    expect(TestBed.inject(PictureLibraryStore).selectedId()).toBe(boat);
   });
 });
 

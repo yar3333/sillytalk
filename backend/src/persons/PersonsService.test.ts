@@ -77,38 +77,6 @@ describe("save / get / list", () => {
   });
 });
 
-describe("sync", () => {
-  it("creates new ones, updates changed ones, deletes the extras", () => {
-    persons.save({ id: "one", name: "One", description: "old" });
-    persons.save({ id: "two", name: "Two", description: "" });
-    persons.sync([
-      { id: "one", name: "One", description: "new" },
-      { id: "three", name: "Three", description: "" },
-    ]);
-    expect(
-      persons
-        .list()
-        .map((p) => p.id)
-        .sort(),
-    ).toEqual(["one", "three"]);
-    expect(persons.get("one")?.description).toBe("new");
-  });
-
-  it("deletes the person together with the avatar", () => {
-    persons.save({ id: "one", name: "One", description: "" });
-    fs.writeFileSync(path.join(dir, "one", "avatar.jpg"), "x");
-    persons.sync([]);
-    expect(fs.existsSync(path.join(dir, "one"))).toBe(false);
-  });
-
-  it("removes a leftover folder no row names", () => {
-    fs.mkdirSync(path.join(dir, "stranger"), { recursive: true });
-    persons.sync([{ id: "ok", name: "OK", description: "" }]);
-    expect(fs.existsSync(path.join(dir, "stranger"))).toBe(false);
-    expect(persons.list().map((p) => p.id)).toEqual(["ok"]);
-  });
-});
-
 describe("rename", () => {
   it("moves the row and the folder with the avatar in it", () => {
     persons.save({ id: "me", name: "You", description: "engineer" });
@@ -155,6 +123,15 @@ describe("delete", () => {
     expect(fs.existsSync(path.join(dir, "a"))).toBe(false);
     expect(persons.delete("a")).toBe(false);
     expect(persons.delete("a/b")).toBe(false);
+  });
+
+  // The catalog owns the folder of a persona it knows and nothing else: a folder
+  // no row names may be the user's, so a delete never sweeps the folders around it.
+  it("leaves a folder no row names alone", () => {
+    fs.mkdirSync(path.join(dir, "stranger"), { recursive: true });
+    persons.save({ id: "a", name: "A", description: "" });
+    persons.delete("a");
+    expect(fs.existsSync(path.join(dir, "stranger"))).toBe(true);
   });
 });
 

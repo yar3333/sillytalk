@@ -1,4 +1,4 @@
-import { Component, EffectRef, inject, effect, signal, untracked } from '@angular/core';
+import { Component, EffectRef, OnDestroy, inject, effect, signal, untracked } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ApiService, Picture } from '../../services/api';
 import { PictureLibraryStore } from '../../services/picture-library-store';
@@ -66,6 +66,9 @@ import { PictureLibraryStore } from '../../services/picture-library-store';
                     [title]="'Used as a reference by ' + p.referencedBy + ' other picture(s)'"
                     >{{ p.referencedBy }} ref{{ p.referencedBy === 1 ? '' : 's' }}</span
                   >
+                }
+                @if (copiesFor(p)) {
+                  <span class="lib-same" [title]="copiesTitle(p)">{{ copyLabel(copiesFor(p)) }}</span>
                 }
                 <span class="lib-id">{{ p.id }}</span>
               </span>
@@ -160,15 +163,39 @@ import { PictureLibraryStore } from '../../services/picture-library-store';
           </div>
           <div class="dialog-hint">
             The ID is where the file lives, relative to the data folder. Renaming moves the file —
-            the chat cards and the reference lists that name it follow the new path. The folder a
-            picture lives in (a chat's folder, a character's folder, a persona's folder) stays the
-            same; only the name changes.
+            the chat cards and the reference lists that name it follow the new path. It never
+            overwrites a picture and never creates a folder, so the new name must be free and its
+            folder must already exist.
             <div class="lib-usedby" data-testid="picture-used-by">
               Used as a reference by {{ usedBy() }} other picture(s).
             </div>
+            @if (!p.exists) {
+              <div class="lib-orphan">
+                This file is gone: what is left is the record of the picture. Renaming moves the
+                record — point it at a file that is already there and the record attaches to it,
+                which is how a description comes back to a picture renamed outside the app.
+                “Forget record” drops it for good.
+              </div>
+            }
           </div>
 
           <div class="dialog-actions">
+            @if (!p.exists) {
+              <!-- Dropping a record is the one irreversible action of this
+                   dialog: the first click arms the button (it turns red), a
+                   second click within ~2 s forgets. The confirm lives in the
+                   button, not a dialog — the same two-click rule the message
+                   delete buttons follow. -->
+              <button
+                class="btn danger"
+                data-testid="picture-forget"
+                [class.armed]="forgetArmed()"
+                title="Drop this record for good — the file is already gone (click again to confirm)"
+                (click)="forget()"
+              >
+                {{ forgetArmed() ? 'Click again to forget' : 'Forget record' }}
+              </button>
+            }
             <span class="spacer"></span>
             <button class="btn" data-testid="picture-reset" (click)="reset()">Discard</button>
             <button class="btn primary" data-testid="picture-save" (click)="save()">Save</button>
@@ -181,7 +208,7 @@ import { PictureLibraryStore } from '../../services/picture-library-store';
   `,
   styleUrl: './picture-library.scss',
 })
-export class PictureLibraryComponent {
+export class PictureLibraryComponent implements OnDestroy {
   readonly store = inject(PictureLibraryStore);
   private readonly api = inject(ApiService);
 
@@ -211,6 +238,7 @@ export class PictureLibraryComponent {
 
   private fill(picture: Picture | null): void {
     this.loaded = picture;
+    this.disarmForget();
     this.description.set(picture?.description ?? '');
     this.prompt.set(picture?.prompt ?? '');
     this.refs.set(picture?.refs ?? []);
@@ -241,6 +269,21 @@ export class PictureLibraryComponent {
   // counts them on every read, the browser only says the number.
   usedBy(): number {
     return this.store.selected()?.referencedBy ?? 0;
+  }
+
+  // How many OTHER files hold exactly these bytes. Two identical files are two
+  // pictures (a cloned chat owns its copy, and a name is a path), so the list
+  // says the copies exist instead of hiding them.
+  copiesFor(p: Picture): number {
+    return p.sameAs?.length ?? 0;
+  }
+
+  copiesTitle(p: Picture): string {
+    return 'The same file also lives at: ' + (p.sameAs ?? []).join(', ');
+  }
+
+  copyLabel(count: number): string {
+    return count === 1 ? '1 copy' : count + ' copies';
   }
 
   // The catalog minus the picture being edited (a picture is never its own
@@ -309,5 +352,42 @@ export class PictureLibraryComponent {
 
   rename(): void {
     this.store.renamePicture(this.idField().trim());
+  }
+
+  // The two-click confirm of the one irreversible action here: the first click
+  // arms the button (it goes red and says so), a second click within ~2 s
+  // forgets the record, otherwise it disarms. Local to this dialog, and reset
+  // whenever the selection changes — a confirm for a picture the user is no
+  // longer looking at is a trap.
+  readonly forgetArmed = signal(false);
+  private forgetTimer: ReturnType<typeof setTimeout> | null = null;
+
+  forget(): void {
+    if (!this.forgetArmed()) {
+      this.forgetArmed.set(true);
+      if (this.forgetTimer) clearTimeout(this.forgetTimer);
+      this.forgetTimer = setTimeout(() => {
+        this.forgetArmed.set(false);
+        this.forgetTimer = null;
+      }, 2000);
+      return;
+    }
+    this.disarmForget();
+    this.store.forgetPicture();
+  }
+
+  private disarmForget(): void {
+    if (this.forgetTimer) {
+      clearTimeout(this.forgetTimer);
+      this.forgetTimer = null;
+    }
+    this.forgetArmed.set(false);
+  }
+
+  ngOnDestroy(): void {
+    if (this.forgetTimer) {
+      clearTimeout(this.forgetTimer);
+      this.forgetTimer = null;
+    }
   }
 }

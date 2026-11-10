@@ -55,19 +55,29 @@ async function clearChats(): Promise<void> {
   await Promise.all(chats.map((c) => api(`/chats/${c.id}`, 'DELETE')));
 }
 
+// The catalog is written one card at a time (there is no list-wide PUT), and the
+// e2e data dir survives between runs: the setup first deletes what an earlier run
+// left (the per-item DELETE takes the folder with it), then writes the two cards
+// of each kind this suite expects.
 async function setupCatalog(): Promise<void> {
-  await api('/persons', 'PUT', {
-    users: [
-      { id: 'carol', name: 'Carol', description: 'A regular user.' },
-      { id: 'dave', name: 'Dave', description: 'A second persona.' },
-    ],
-  });
-  await api('/characters', 'PUT', {
-    characters: [
-      { id: 'alice', name: 'Alice', description: 'A friendly companion.' },
-      { id: 'bob', name: 'Bob', description: 'A talkative friend.' },
-    ],
-  });
+  for (const c of (await api('/characters')) as Array<{ id: string }>) {
+    await api(`/characters/${c.id}`, 'DELETE');
+  }
+  for (const p of (await api('/persons')) as Array<{ id: string }>) {
+    await api(`/persons/${p.id}`, 'DELETE');
+  }
+  for (const [id, name, description] of [
+    ['carol', 'Carol', 'A regular user.'],
+    ['dave', 'Dave', 'A second persona.'],
+  ]) {
+    await api(`/persons/${id}`, 'PUT', { name, description });
+  }
+  for (const [id, name, description] of [
+    ['alice', 'Alice', 'A friendly companion.'],
+    ['bob', 'Bob', 'A talkative friend.'],
+  ]) {
+    await api(`/characters/${id}`, 'PUT', { name, description });
+  }
   const cfg = (await api('/config')) as Record<string, unknown>;
   await api('/config', 'PUT', {
     ...cfg,
@@ -81,10 +91,10 @@ async function setupCatalog(): Promise<void> {
     },
     imageGenerators: comfy ? [comfy.generator] : [],
   });
-  // Avatars and a character photo: written/uploaded directly, the catalog
-  // sync keeps existing folders. The character's picture lives in its folder
-  // (no photos/ subfolder any more); the avatar POST picks a disk file and the
-  // server keeps its id in the row.
+  // Avatars and a character photo: written/uploaded directly — a folder no row
+  // names is the user's and nothing sweeps it. The character's picture lives in
+  // its folder (no photos/ subfolder any more); the avatar POST picks a disk file
+  // and the server keeps its id in the row.
   const photo = makePng(320, 240, 40, 80, 200);
   fs.mkdirSync(path.join(DATA, 'characters', 'alice'), { recursive: true });
   fs.writeFileSync(path.join(DATA, 'characters', 'alice', 'photo1.png'), photo);
@@ -1055,6 +1065,22 @@ test('UX 20e: a picture renamed or dropped outside the app is followed by the ta
   expect(entry).toBeTruthy();
   expect(entry!.fileSize).toBeGreaterThan(0);
   expect(entry!.fileHash).toMatch(/^[0-9a-f]{64}$/);
+
+  // The record of a picture whose file is gone can be cleared; a picture that is
+  // still on disk is refused, because the app never deletes a picture file.
+  fs.rmSync(dropped);
+  const orphaned = (await api('/pictures')) as { pictures: Array<{ id: string; exists: boolean }> };
+  expect(orphaned.pictures.some((p) => p.id === 'characters/bob/by-hand.png' && !p.exists)).toBe(true);
+  await api('/pictures', 'DELETE', { id: 'characters/bob/by-hand.png' });
+  const cleared = (await api('/pictures')) as { pictures: Array<{ id: string }> };
+  expect(cleared.pictures.some((p) => p.id === 'characters/bob/by-hand.png')).toBe(false);
+
+  const refused = await fetch(`${API}/pictures`, {
+    method: 'DELETE',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ id: movedId }),
+  });
+  expect(refused.status).toBe(400);
 });
 
 // The collected issues are attached to every test run as a JSON artifact.

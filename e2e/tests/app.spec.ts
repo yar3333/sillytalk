@@ -39,28 +39,34 @@ test.afterAll(async () => {
 });
 
 // The characters and the personas are created by the tests in the isolated
-// catalog — the real data is not used.
+// catalog — the real data is not used. The catalog is written one card at a
+// time (there is no list-wide PUT), and the e2e data dir survives between runs,
+// so the setup first deletes what an earlier run left (the per-item DELETE takes
+// the folder with it).
+async function putCard(path: string, card: { id: string; name: string; description: string }) {
+  await fetch(`${API}${path}/${card.id}`, {
+    method: 'PUT',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ name: card.name, description: card.description }),
+  });
+}
+
 async function setupCatalog(): Promise<void> {
-  await fetch(`${API}/persons`, {
-    method: 'PUT',
-    headers: JSON_HEADERS,
-    body: JSON.stringify({
-      users: [
-        { id: 'carol', name: 'Carol', description: 'A regular user.' },
-        { id: 'dave', name: 'Dave', description: 'A second persona for the tests.' },
-      ],
-    }),
-  });
-  await fetch(`${API}/characters`, {
-    method: 'PUT',
-    headers: JSON_HEADERS,
-    body: JSON.stringify({
-      characters: [
-        { id: 'alice', name: 'Alice', description: 'A friendly companion, replies briefly.' },
-        { id: 'bob', name: 'Bob', description: 'A talkative friend, replies briefly.' },
-      ],
-    }),
-  });
+  const catalog = async (path: string, cards: Array<{ id: string; name: string; description: string }>) => {
+    const existing = (await (await fetch(`${API}${path}`)).json()) as Array<{ id: string }>;
+    for (const card of existing) {
+      await fetch(`${API}${path}/${card.id}`, { method: 'DELETE' });
+    }
+    for (const card of cards) await putCard(path, card);
+  };
+  await catalog('/persons', [
+    { id: 'carol', name: 'Carol', description: 'A regular user.' },
+    { id: 'dave', name: 'Dave', description: 'A second persona for the tests.' },
+  ]);
+  await catalog('/characters', [
+    { id: 'alice', name: 'Alice', description: 'A friendly companion, replies briefly.' },
+    { id: 'bob', name: 'Bob', description: 'A talkative friend, replies briefly.' },
+  ]);
 }
 
 // The chats are cleared before each test so the app opens a fresh empty chat.

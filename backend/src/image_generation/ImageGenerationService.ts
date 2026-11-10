@@ -4,6 +4,7 @@ import { randomUUID } from "crypto";
 import { Model } from "../configuration/Model";
 import { PathHelper } from "../shared/PathHelper";
 import { ImageGenerationRecord } from "../shared/ImageMeta";
+import { FileFacts } from "../shared/FileFacts";
 import { ImageMetaService } from "../images/ImageMetaService";
 import { ConfigurationService } from "../configuration/ConfigurationService";
 import { createToken } from "../di";
@@ -213,8 +214,12 @@ export class ImageGenerationService {
         fs.renameSync(temp, target);
         // The row of the picture records how it was made: the prompt, the
         // references, the generator and the model. A description written while
-        // the job ran is left alone — this is a merge, not a replace.
+        // the job ran is left alone — this is a merge, not a replace. The facts
+        // of the file go in at the same moment, so a rename of this picture
+        // outside the app is recognisable and the de-dup sees it without a disk
+        // sync in between.
         this.imageMeta.set(id, {
+          ...(FileFacts.of(target) ?? {}),
           ...(meta
             ? {
                 prompt: meta.prompt,

@@ -198,29 +198,6 @@ export class PersonsService {
     return newId;
   }
 
-  // Brings the set of persons in line with the given list:
-  // creates new ones, updates existing ones, deletes the extras.
-  sync(persons: Person[]): void {
-    const keep = new Set<string>();
-    for (const person of persons) {
-      this.save(person);
-      keep.add(person.id);
-    }
-    for (const existing of this.list()) {
-      if (!keep.has(existing.id)) this.delete(existing.id);
-    }
-    // A folder the list does not name is removed with it, as before the move
-    // into the database: a leftover folder is no persona's pictures.
-    const root = this.personsRoot();
-    if (!fs.existsSync(root)) return;
-    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-      if (!PathHelper.isDirEntry(root, entry)) continue;
-      if (!keep.has(entry.name)) {
-        fs.rmSync(path.join(root, entry.name), { recursive: true, force: true });
-      }
-    }
-  }
-
   // ---- avatar (an image id the row keeps in its `avatar` column) ----
   //
   // The avatar is one of the persona's pictures, named by its data-root-relative

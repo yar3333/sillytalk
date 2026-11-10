@@ -8,6 +8,7 @@ import { ChatSummary } from "./ChatSummary";
 import { PathHelper } from "../shared/PathHelper";
 import { HttpHelper } from "../shared/HttpHelper";
 import { ImageMeta, IMAGE_GENERATION_KEYS } from "../shared/ImageMeta";
+import { FileFacts } from "../shared/FileFacts";
 import { ImageMetaService } from "../images/ImageMetaService";
 import { ConfigurationService } from "../configuration/ConfigurationService";
 import { createToken } from "../di";
@@ -815,10 +816,12 @@ export class ChatsService {
     const file = path.join(dir, filename);
     fs.writeFileSync(file, buffer);
     const id = PathHelper.imageIdOf(file);
-    // The file's facts are recorded by the disk sync (which also feeds the dedup
-    // above); a save only writes the caller's own metadata, so a picture nobody
-    // described still has no row.
-    if (opts.meta) this.imageMeta.set(id, opts.meta);
+    // The facts of the file are written here, not left to the next disk sync:
+    // they are what makes an outside rename of this picture recognisable and
+    // what the de-dup above looks a picture up by, and a row without them would
+    // be blind to both until someone opens the picture browser. A caller's own
+    // metadata is merged over them.
+    this.imageMeta.set(id, { ...(FileFacts.of(file) ?? {}), ...(opts.meta ?? {}) });
     return id;
   }
 
@@ -856,6 +859,10 @@ export class ChatsService {
     fs.copyFileSync(sourcePath, target);
     const id = PathHelper.imageIdOf(target);
     this.imageMeta.copy(PathHelper.imageIdOf(sourcePath), id);
+    // The bytes are the source's, the FILE is this copy's: its size, its own
+    // modification time and the hash of what was written (the copy carries the
+    // source's hash already, but the mtime is new).
+    this.imageMeta.set(id, FileFacts.of(target) ?? {});
     return id;
   }
 
@@ -1032,19 +1039,62 @@ export class ChatsService {
     return card;
   }
 
+  // Whether a picture is still being generated somewhere: a card of some chat
+  // carries the "pending" status for exactly this id. A picture is renamed by
+  // moving its file, and a job that is already running writes to the path it was
+  // given when it started — under the new name its picture would appear at the
+  // old one, so the rename has to wait (the same guard a chat rename applies).
+  hasPendingImage(imageId: string): boolean {
+    if (!imageId) return false;
+    const rows = this.db()
+      .prepare("SELECT data FROM messages WHERE data LIKE ?")
+      .all(`%"${imageId}"%`) as Array<{ data: string }>;
+    for (const row of rows) {
+      try {
+        const msg = JSON.parse(row.data) as ChatMessage;
+        if (msg.imageStatus?.[imageId] === "pending") return true;
+      } catch {
+        continue;
+      }
+    }
+    return false;
+  }
+
   // Points every card of every chat at another picture, and takes the status
   // maps along. Used when a picture file is renamed: an id is a path, so a
   // rename that left the cards pointing at the old name would break them.
   // Returns how many messages were rewritten.
   repointImageId(fromId: string, toId: string): number {
     if (!fromId || !toId || fromId === toId) return 0;
+    return this.repointImageIds(new Map([[fromId, toId]]));
+  }
+
+  // The same for several pictures at once, applied in ONE pass over each message.
+  // A rename that TRADES two ids (a moved file landing on a path whose record
+  // described another picture — ImageMetaService.swap) cannot be done as two
+  // single repoints: the first one would move the cards into the path the second
+  // one is about to take. The map is applied entry by entry, so a swap reads
+  // correctly in both directions.
+  //
+  // Also repoints the reference lists the stored prompts name — a reference is
+  // the same kind of fact about another picture, and the callers never need one
+  // without the other.
+  repointImageIds(pairs: Map<string, string>): number {
+    const moves = new Map([...pairs].filter(([fromId, toId]) => fromId && toId && fromId !== toId));
+    if (moves.size === 0) return 0;
     const db = this.db();
-    const rows = db
-      .prepare("SELECT chat_id AS chatId, id, data FROM messages WHERE data LIKE ?")
-      .all(`%"${fromId}"%`) as Array<{ chatId: string; id: string; data: string }>;
+    // The rows whose data names any of the ids; a message that names two of them
+    // is read once (the map makes the rewrite order-free).
+    const found = new Map<string, { chatId: string; id: string; data: string }>();
+    for (const fromId of moves.keys()) {
+      const rows = db
+        .prepare("SELECT chat_id AS chatId, id, data FROM messages WHERE data LIKE ?")
+        .all(`%"${fromId}"%`) as Array<{ chatId: string; id: string; data: string }>;
+      for (const row of rows) found.set(`${row.chatId}\u0000${row.id}`, row);
+    }
     const update = db.prepare("UPDATE messages SET data = ? WHERE chat_id = ? AND id = ?");
     let touched = 0;
-    for (const row of rows) {
+    for (const row of found.values()) {
       let msg: ChatMessage;
       try {
         msg = JSON.parse(row.data) as ChatMessage;
@@ -1052,24 +1102,34 @@ export class ChatsService {
         continue;
       }
       let dirty = false;
-      if (msg.images.includes(fromId)) {
-        msg.images = msg.images.map((x) => (x === fromId ? toId : x));
-        dirty = true;
+      if (Array.isArray(msg.images)) {
+        msg.images = msg.images.map((image) => {
+          const moved = moves.get(image);
+          if (moved === undefined) return image;
+          dirty = true;
+          return moved;
+        });
       }
       for (const key of ["imageStatus", "imageErrors"] as const) {
         const map = msg[key] as Record<string, unknown> | undefined;
-        if (map && fromId in map) {
-          map[toId] = map[fromId];
-          delete map[fromId];
-          dirty = true;
+        if (!map) continue;
+        let keyed = false;
+        const next: Record<string, unknown> = {};
+        for (const [image, value] of Object.entries(map)) {
+          const moved = moves.get(image) ?? image;
+          if (moved !== image) keyed = true;
+          next[moved] = value;
         }
+        if (!keyed) continue;
+        dirty = true;
+        (msg as Record<string, unknown>)[key] = next;
       }
       if (!dirty) continue;
       update.run(this.messageData(msg), row.chatId, row.id);
       touched += 1;
     }
     // and the references the stored prompts name
-    this.imageMeta.repointRefs(fromId, toId);
+    this.imageMeta.repointRefsMap(moves);
     return touched;
   }
 

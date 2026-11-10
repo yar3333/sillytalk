@@ -305,6 +305,63 @@ describe("the disk sync (the table follows the files)", () => {
     // no sync() call — browse does it
     expect(library.browse().find((p) => p.id === id)!.fileHash).toMatch(/^[0-9a-f]{64}$/);
   });
+
+  // The user sorts the pictures into folders himself, and a move may rename the
+  // file too: the bytes are the picture, the path is only where it lives. So the
+  // ID follows the file even when the new name carries another extension.
+  it("follows a move that also changed the extension", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    const id = chats.saveImage(chat.id, PNG(), { nameHint: "a boat" });
+    meta.set(id, { description: "a boat" });
+    library.sync();
+
+    const moved = "characters/alice/a-boat.jpeg";
+    fs.mkdirSync(path.dirname(fileOf(moved)), { recursive: true });
+    fs.renameSync(fileOf(id), fileOf(moved));
+    library.sync();
+
+    expect(meta.get(moved)?.description).toBe("a boat");
+    expect(meta.get(id)).toBeNull();
+    expect(library.browse().find((p) => p.id === moved)).toMatchObject({
+      exists: true,
+      description: "a boat",
+    });
+  });
+
+  // The file wins a path that carries a record of ANOTHER picture (a description
+  // whose own file is gone — the user deleted it by hand earlier). The two records
+  // trade places: the file keeps the description of what is really in it, and the
+  // stranded one becomes an orphan at the path the file left. Nothing is lost, and
+  // the cards follow their descriptions, not the paths.
+  it("gives a moved file its own description back when another record sat on its new path", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    const boat = chats.saveImage(chat.id, PNG(), { nameHint: "a red boat" });
+    chats.addImageMessage(chats.get(chat.id)!, boat, { description: "a red boat at dusk" });
+    library.sync();
+
+    // an older picture lived at the landing spot; its file is deleted by hand, so
+    // only its description is left there
+    const landing = renamedIn(boat, "the-landing-spot.png");
+    fs.writeFileSync(fileOf(landing), "bytes of the older picture");
+    library.sync();
+    chats.addImageMessage(chats.get(chat.id)!, landing, { description: "an older picture at the landing spot" });
+    fs.rmSync(fileOf(landing));
+
+    // the user moves the boat onto that path
+    fs.renameSync(fileOf(boat), fileOf(landing));
+    library.sync();
+
+    // the file says what is in it, and the stranded description is an orphan now
+    expect(meta.get(landing)?.description).toBe("a red boat at dusk");
+    expect(meta.get(boat)?.description).toBe("an older picture at the landing spot");
+    expect(fs.existsSync(fileOf(boat))).toBe(false);
+    // both cards follow their own picture, not their path
+    const messages = chats.get(chat.id)!.messages;
+    expect(messages[0].images).toEqual([landing]);
+    expect(messages[0].text).toBe("a red boat at dusk");
+    expect(messages[1].images).toEqual([boat]);
+    expect(messages[1].text).toBe("an older picture at the landing spot");
+  });
 });
 
 describe("editing a picture from the browser", () => {
@@ -427,8 +484,9 @@ describe("renaming a picture", () => {
     expect(fs.existsSync(fileOf(id))).toBe(true);
   });
 
-  it("says so for a picture that is not there", () => {
-    expect(() => library.rename("chats/c1/files/nowhere-1a2b3c.png", "chats/c1/files/x.png")).toThrow(/Unknown picture/);
+  it("says so for a picture that is neither a file nor a record", () => {
+    // nothing to move and nothing to move it to: the route turns this into a 404
+    expect(library.rename("chats/c1/files/nowhere-1a2b3c.png", "chats/c1/files/x.png")).toBeNull();
   });
 
   it("renaming to the same name is not an error and keeps the row", () => {
@@ -436,5 +494,168 @@ describe("renaming a picture", () => {
     const id = chats.saveImage(chat.id, PNG(), { nameHint: "a boat" });
     meta.set(id, { description: "a boat" });
     expect(library.rename(id, id)).toMatchObject({ id, description: "a boat" });
+  });
+});
+
+// A record can outlive its file: the user deleted the picture outside the app, or
+// renamed/rewrote it in a way the disk sync cannot recognise (another extension,
+// different bytes, a row that never learned a hash). Renaming such a record does
+// not move a file — it moves the record, and when a file already lives at the new
+// id the record attaches to it, which is how a description goes back onto a
+// picture the app had lost track of.
+describe("renaming a record whose file is gone", () => {
+  it("attaches the record to a file that already lives at the new id", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    const lost = chats.saveImage(chat.id, PNG(), { nameHint: "the lost boat" });
+    chats.addImageMessage(chats.get(chat.id)!, lost, { description: "a red boat at dusk" });
+    meta.set(lost, { depicts: ["char:alice"] });
+    // the user deletes the picture and drops a file under another name himself:
+    // different bytes, so the sync has nothing to match the record by
+    fs.rmSync(fileOf(lost));
+    const kept = renamedIn(lost, "my-boat.png");
+    fs.writeFileSync(fileOf(kept), "the bytes the user has now");
+
+    const renamed = library.rename(lost, kept);
+
+    expect(renamed).toMatchObject({
+      id: kept,
+      exists: true,
+      description: "a red boat at dusk",
+      depicts: ["char:alice"],
+    });
+    // the file was not touched: it was already there
+    expect(fs.readFileSync(fileOf(kept), "utf8")).toBe("the bytes the user has now");
+    // the card follows the record onto the file
+    expect(chats.get(chat.id)!.messages[0].images).toEqual([kept]);
+    // the facts now describe THE file that is there, not the deleted one
+    expect(meta.get(kept)?.fileSize).toBe(Buffer.byteLength("the bytes the user has now"));
+    expect(meta.get(kept)?.fileHash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("moves the record to a free name and keeps the facts, so a later sync can still find the file", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    const id = chats.saveImage(chat.id, PNG(), { nameHint: "a boat" });
+    meta.set(id, { description: "a boat" });
+    library.sync();
+    const facts = meta.get(id)!;
+    fs.rmSync(fileOf(id));
+
+    const moved = renamedIn(id, "the-boat-again.png");
+    const renamed = library.rename(id, moved);
+
+    expect(renamed).toMatchObject({ id: moved, exists: false, description: "a boat" });
+    // no file is invented at the new name
+    expect(fs.existsSync(fileOf(moved))).toBe(false);
+    // the hash of the lost file survives: if the user's copy turns up later, the
+    // sync still recognises it as this picture
+    expect(meta.get(moved)?.fileHash).toBe(facts.fileHash);
+    expect(meta.get(id)).toBeNull();
+  });
+
+  it("refuses a name that another record already has, instead of fusing the two pictures", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    const id = chats.saveImage(chat.id, PNG(), { nameHint: "a boat" });
+    meta.set(id, { description: "a boat" });
+    const orphan = renamedIn(id, "alice-by-the-window.png");
+    meta.set(orphan, { description: "alice by the window", depicts: ["char:alice"] });
+
+    expect(() => library.rename(id, orphan)).toThrow(/A record already uses/);
+
+    // nothing moved and nothing merged: the boat is still the boat
+    expect(meta.get(id)?.description).toBe("a boat");
+    expect(fs.existsSync(fileOf(id))).toBe(true);
+    // and the record of the lost picture did not become the boat's cast
+    expect(meta.get(id)?.depicts).toBeUndefined();
+    expect(meta.get(orphan)?.depicts).toEqual(["char:alice"]);
+  });
+
+  it("never creates the folder of the new id", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    const id = chats.saveImage(chat.id, PNG(), { nameHint: "a boat" });
+    // a character folder is only a character's: one a rename invented would hold
+    // a picture that belongs to nobody — no row would ever name that character
+    expect(() => library.rename(id, "characters/brand-new/photo.png")).toThrow(/does not create folders/);
+    expect(fs.existsSync(path.join(PathHelper.charactersDir(), "brand-new"))).toBe(false);
+    expect(fs.existsSync(fileOf(id))).toBe(true);
+  });
+
+  it("waits for a picture that is still being generated", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    const id = chats.saveImage(chat.id, PNG(), { nameHint: "a boat" });
+    const card = chats.addImageMessage(chats.get(chat.id)!, id, { status: "pending" });
+
+    // a running job writes to the path it was given when it started: a rename
+    // under its feet would leave its picture at the old name
+    expect(() => library.rename(id, renamedIn(id, "renamed-1a2b3c.png"))).toThrow(/still being generated/);
+    expect(fs.existsSync(fileOf(id))).toBe(true);
+
+    chats.setMessageImageStatus(chat.id, card.id, id, undefined);
+    expect(library.rename(id, renamedIn(id, "renamed-1a2b3c.png"))).toMatchObject({ exists: true });
+  });
+});
+
+describe("forgetting a record whose file is gone", () => {
+  it("drops the record of a lost picture and refuses one that is still on disk", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    const live = chats.saveImage(chat.id, PNG(), { nameHint: "a boat" });
+    meta.set(live, { description: "a boat" });
+    const lost = renamedIn(live, "gone-1a2b3c.png");
+    meta.set(lost, { description: "a picture of the old days" });
+
+    expect(library.forget(lost)).toBe(true);
+    expect(meta.get(lost)).toBeNull();
+    // nothing left to drop
+    expect(library.forget(lost)).toBe(false);
+
+    // the app does not delete pictures: a record whose file is there stays
+    expect(() => library.forget(live)).toThrow(/still there/);
+    expect(meta.get(live)?.description).toBe("a boat");
+  });
+
+  it("removes the lost picture from the catalog it was listed in", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    const live = chats.saveImage(chat.id, PNG(), { nameHint: "a boat" });
+    const lost = renamedIn(live, "gone-1a2b3c.png");
+    meta.set(lost, { description: "a picture of the old days" });
+    expect(library.browse().some((p) => p.id === lost)).toBe(true);
+
+    library.forget(lost);
+
+    expect(library.browse().some((p) => p.id === lost)).toBe(false);
+    expect(library.get(lost)).toBeNull();
+  });
+});
+
+describe("the facts the app records itself", () => {
+  it("writes the facts of a picture it saves, so the de-dup works before any sync", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    const dataUrl = PNG();
+    const id = chats.saveImage(chat.id, dataUrl, { nameHint: "a boat" });
+
+    expect(meta.get(id)).toMatchObject({
+      fileSize: expect.any(Number),
+      fileModifiedAt: expect.any(Number),
+      fileHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    // and the next save of the same bytes is recognised without opening a browser
+    expect(chats.saveImage(chat.id, dataUrl, { nameHint: "the same boat" })).toBe(id);
+  });
+
+  it("says which other pictures hold exactly the same bytes", () => {
+    const chat = chats.create(["a"], "m1", "me");
+    const first = chats.saveImage(chat.id, PNG(), { nameHint: "a boat" });
+    // a copy the app did not make (a cloned chat, or the user's own copy): the
+    // table keeps both — a name is a path — and the browser says so
+    const copy = renamedIn(first, "a-boat-copy-9z8y7x.png");
+    fs.copyFileSync(fileOf(first), fileOf(copy));
+    library.sync();
+
+    expect(library.get(first)?.sameAs).toEqual([copy]);
+    expect(library.get(copy)?.sameAs).toEqual([first]);
+    const seen = library.browse();
+    expect(seen.find((p) => p.id === first)?.sameAs).toEqual([copy]);
+    // a picture that is the only copy of its bytes carries no field at all
+    const lonely = chats.saveImage(chat.id, PNG(), { nameHint: "a different boat" });
+    expect(library.get(lonely)?.sameAs).toBeUndefined();
   });
 });

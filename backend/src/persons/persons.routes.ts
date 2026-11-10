@@ -1,5 +1,4 @@
 import express from "express";
-import { Person } from "./Person";
 import { PersonsService } from "./PersonsService";
 import { EntityIdService } from "../entities/EntityIdService";
 
@@ -15,34 +14,50 @@ export function createPersonsRouter(persons: PersonsService, entityIds: EntityId
     res.json(persons.listWithAvatars());
   });
 
-  // Full sync: creates/updates/deletes persons to match the list.
-  router.put("/", (req, res) => {
-    const { users } = req.body ?? {};
-    if (!Array.isArray(users)) {
-      res.status(400).json({ error: "Expected a list of users" });
+  // Creates or updates ONE persona — the mirror of PUT /api/characters/:id. The
+  // ID is the primary key and the name of the folder of its pictures, so it
+  // travels in the URL and a rename is its own operation (POST /:id/rename).
+  // The answer is the whole catalog, in the "users" key the client speaks.
+  router.put("/:id", (req, res) => {
+    const id = String(req.params.id);
+    if (!persons.isValidId(id)) {
+      res.status(400).json({ error: `Invalid user ID: ${id}` });
       return;
     }
-    const list: Person[] = [];
-    const seen = new Set<string>();
-    for (const entry of users) {
-      if (!entry || typeof entry !== "object") {
-        res.status(400).json({ error: "Invalid user entry" });
+    const { name, description } = req.body ?? {};
+    for (const [field, value] of [
+      ["name", name],
+      ["description", description],
+    ] as const) {
+      if (value !== undefined && typeof value !== "string") {
+        res.status(400).json({ error: `Expected ${field} (string)` });
         return;
       }
-      const u = entry as Partial<Person>;
-      if (!persons.isValidId(u.id) || seen.has(u.id)) {
-        res.status(400).json({ error: `Invalid or duplicate user ID: ${String(u.id)}` });
-        return;
-      }
-      seen.add(u.id);
-      list.push({
-        id: u.id,
-        name: typeof u.name === "string" ? u.name : u.id,
-        description: typeof u.description === "string" ? u.description : "",
-      });
     }
-    persons.sync(list);
+    const existing = persons.get(id);
+    try {
+      persons.save({
+        id,
+        name: typeof name === "string" ? name : (existing?.name ?? id),
+        description: typeof description === "string" ? description : (existing?.description ?? ""),
+      });
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+      return;
+    }
     res.json(persons.listWithAvatars());
+  });
+
+  // Deletes the persona: the row and its folder (its pictures go with it).
+  // Nothing else is deleted; a folder no row names is never touched.
+  router.delete("/:id", (req, res) => {
+    const id = String(req.params.id);
+    if (!persons.isValidId(id)) {
+      res.status(400).json({ error: `Invalid user ID: ${id}` });
+      return;
+    }
+    const deleted = persons.delete(id);
+    res.json({ deleted, users: persons.listWithAvatars() });
   });
 
   // Clones the person folder (the avatar goes along); the copy is named

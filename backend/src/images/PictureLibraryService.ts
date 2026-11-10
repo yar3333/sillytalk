@@ -1,8 +1,8 @@
 import fs from "fs";
 import path from "path";
-import { createHash } from "crypto";
 import { ChatsService } from "../chats/ChatsService";
 import { ImageMeta } from "../shared/ImageMeta";
+import { FileFacts, PictureFileFacts } from "../shared/FileFacts";
 import { HttpHelper } from "../shared/HttpHelper";
 import { PathHelper } from "../shared/PathHelper";
 import { createToken } from "../di";
@@ -25,6 +25,12 @@ export type PictureEntry = ImageMeta & {
   // a fact about another row, and a stored counter would be a second copy of
   // it that could disagree.
   referencedBy?: number;
+  // The OTHER pictures whose bytes are this picture's: the same extension, the
+  // same size and the same sha256, at another path. Also computed on every read
+  // — two byte-identical files are two pictures (a cloned chat owns its copy, and
+  // a name is a path), so the table does not forbid them; the browser says they
+  // exist instead, which is what a user needs before he deletes one of them.
+  sameAs?: string[];
 };
 
 // The picture library: the browser and the editor of every picture of the data
@@ -49,10 +55,13 @@ export class PictureLibraryService {
   // row and a file he renamed by hand gets his cards back.
   browse(): PictureEntry[] {
     this.sync();
-    const rows = new Map(this.meta.list().map((row) => [row.id, row]));
+    const diskIds = PathHelper.listPictureIds();
+    const all = this.meta.list();
+    const rows = new Map(all.map((row) => [row.id, row]));
     const counts = PictureLibraryService.refCounts(rows.values());
+    const same = PictureLibraryService.sameContent(all, new Set(diskIds));
     const entries: PictureEntry[] = [];
-    for (const id of PathHelper.listPictureIds()) {
+    for (const id of diskIds) {
       const row = rows.get(id);
       if (row) rows.delete(id);
       entries.push({
@@ -61,10 +70,16 @@ export class PictureLibraryService {
         exists: true,
         modifiedAt: PictureLibraryService.mtimeOf(id),
         referencedBy: counts.get(id) ?? 0,
+        ...PictureLibraryService.sameOf(same, id),
       });
     }
     for (const row of rows.values()) {
-      entries.push({ ...row, exists: false, referencedBy: counts.get(row.id) ?? 0 });
+      entries.push({
+        ...row,
+        exists: false,
+        referencedBy: counts.get(row.id) ?? 0,
+        ...PictureLibraryService.sameOf(same, row.id),
+      });
     }
     return entries;
   }
@@ -75,11 +90,54 @@ export class PictureLibraryService {
     const exists = PictureLibraryService.fileOf(id) !== null;
     if (!row && !exists) return null;
     let referencedBy = 0;
-    for (const other of this.meta.list()) {
+    const all = this.meta.list();
+    for (const other of all) {
       if (other.id === id) continue;
       if (ImageMetaService.listField(other, "refs").includes(id)) referencedBy += 1;
     }
-    return { ...(row ?? {}), id, exists, modifiedAt: PictureLibraryService.mtimeOf(id), referencedBy };
+    const onDisk = new Set(all.map((r) => r.id).filter((r) => PictureLibraryService.fileOf(r) !== null));
+    const same = PictureLibraryService.sameContent(all, onDisk);
+    return {
+      ...(row ?? {}),
+      id,
+      exists,
+      modifiedAt: PictureLibraryService.mtimeOf(id),
+      referencedBy,
+      ...PictureLibraryService.sameOf(same, id),
+    };
+  }
+
+  // The identical-content groups among the given rows, as `id -> the other ids`.
+  // Only pictures whose file is really there are compared (an orphan row's facts
+  // describe bytes that are gone, and saying "the same file as that record"
+  // about a file nobody can open is noise) and only rows that remember their
+  // file's facts can be compared at all.
+  private static sameContent(
+    rows: Array<ImageMeta & { id: string }>,
+    onDisk: Set<string>,
+  ): Map<string, string[]> {
+    const groups = new Map<string, string[]>();
+    for (const row of rows) {
+      if (!onDisk.has(row.id)) continue;
+      if (typeof row.fileSize !== "number" || typeof row.fileHash !== "string") continue;
+      const key = `${PictureLibraryService.extensionOf(row.id)}|${row.fileSize}|${row.fileHash}`;
+      const group = groups.get(key);
+      if (group) group.push(row.id);
+      else groups.set(key, [row.id]);
+    }
+    const same = new Map<string, string[]>();
+    for (const group of groups.values()) {
+      if (group.length < 2) continue;
+      for (const id of group) same.set(id, group.filter((other) => other !== id));
+    }
+    return same;
+  }
+
+  // The `sameAs` field of one entry — absent (not an empty array) for the common
+  // picture that is the only copy of its bytes.
+  private static sameOf(same: Map<string, string[]>, id: string): { sameAs?: string[] } {
+    const twins = same.get(id);
+    return twins && twins.length > 0 ? { sameAs: twins } : {};
   }
 
   // How many rows name each picture in their refs. One pass over the table for
@@ -124,28 +182,74 @@ export class PictureLibraryService {
     return this.get(id);
   }
 
-  // Renames a picture, which — an id being a path — means moving the file:
-  // the file, its row, the cards of every chat that show it and the reference
-  // lists of the prompts that name it all follow the new name. Returns the entry
-  // under the new id, or null when there is nothing to rename.
+  // Renames a picture, which — an id being a path — means moving what is there:
   //
-  // Throws with the reason when the new id is not a usable picture path, the
-  // source file is gone, or a picture already lives at the target — a rename
-  // must never overwrite a picture.
+  // - a picture whose file exists moves its FILE, and its row, the cards of
+  //   every chat that show it and the reference lists that name it follow the
+  //   new name;
+  // - a record whose file is gone (the user deleted it, or renamed it in a way
+  //   the disk sync could not recognise — another extension, rewritten bytes, a
+  //   row the app never learned a hash for) moves its ROW. That is how a
+  //   description is put back onto a file the user has: when a file already
+  //   lives at the new id, the record simply attaches to it, and its facts are
+  //   re-read from that file.
+  //
+  // Both never create anything and never destroy anything: the folder of the new
+  // id must already exist (a rename that invented `characters/<new-id>/` would
+  // make a folder that is not a character — no row names it, nothing reads it,
+  // and the picture in it belongs to nobody), the target must not have a file
+  // (a rename must never overwrite a picture) and it must not have a record of
+  // its own (two pictures never fuse into one).
+  //
+  // Returns the entry under the new id, or null when there is neither a file nor
+  // a record at the old one. Throws with the reason otherwise.
   rename(id: string, newId: string): PictureEntry | null {
     const from = PictureLibraryService.fileOf(id);
-    if (!from) throw new Error(`Unknown picture "${id}"`);
+    const row = this.meta.get(id);
+    if (!from && !row) return null;
     if (newId === id) return this.get(id);
     const target = PictureLibraryService.newFileOf(newId);
     if (!target) throw new Error(`"${newId}" is not a picture path of the data folder`);
-    if (fs.existsSync(target)) throw new Error(`There is already a file at "${newId}"`);
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.renameSync(from, target);
+    if (from && this.chats.hasPendingImage(id)) {
+      throw new Error("This picture is still being generated — wait for it or cancel it first");
+    }
+    const dir = path.dirname(target);
+    if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+      throw new Error(`The folder of "${newId}" does not exist — a rename does not create folders`);
+    }
+    if (from && fs.existsSync(target)) throw new Error(`There is already a file at "${newId}"`);
+    if (this.meta.get(newId)) {
+      throw new Error(`A record already uses "${newId}" — clear it first`);
+    }
+    if (from) fs.renameSync(from, target);
     this.meta.move(id, newId);
+    if (!from) {
+      // Attached to a file that is already there: the facts of the old file are
+      // no memory of this one, so they are re-read (or dropped when unreadable,
+      // and the next sync writes them).
+      const facts = fs.existsSync(target) ? FileFacts.of(target) : null;
+      if (facts) this.meta.set(newId, facts);
+    }
     // The cards of the chats carry the old path; the reference lists of the
     // stored prompts name it too.
     this.chats.repointImageId(id, newId);
     return this.get(newId);
+  }
+
+  // Drops the record of a picture whose file is gone — the one delete the
+  // browser offers, so an orphan row (what is left of a picture the user removed
+  // outside the app) does not have to live forever. A picture whose file is still
+  // there is NOT deleted from here: the app does not remove pictures, and losing
+  // a caption because the wrong row was clicked is worse than a stray row.
+  //
+  // Returns whether there was a record to drop.
+  forget(id: string): boolean {
+    if (!this.meta.get(id)) return false;
+    if (PictureLibraryService.fileOf(id)) {
+      throw new Error("The file is still there — delete it in its folder, or rename the picture");
+    }
+    this.meta.remove(id);
+    return true;
   }
 
   // ---- the disk sync ----
@@ -176,31 +280,51 @@ export class PictureLibraryService {
     // The facts of every file: taken from the row when it vouches for the file
     // (same size, same time), computed otherwise. One stat + hash per changed
     // file, reused by both the rename search and the write below.
-    const facts = new Map<string, { size: number; mtime: number; hash: string }>();
+    const facts = new Map<string, PictureFileFacts>();
     for (const id of diskIds) {
       const f = PictureLibraryService.factsOf(id, rows.get(id));
       if (f) facts.set(id, f);
     }
 
-    // 1) a picture renamed outside the app: its row points at a path with no
-    //    file, and somewhere on the disk there is a file no row points at with
-    //    the same extension, size and content. The row follows the file.
+    // 1) a picture renamed or moved outside the app: its row points at a path
+    //    with no file, and somewhere on the disk there is a file with the same
+    //    size and content. THE ROW FOLLOWS THE FILE — the bytes are the picture,
+    //    the path is only where it lives — so the user may sort the files into
+    //    folders himself, and a move may change the name and its extension too
+    //    (the extension is part of the name, not of the picture).
+    //
+    //    The file keeps its path only when that path already belongs to a record
+    //    that remembers THESE bytes (a copy of the same picture, or the same
+    //    picture found twice): then it is not the lost one and nothing moves.
+    //
+    //    When the path carries a record of DIFFERENT bytes, that record is a
+    //    stranded description whose own picture is gone. The two records trade
+    //    places (ImageMetaService.swap): the file keeps the description of what
+    //    is really in it, and the stranded one becomes an orphan at the path the
+    //    file left — neither description is lost. A record without facts cannot
+    //    be judged, so it keeps its path.
     const claimed = new Set<string>();
     for (const row of rows.values()) {
       if (onDisk.has(row.id)) continue;
       if (typeof row.fileHash !== "string" || typeof row.fileSize !== "number") continue;
-      const twin = diskIds.find(
-        (id) =>
-          !rows.has(id) &&
-          !claimed.has(id) &&
-          PictureLibraryService.extensionOf(id) === PictureLibraryService.extensionOf(row.id) &&
-          facts.get(id)?.size === row.fileSize &&
-          facts.get(id)?.hash === row.fileHash,
-      );
+      const twin = diskIds.find((id) => {
+        if (claimed.has(id)) return false;
+        const file = facts.get(id);
+        if (!file || file.fileSize !== row.fileSize || file.fileHash !== row.fileHash) return false;
+        const occupant = rows.get(id);
+        if (!occupant) return true; // a file no record points at — the ordinary move
+        if (typeof occupant.fileHash !== "string" || typeof occupant.fileSize !== "number") return false;
+        return occupant.fileSize !== file.fileSize || occupant.fileHash !== file.fileHash;
+      });
       if (!twin) continue;
       claimed.add(twin);
-      this.meta.move(row.id, twin);
-      this.chats.repointImageId(row.id, twin);
+      if (rows.has(twin)) {
+        this.meta.swap(row.id, twin);
+        this.chats.repointImageIds(new Map([[row.id, twin], [twin, row.id]]));
+      } else {
+        this.meta.move(row.id, twin);
+        this.chats.repointImageIds(new Map([[row.id, twin]]));
+      }
     }
 
     // 2) the facts of every file on disk into its row — which is also what
@@ -209,8 +333,15 @@ export class PictureLibraryService {
     //    row, which by now lives at the new path.
     for (const [id, f] of facts) {
       const row = rows.get(id);
-      if (row && row.fileSize === f.size && row.fileModifiedAt === f.mtime && row.fileHash === f.hash) continue;
-      this.meta.set(id, { fileSize: f.size, fileModifiedAt: f.mtime, fileHash: f.hash });
+      if (
+        row &&
+        row.fileSize === f.fileSize &&
+        row.fileModifiedAt === f.fileModifiedAt &&
+        row.fileHash === f.fileHash
+      ) {
+        continue;
+      }
+      this.meta.set(id, f);
     }
   }
 
@@ -251,7 +382,7 @@ export class PictureLibraryService {
   private static factsOf(
     id: string,
     row: (ImageMeta & { id: string }) | undefined,
-  ): { size: number; mtime: number; hash: string } | null {
+  ): PictureFileFacts | null {
     const file = PictureLibraryService.fileOf(id);
     if (!file) return null;
     try {
@@ -263,10 +394,9 @@ export class PictureLibraryService {
         row.fileSize === stat.size &&
         row.fileModifiedAt === mtime
       ) {
-        return { size: stat.size, mtime, hash: row.fileHash };
+        return { fileSize: stat.size, fileModifiedAt: mtime, fileHash: row.fileHash };
       }
-      const hash = createHash("sha256").update(fs.readFileSync(file)).digest("hex");
-      return { size: stat.size, mtime, hash };
+      return FileFacts.of(file);
     } catch {
       return null;
     }

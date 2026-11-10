@@ -139,19 +139,26 @@ export class ConfigStore {
       .catch((e) => this.ui.error.set(String((e as Error).message)));
   }
 
-  // ---- characters (the characters/ folders — full list sync) ----
+  // ---- characters (the characters/ folders — one card at a time) ----
   // id === null — creates a new one; its ID is the newId the user typed (an ID
   // is the name of the character's folder), with a generated one as the fallback
   // for a field left empty. A rename is NOT here: it is renameCharacter below,
   // because an ID is a folder and its move drags the chats and the picture rows
-  // along — a job for the server, not for the list sync (which would delete the
-  // old folder with its photos and write an empty one under the new name).
+  // along — a job for the server, not for a field edit.
+  //
+  // Saving one card is one request on purpose: the catalog has no "the list is
+  // the truth" call any more, so a stale client cannot delete what it did not
+  // see — and the server never sweeps folders it does not own.
   saveCharacter(id: string | null, name: string, description: string, newId?: string): void {
-    const chars = this.characters();
-    const next = id
-      ? chars.map((c) => (c.id === id ? { ...c, name, description } : c))
-      : [...chars, { id: (newId ?? '').trim() || 'c' + Date.now(), name, description }];
-    this.putCharacters(next);
+    const character: Character = {
+      id: id ?? ((newId ?? '').trim() || 'c' + Date.now()),
+      name,
+      description,
+    };
+    this.api
+      .putCharacter(character)
+      .then((list) => this.characters.set(list))
+      .catch((e) => this.ui.error.set(String((e as Error).message)));
   }
 
   // Renames a character: the folder move on the server, with the chats that
@@ -172,8 +179,12 @@ export class ConfigStore {
       });
   }
 
+  // Deletes one character and its folder (its pictures go with it).
   deleteCharacter(id: string): void {
-    this.putCharacters(this.characters().filter((c) => c.id !== id));
+    this.api
+      .deleteCharacter(id)
+      .then((res) => this.characters.set(res.characters))
+      .catch((e) => this.ui.error.set(String((e as Error).message)));
   }
 
   // Clones the character folder (the photos and the avatar go along).
@@ -191,23 +202,20 @@ export class ConfigStore {
       });
   }
 
-  private putCharacters(chars: Character[]): void {
-    this.api
-      .putCharacters(chars)
-      .then((list) => this.characters.set(list))
-      .catch((e) => this.ui.error.set(String((e as Error).message)));
-  }
-
-  // ---- users (the users/ folders — full list sync) ----
+  // ---- users (the users/ folders — one card at a time) ----
   // The same rules as a character: id === null creates one, its ID is the newId
   // the user typed (the name of the persona's folder), and renaming goes to
-  // renameUser, not to the sync.
+  // renameUser, not to a field edit.
   saveUser(id: string | null, name: string, description: string, newId?: string): void {
-    const users = this.users();
-    const next = id
-      ? users.map((u) => (u.id === id ? { ...u, name, description } : u))
-      : [...users, { id: (newId ?? '').trim() || 'u' + Date.now(), name, description }];
-    this.putUsers(next);
+    const person: User = {
+      id: id ?? ((newId ?? '').trim() || 'u' + Date.now()),
+      name,
+      description,
+    };
+    this.api
+      .putUser(person)
+      .then((list) => this.users.set(list))
+      .catch((e) => this.ui.error.set(String((e as Error).message)));
   }
 
   // Renames a persona: the folder move on the server, with the chats that send
@@ -227,8 +235,12 @@ export class ConfigStore {
       });
   }
 
+  // Deletes one persona and its folder (its pictures go with it).
   deleteUser(id: string): void {
-    this.putUsers(this.users().filter((u) => u.id !== id));
+    this.api
+      .deleteUser(id)
+      .then((res) => this.users.set(res.users))
+      .catch((e) => this.ui.error.set(String((e as Error).message)));
   }
 
   // Clones the user folder (the avatar goes along). Resolves with the copy's
@@ -244,13 +256,6 @@ export class ConfigStore {
         this.ui.error.set(String((e as Error).message));
         return null;
       });
-  }
-
-  private putUsers(users: User[]): void {
-    this.api
-      .putUsers(users)
-      .then((list) => this.users.set(list))
-      .catch((e) => this.ui.error.set(String((e as Error).message)));
   }
 
   // ---- the avatar (an image id kept in the entity's row) ----
