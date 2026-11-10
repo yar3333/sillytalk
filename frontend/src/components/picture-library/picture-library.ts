@@ -1,9 +1,15 @@
-import { Component, EffectRef, OnDestroy, inject, effect, signal, untracked } from '@angular/core';
+import { Component, EffectRef, OnDestroy, computed, inject, effect, signal, untracked } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ApiService, Picture } from '../../services/api';
 import { ChatStore } from '../../services/chat-store';
 import { PictureLibraryStore } from '../../services/picture-library-store';
 import { UiStore } from '../../services/ui-store';
+
+// The same references in the same order — the order is what the prompt counts
+// ("the first reference image, the second…"), so it is part of the comparison.
+function sameList(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((x, i) => x === b[i]);
+}
 
 // The picture browser: the whole data folder of pictures in one list, each with
 // the row of the images table that describes it, and the editor of one of them —
@@ -50,9 +56,10 @@ import { UiStore } from '../../services/ui-store';
               class="lib-row"
               [class.on]="p.id === store.selectedId()"
               [class.gone]="!p.exists"
+              [class.blocked]="blockedRow(p)"
               data-testid="picture-row"
-              [title]="p.id"
-              (click)="store.select(p.id)"
+              [title]="rowTitle(p)"
+              (click)="selectPicture(p.id)"
             >
               @if (p.exists) {
                 <img class="lib-thumb" [src]="media(p.id)" alt="" loading="lazy" />
@@ -100,7 +107,7 @@ import { UiStore } from '../../services/ui-store';
             <span>Description</span>
             <textarea
               class="grow"
-              rows="3"
+              rows="2"
               placeholder="What is on the picture — the caption a chat shows under it"
               data-testid="picture-description"
               [value]="description()"
@@ -136,7 +143,7 @@ import { UiStore } from '../../services/ui-store';
               <span>Prompt</span>
               <textarea
                 class="grow"
-                rows="4"
+                rows="2"
                 placeholder="English. Empty — the picture has nothing to be redrawn from."
                 data-testid="picture-prompt"
                 [value]="prompt()"
@@ -207,6 +214,15 @@ import { UiStore } from '../../services/ui-store';
           </div>
 
           <div class="dialog-actions">
+            @if (dirty()) {
+              <!-- What the blocked rows (and the refused ✕ of the header) are
+                   about: the edit that is not on the server yet, and the two
+                   buttons that settle it. A click that is refused flashes the
+                   long wording of the thing it wanted to do. -->
+              <span class="lib-dirty" [class.warn]="blocked() || store.closeBlocked()" data-testid="picture-dirty">
+                {{ dirtyHint() }}
+              </span>
+            }
             @if (!p.exists) {
               <!-- Dropping a record is the one irreversible action of this
                    dialog: the first click arms the button (it turns red), a
@@ -254,27 +270,110 @@ export class PictureLibraryComponent implements OnDestroy {
   // Which LLM helper is running — the describe button says what it is doing and
   // refuses a second click meanwhile.
   readonly busy = signal<'describe' | null>(null);
-  // What the fields were filled from, so "Discard" can put them back without
-  // asking the server again.
-  private loaded: Picture | null = null;
+  // What the fields were filled from — or, after a save, what the server now
+  // holds — so "Discard" can put them back without asking the server again. A
+  // signal: the form's "is this an edit nobody saved?" question is a comparison
+  // against it.
+  private readonly loaded = signal<Picture | null>(null);
+
+  // Has the user touched the form since it was filled? An id is a path and the
+  // fields are the picture's own row, so switching to another picture throws
+  // them away — which is what this answers before the switch happens.
+  readonly dirty = computed<boolean>(() => {
+    const row = this.loaded();
+    if (!row) return false;
+    return (
+      this.description() !== (row.description ?? '') ||
+      this.prompt() !== (row.prompt ?? '') ||
+      !sameList(this.refs(), row.refs ?? []) ||
+      this.idField().trim() !== row.id
+    );
+  });
+
+  // A click on a row that was refused (the form holds an edit): the list is
+  // not a way out of an unsaved edit, and the hint over the actions says so
+  // instead of the click landing on nothing.
+  readonly blocked = signal(false);
+  private blockedTimer: ReturnType<typeof setTimeout> | null = null;
 
   // The form follows the SELECTION, not the row's object: a Save writes the row
   // back and the store replaces its object, and refilling the fields then would
   // wipe what the user is typing at this very moment (their own saved text is
   // already in them). Only picking another picture — or the rename that moves
-  // the selection to the new id — fills the form again.
+  // the selection to the new id — fills the form again, and only while the form
+  // holds nothing unsaved: an edit that is not on the server yet is not the
+  // selection's to drop.
   private followSelection: EffectRef = effect(() => {
-    this.store.selectedId();
-    this.fill(untracked(() => this.store.selected()));
+    const id = this.store.selectedId();
+    // tracked: the catalog is read again after a rename, and the renamed row
+    // arrives one request later than the new selection
+    const row = this.store.selected();
+    untracked(() => {
+      if (id !== '' && row === null) return;
+      if (this.dirty()) return;
+      if (this.loaded() === row) return;
+      this.fill(row);
+    });
+  });
+
+  // The ✕ that closes the browser belongs to the shell and the form belongs to
+  // this component, so the store is told whether there is an edit to lose:
+  // closing goes through the same guard as opening another picture.
+  private readonly reportDirty: EffectRef = effect(() => {
+    this.store.dirty.set(this.dirty());
   });
 
   private fill(picture: Picture | null): void {
-    this.loaded = picture;
+    this.loaded.set(picture);
     this.disarmForget();
+    this.blocked.set(false);
     this.description.set(picture?.description ?? '');
     this.prompt.set(picture?.prompt ?? '');
     this.refs.set(picture?.refs ?? []);
     this.idField.set(picture?.id ?? '');
+  }
+
+  // Picking a picture is what the fields are filled from, so an edit that was
+  // neither saved nor discarded is in the way: the click is refused, the row
+  // says why and the hint over the actions says what settles it. Save or
+  // Discard, and the list moves again.
+  selectPicture(id: string): void {
+    if (id === this.store.selectedId()) return;
+    if (this.dirty()) {
+      this.flashBlocked();
+      return;
+    }
+    this.store.select(id);
+  }
+
+  // The other rows read as closed while the form holds an edit — a dimmed row
+  // with a "not-allowed" cursor is a row that says "settle this one first"
+  // before the click, not after it.
+  blockedRow(p: Picture): boolean {
+    return this.dirty() && p.id !== this.store.selectedId();
+  }
+
+  rowTitle(p: Picture): string {
+    if (!this.blockedRow(p)) return p.id;
+    return p.id + '\nUnsaved changes — Save or Discard them first';
+  }
+
+  // What the line over the actions says: the plain state, or — after a click
+  // that was refused — what that click needed first (another picture, or the
+  // browser's own ✕).
+  dirtyHint(): string {
+    if (this.store.closeBlocked()) return 'Save or Discard this edit before closing the pictures';
+    if (this.blocked()) return 'Save or Discard this edit before opening another picture';
+    return 'Unsaved changes';
+  }
+
+  private flashBlocked(): void {
+    this.blocked.set(true);
+    if (this.blockedTimer) clearTimeout(this.blockedTimer);
+    this.blockedTimer = setTimeout(() => {
+      this.blocked.set(false);
+      this.blockedTimer = null;
+    }, 2500);
   }
 
   // Every space-separated word must be found — in the id or in the description —
@@ -371,7 +470,7 @@ export class PictureLibraryComponent implements OnDestroy {
 
   // Puts the fields back to what the row said.
   reset(): void {
-    this.fill(this.loaded);
+    this.fill(this.loaded());
   }
 
   // The describe helper needs a chat: the vision model is the chat's (its pick,
@@ -411,15 +510,24 @@ export class PictureLibraryComponent implements OnDestroy {
   }
 
   save(): void {
-    this.store.savePicture({
-      description: this.description(),
-      prompt: this.prompt(),
-      refs: this.refs(),
+    const id = this.store.selectedId();
+    const patch = { description: this.description(), prompt: this.prompt(), refs: this.refs() };
+    void this.store.savePicture(patch).then((row) => {
+      // The fields stay exactly as typed (a save answered late must not wipe
+      // what was typed meanwhile), but what the server now holds becomes the
+      // baseline: the form reads as clean and Discard returns to the saved
+      // words.
+      if (row && this.store.selectedId() === row.id) this.loaded.set(row);
     });
   }
 
+  // Renaming moves the file, not the words: the baseline follows the new id,
+  // the fields keep what is typed (an unsaved caption stays unsaved over the
+  // rename) and Discard afterwards returns to the text of the moved picture.
   rename(): void {
-    this.store.renamePicture(this.idField().trim());
+    void this.store.renamePicture(this.idField().trim()).then((row) => {
+      if (row) this.loaded.set(row);
+    });
   }
 
   // The two-click confirm of the one irreversible action here: the first click
@@ -457,5 +565,12 @@ export class PictureLibraryComponent implements OnDestroy {
       clearTimeout(this.forgetTimer);
       this.forgetTimer = null;
     }
+    if (this.blockedTimer) {
+      clearTimeout(this.blockedTimer);
+      this.blockedTimer = null;
+    }
+    // The form goes with the dialog: a stale "there is an edit" would refuse the
+    // next ✕ of a dialog that opens empty.
+    this.store.dirty.set(false);
   }
 }

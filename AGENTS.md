@@ -1340,6 +1340,25 @@ that needs the databases resolves them here — the one place allowed to.
   user find out by accident. This dialog edits the picture, not a message — the
   card's own ✎ (`picture-dialog`) is for pointing a card at a file/attaching; this one is for the
   words and the name, for a picture that may belong to no chat at all (a character's photo).
+  Picking a picture FILLS the form from its row, so an edit that was neither saved nor discarded is
+  in the way of the list: while `dirty()` (a field differs from the row — the description, the
+  prompt, the reference list or the ID) the other rows are `.blocked` and a click on one is refused
+  (the row's hint and the `picture-dirty` line over the actions say to Save or Discard first) — a
+  stray click must not cost a caption the user just typed. The browser's own ✕ (`picture-library-close`,
+  which lives in the shell's modal head) is held to the same rule: the component reports `dirty` to
+  `PictureLibraryStore`, and `close()` refuses to close over an edit (`closeBlocked` — the dialog
+  says why; Save or Discard, and the ✕ works). Save and Discard are the way out, and they
+  are PINNED to the bottom edge of the scrolling editor (`.dialog-actions` is sticky), so a long
+  reference list, a resized textarea or a small window never pushes them below the fold; the
+  description and prompt boxes are two rows tall and the preview is capped at 22vh to leave them the
+  room. What makes the form clean is the row the SERVER now holds (the save answer), so a Save
+  answered late never wipes what was typed meanwhile, and a rename — which moves the file, not the
+  words — carries the baseline to the new id while the typed text stays unsaved over it.
+- **A dialog is closed by its own buttons, never by a click on the backdrop.** No `.modal-backdrop`
+  of the shell carries a click handler: a dialog holds input the user typed (a caption, a prompt, a
+  whole new character), so a click that lands a few pixels beside the window must not throw it out —
+  the ✕ of the header and the dialog's own Cancel/Save are the only ways out (the image LIGHTBOX is
+  not a dialog and still closes on an outside click).
 - **📷 is a turn affordance, not a generator switch.** It shows only when a generator is available
   AND the last message is a plain assistant answer (`ChatStore.isUserTurn`), so it never competes
   with the 🎨 prompt box, the edit mode, or a turn that already has the user's message in it. One
@@ -1621,7 +1640,8 @@ that needs the databases resolves them here — the one place allowed to.
   `picture-sort` (the order pick: `newest` / `id`),
   `picture-row` (one picture in the list, `.on` = selected, `.gone` = its file is gone, with a
   `.lib-thumb-gone` ✕ inside, a `.lib-refs` "N ref(s)" badge when other pictures use it and a
-  `.lib-same` "N copy/copies" badge when the same bytes live at another path),
+  `.lib-same` "N copy/copies" badge when the same bytes live at another path, `.blocked` = the form
+  holds an edit, so this row refuses to be opened),
   `picture-empty`, `picture-preview`, then the editor of the selected
   picture — `picture-description` with its `picture-describe` helper, `picture-prompt` and the
   reference chips (`picture-ref-remove` per chip) with `picture-ref-add` (the `<select>` of catalog
@@ -1629,7 +1649,8 @@ that needs the databases resolves them here — the one place allowed to.
   `picture-id-input` with
   `picture-rename` right of the field (disabled until the id differs), the
   `picture-used-by` hint line under it, the `picture-forget` button of a row whose file is gone
-  (absent for a real picture) and `picture-reset` / `picture-save` at its bottom.
+  (absent for a real picture), the `picture-dirty` line over the pinned
+  `picture-reset` / `picture-save` pair.
   The entity dialogs: `character-dialog`/`user-dialog`/
   `model-dialog` + `char-name-input`/`user-name-input`/`model-name-input`/`model-id-input` and
   `char-save`/`char-clone`/`char-delete` (the `user-*`/`model-*` analogues); the entity dialogs also

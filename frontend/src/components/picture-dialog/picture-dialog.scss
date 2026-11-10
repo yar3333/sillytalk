@@ -47,9 +47,17 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 16px;
+  /* no bottom padding: the actions bar below carries it, so nothing scrolls in
+     a band under a bar that is supposed to cover it */
+  padding: 16px 16px 0;
   min-width: 340px;
   max-width: 560px;
+  /* The dialog is a scrolling pane of the modal (the host is a flex item with
+     min-height:0): on a short window the fields scroll under the pinned
+     actions instead of pushing them out of the modal's cropped bottom. */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
 
   /* the picture the dialog is about: capped so the fields stay in view */
   .preview img {
@@ -194,11 +202,22 @@ textarea {
     line-height: 1.4;
   }
 
+  /* Cancel / Save, pinned to the bottom edge of the scrolling pane: the buttons
+     are the way out of the edit, so they are never the part that scrolls away
+     (the horizontal negative margins cancel the body's padding, so the bar
+     spans the whole width and sits on the modal's edge). */
   .dialog-actions {
+    position: sticky;
+    bottom: 0;
+    z-index: 1;
     display: flex;
     justify-content: flex-end;
     align-items: center;
     gap: 8px;
+    margin: auto -16px 0;
+    padding: 8px 16px 16px;
+    border-top: 1px solid var(--border);
+    background: var(--panel);
 
     .spacer {
       flex: 1;

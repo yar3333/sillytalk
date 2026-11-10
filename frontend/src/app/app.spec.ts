@@ -1608,6 +1608,110 @@ describe('PictureLibrary — the picture browser', () => {
     expect(renamed).toEqual([{ id: boat, newId: 'chat-1/a-boat-at-sunset-9z8y7x.png' }]);
     // the selection follows the picture to its new path
     expect(TestBed.inject(PictureLibraryStore).selectedId()).toBe('chat-1/a-boat-at-sunset-9z8y7x.png');
+    // ...and the form follows it without being emptied: the words are the same
+    // picture's words, only the path moved
+    await tick();
+    fixture.detectChanges();
+    expect((el.querySelector('[data-testid=picture-id-input]') as HTMLInputElement).value).toBe(
+      'chat-1/a-boat-at-sunset-9z8y7x.png',
+    );
+    expect((el.querySelector('[data-testid=picture-description]') as HTMLTextAreaElement).value).toBe(
+      'a red boat on a calm lake',
+    );
+  });
+
+  // Switching pictures fills the form from the row, so it throws away whatever
+  // was typed and not saved: an edit is in the way of the list, and the list
+  // says so instead of silently reverting it (a stray click on a row must not
+  // cost a caption).
+  it('an unsaved edit keeps the form on its picture: the list refuses to switch', async () => {
+    const { fixture, el } = await render();
+    const description = el.querySelector('[data-testid=picture-description]') as HTMLTextAreaElement;
+    description.value = 'a caption nobody saved';
+    description.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+
+    // the hint over the actions says there is an edit, and the other rows read
+    // as closed
+    expect(el.querySelector('[data-testid=picture-dirty]')).not.toBeNull();
+    const rows = () => [...el.querySelectorAll('[data-testid=picture-row]')] as HTMLButtonElement[];
+    expect(rows()[1].classList.contains('blocked')).toBe(true);
+    expect(rows()[0].classList.contains('blocked')).toBe(false);
+
+    rows()[1].click();
+    fixture.detectChanges();
+    // the click was refused: the picture and the typed text are both still there
+    expect(TestBed.inject(PictureLibraryStore).selectedId()).toBe(boat);
+    expect(description.value).toBe('a caption nobody saved');
+    expect(el.querySelector('[data-testid=picture-dirty]')!.textContent).toContain(
+      'before opening another picture',
+    );
+
+    // Discard settles it — the fields go back to the row and the list opens
+    (el.querySelector('[data-testid=picture-reset]') as HTMLButtonElement).click();
+    fixture.detectChanges();
+    expect(el.querySelector('[data-testid=picture-dirty]')).toBeNull();
+    expect(description.value).toBe('a red boat on a calm lake');
+    rows()[1].click();
+    fixture.detectChanges();
+    expect(TestBed.inject(PictureLibraryStore).selectedId()).toBe(anchor);
+  });
+
+  it('a save is what makes the form clean, and Discard then returns to the saved words', async () => {
+    const { fixture, el } = await render();
+    const description = el.querySelector('[data-testid=picture-description]') as HTMLTextAreaElement;
+    description.value = 'saved words';
+    description.dispatchEvent(new Event('input'));
+    (el.querySelector('[data-testid=picture-save]') as HTMLButtonElement).click();
+    await tick();
+    fixture.detectChanges();
+
+    // what the server holds is the baseline now: nothing is unsaved...
+    expect(el.querySelector('[data-testid=picture-dirty]')).toBeNull();
+    // ...and the text that was typed is still in the field
+    expect(description.value).toBe('saved words');
+
+    description.value = 'typed after the save';
+    description.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+    (el.querySelector('[data-testid=picture-reset]') as HTMLButtonElement).click();
+    fixture.detectChanges();
+    expect(description.value).toBe('saved words');
+  });
+
+  // The ✕ that closes the browser is the shell's (it lives in the modal head),
+  // and the form is the component's — so the component reports its edit to the
+  // store and the store refuses to close over it, exactly like a row click.
+  it('closing the browser is refused while an edit is unsaved, and Discard frees it', async () => {
+    const { fixture, el } = await render();
+    const store = TestBed.inject(PictureLibraryStore);
+    const description = el.querySelector('[data-testid=picture-description]') as HTMLTextAreaElement;
+
+    // a clean dialog closes
+    store.close();
+    expect(store.open()).toBe(false);
+    store.openLibrary();
+    await tick();
+    fixture.detectChanges();
+
+    description.value = 'typed but never saved';
+    description.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+    expect(store.dirty()).toBe(true);
+
+    store.close();
+    expect(store.open()).toBe(true);
+    fixture.detectChanges();
+    expect(el.querySelector('[data-testid=picture-dirty]')!.textContent).toContain(
+      'before closing the pictures',
+    );
+
+    // Discard settles the edit, and the ✕ works again
+    (el.querySelector('[data-testid=picture-reset]') as HTMLButtonElement).click();
+    fixture.detectChanges();
+    expect(store.dirty()).toBe(false);
+    store.close();
+    expect(store.open()).toBe(false);
   });
 
   it('a save that answers late does not wipe the new id being typed', async () => {

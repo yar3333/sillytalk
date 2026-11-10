@@ -25,13 +25,43 @@ export class PictureLibraryStore {
     () => this.pictures().find((p) => p.id === this.selectedId()) ?? null,
   );
 
+  // Closing the browser drops the editor's form, and the form is local to the
+  // component (like every dialog's) — so the component reports whether it holds
+  // an edit that is not on the server yet: a caption typed but not saved is not
+  // the ✕'s to throw away either. `closeBlocked` is that refusal, which the
+  // dialog shows itself — the ✕ lives in the shell's header, far from the
+  // fields, so a click that landed on nothing would read as a broken button.
+  readonly dirty = signal(false);
+  readonly closeBlocked = signal(false);
+  private closeBlockedTimer: ReturnType<typeof setTimeout> | null = null;
+
   openLibrary(): void {
+    this.dirty.set(false);
+    this.clearCloseBlocked();
     this.open.set(true);
     this.refresh();
   }
 
   close(): void {
+    if (this.dirty()) {
+      this.closeBlocked.set(true);
+      if (this.closeBlockedTimer) clearTimeout(this.closeBlockedTimer);
+      this.closeBlockedTimer = setTimeout(() => {
+        this.closeBlocked.set(false);
+        this.closeBlockedTimer = null;
+      }, 2500);
+      return;
+    }
+    this.clearCloseBlocked();
     this.open.set(false);
+  }
+
+  private clearCloseBlocked(): void {
+    if (this.closeBlockedTimer) {
+      clearTimeout(this.closeBlockedTimer);
+      this.closeBlockedTimer = null;
+    }
+    this.closeBlocked.set(false);
   }
 
   // Re-reads the catalog, keeping the selection when its picture is still there
@@ -56,17 +86,27 @@ export class PictureLibraryStore {
 
   // Writes the description / prompt / references of the selected picture. The
   // row is the card, so the chat that shows this picture is re-read after the
-  // save — the caption changes under the user without a reload.
-  savePicture(patch: { description: string; prompt: string; refs: string[] }): void {
+  // save — the caption changes under the user without a reload. The answer is
+  // the row as the server now holds it (null when the save failed and the
+  // banner says why), which is what the editor takes as its clean state.
+  savePicture(patch: {
+    description: string;
+    prompt: string;
+    refs: string[];
+  }): Promise<Picture | null> {
     const id = this.selectedId();
-    if (!id) return;
-    this.api
+    if (!id) return Promise.resolve(null);
+    return this.api
       .editPicture(id, patch)
       .then((res) => {
         this.replace(res.picture);
         this.refreshCurrentChat();
+        return res.picture;
       })
-      .catch((e) => this.ui.error.set(String((e as Error).message)));
+      .catch((e) => {
+        this.ui.error.set(String((e as Error).message));
+        return null;
+      });
   }
 
   // Renames the selected picture: a file move on the server, with the chat cards
@@ -74,18 +114,23 @@ export class PictureLibraryStore {
   // catalog is re-read rather than patched (every neighbouring id may have
   // changed shape and the renamed picture is a new id). A record whose file is
   // gone renames too: it moves the record, or attaches it to a file that already
-  // lives at the new id.
-  renamePicture(newId: string): void {
+  // lives at the new id. The answer is the moved picture (null when nothing was
+  // asked or the server refused it — the refusal is the banner).
+  renamePicture(newId: string): Promise<Picture | null> {
     const id = this.selectedId();
-    if (!id || !newId.trim() || newId === id) return;
-    this.api
+    if (!id || !newId.trim() || newId === id) return Promise.resolve(null);
+    return this.api
       .renamePicture(id, newId.trim())
       .then((res) => {
         this.selectedId.set(res.picture.id);
         this.refresh();
         this.refreshCurrentChat();
+        return res.picture;
       })
-      .catch((e) => this.ui.error.set(String((e as Error).message)));
+      .catch((e) => {
+        this.ui.error.set(String((e as Error).message));
+        return null;
+      });
   }
 
   // Drops the record of a picture whose file is gone — an orphan row is what is

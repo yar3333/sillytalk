@@ -87,6 +87,14 @@
   &.gone {
     opacity: 0.55;
   }
+
+  /* While the form holds an edit that was neither saved nor discarded, the
+     other rows are not a way out: the click is refused (the hint over the
+     actions says what settles it), so the row reads as closed beforehand. */
+  &.blocked {
+    cursor: not-allowed;
+    opacity: 0.45;
+  }
 }
 
 .lib-thumb {
@@ -183,9 +191,10 @@
 
 .lib-preview {
   width: 100%;
-  // the preview shares the column with three fields, so it is capped and the
-  // fields stay reachable without scrolling the whole dialog
-  max-height: 30vh;
+  // the preview shares the column with the fields, so it is capped low enough
+  // that the fields and the actions stay on one screen; only the scrolling
+  // pane is the editor's own (see .lib-edit)
+  max-height: 22vh;
   object-fit: contain;
   border-radius: 10px;
   background: var(--panel-2);
@@ -409,15 +418,38 @@ select {
   color: var(--fg-dim, #9a9);
 }
 
+// The Save / Discard pair is the way out of an edit, so it is pinned to the
+// bottom edge of the scrolling editor: however tall the fields grow (a long
+// reference list, a small window, a resized textarea), the buttons stay in view
+// instead of sitting below the fold where their absence reads as a broken
+// dialog. Opaque, because the fields scroll under it.
 .dialog-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
   display: flex;
   justify-content: flex-end;
   align-items: center;
   gap: 8px;
-  padding-top: 2px;
+  margin-top: auto;
+  padding: 8px 0 0;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
 
   .spacer {
     flex: 1;
+  }
+}
+
+/* the edit nobody saved yet — the row of the list refuses to open another
+   picture while it is there, and this line says what the two buttons do */
+.lib-dirty {
+  margin-right: auto;
+  color: var(--fg-dim, #9a9);
+  font-size: 12px;
+
+  &.warn {
+    color: var(--danger, #e55);
   }
 }
 

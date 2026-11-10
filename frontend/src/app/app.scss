@@ -69,13 +69,15 @@
   font-weight: 600;
 }
 
-/* "Settings" and the entity edit dialogs: the hosts — flex items with
-   min-height:0; without this fix the body does not scroll inside but is
-   simply cropped by the modal's max-height. */
+/* "Settings", the entity edit dialogs and the two picture dialogs: the hosts —
+   flex items with min-height:0; without this fix the body does not scroll
+   inside but is simply cropped by the modal's max-height (which is how the
+   Save/Discard pair ends up below the fold and out of reach). */
 .modal > app-settings,
 .modal > app-character-dialog,
 .modal > app-user-dialog,
 .modal > app-model-dialog,
+.modal > app-picture-dialog,
 .modal > app-picture-library {
   display: flex;
   flex-direction: column;
