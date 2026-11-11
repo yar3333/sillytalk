@@ -363,7 +363,7 @@ describe("clone", () => {
 
     const copy = chats.clone(chat.id)!;
     const copiedCard = copy.messages[0];
-    const copiedRef = copiedCard.generation!.refs![0];
+    const copiedRef = copiedCard.pictures?.[copiedCard.images[0]!]?.generation?.refs?.[0];
     expect(copiedCard.images[0]).not.toBe(card);
     expect(copiedCard.images[0]).toMatch(new RegExp(`^${copy.id}/a-fox-[0-9a-f]{6}\\.png$`));
     expect(copiedRef).toMatch(new RegExp(`^${copy.id}/a-red-boat-[0-9a-f]{6}\\.png$`));
@@ -472,11 +472,11 @@ describe("the message primitives", () => {
     // saved over the top cannot outlive the table's version of the truth
     const stale = chats.get(chat.id)!.messages[0];
     stale.text = "written into the row by hand";
-    stale.generation = { prompt: "a prompt that was never saved" };
+    stale.pictures = { [image]: { description: "written into the row by hand", generation: { prompt: "never saved" } } };
     chats.save(chats.get(chat.id)!);
     const again = chats.get(chat.id)!.messages[0];
     expect(again.text).toBe("a red boat on a calm lake");
-    expect(again.generation?.prompt).toBe("a red boat at dusk");
+    expect(again.pictures?.[image]?.generation?.prompt).toBe("a red boat at dusk");
   });
 
   it("a pending card is stored before its file exists; a card with nothing to say gets no row", () => {
@@ -553,18 +553,20 @@ describe("the message primitives", () => {
     expect(card.kind).toBe("image");
     expect(card.images).toEqual([image]);
     expect(card.text).toBe("");
-    expect(card.generation).toBeUndefined();
-    expect(card.depicts).toBeUndefined();
+    expect(card.pictures).toBeUndefined();
     expect(imageMeta.get(image)).toBeNull();
 
     // and the words appear the moment somebody writes them where they belong
     imageMeta.set(image, { description: "a fox in the snow", prompt: "a fox at dawn" });
     const described = chats.get(legacyId)!.messages[0];
     expect(described.text).toBe("a fox in the snow");
-    expect(described.generation?.prompt).toBe("a fox at dawn");
+    expect(described.pictures?.[image]?.generation?.prompt).toBe("a fox at dawn");
+    // the cast the old blob named is still not read: the row says nothing about
+    // who is on the picture, so the card claims nobody
+    expect(described.pictures?.[image]?.depicts).toBeUndefined();
   });
 
-  it("editImageCard edits the description and the prompt together", () => {
+  it("editPictureOf edits the description and the prompt of one picture", () => {
     const chat = chats.create(["a"], "me");
     const image = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=");
     const card = chats.addImageMessage(chat, image, {
@@ -572,17 +574,17 @@ describe("the message primitives", () => {
       generation: { prompt: "as drawn", source: "manual" },
     });
     const fresh = chats.get(chat.id)!;
-    chats.editImageCard(fresh, fresh.messages.find((m) => m.id === card.id)!, {
+    chats.editPictureOf(fresh, fresh.messages.find((m) => m.id === card.id)!, image, {
       description: "a different scene",
       prompt: "a snowy pine ridge",
     });
     const saved = chats.get(chat.id)!.messages[0];
     expect(saved.text).toBe("a different scene");
-    expect(saved.generation).toEqual({ prompt: "a snowy pine ridge", source: "manual" });
+    expect(saved.pictures?.[image]?.generation).toEqual({ prompt: "a snowy pine ridge", source: "manual" });
     expect(imageMeta.get(image)).toMatchObject({ description: "a different scene", prompt: "a snowy pine ridge" });
   });
 
-  it("editImageCard drops the generation fields from the row (the card is a plain file now)", () => {
+  it("editPictureOf drops the generation fields from the row (the picture is a plain file now)", () => {
     const chat = chats.create(["a"], "me");
     const image = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=");
     chats.addImageMessage(chat, image, {
@@ -590,26 +592,48 @@ describe("the message primitives", () => {
       generation: { prompt: "as drawn", refs: [image], source: "manual", model: "m1" },
     });
     const fresh = chats.get(chat.id)!;
-    const card = fresh.messages[0];
-    chats.editImageCard(fresh, card, { generation: null });
+    chats.editPictureOf(fresh, fresh.messages[0], image, { generation: null });
 
     const saved = chats.get(chat.id)!.messages[0];
-    expect(saved.generation).toBeUndefined();
+    expect(saved.pictures?.[image]?.generation).toBeUndefined();
     const row = imageMeta.get(image);
     expect(row?.description).toBe("as saved");
     for (const key of ["prompt", "refs", "source", "model"]) expect(row).not.toHaveProperty(key);
   });
 
-  it("editImageCard replaces the generation block with the given one", () => {
+  it("editPictureOf replaces the generation block with the given one", () => {
     const chat = chats.create(["a"], "me");
     const image = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=");
     chats.addImageMessage(chat, image, { description: "x", generation: { source: "upload" } });
     const fresh = chats.get(chat.id)!;
-    chats.editImageCard(fresh, fresh.messages[0], {
+    chats.editPictureOf(fresh, fresh.messages[0], image, {
       generation: { prompt: "a snowy pine ridge", source: "manual" },
     });
     const saved = chats.get(chat.id)!.messages[0];
-    expect(saved.generation).toEqual({ prompt: "a snowy pine ridge", source: "manual" });
+    expect(saved.pictures?.[image]?.generation).toEqual({ prompt: "a snowy pine ridge", source: "manual" });
+  });
+
+  it("editPictureOf of one picture leaves the other pictures of the same line alone", () => {
+    // A line can show several pictures, so an edit names the one it means: the
+    // words of the line and of its other pictures are untouched by it.
+    const chat = chats.create(["a"], "me");
+    // Two different pictures: identical bytes would be ONE picture with one row
+    // (the de-dup), which would prove nothing about naming one of them.
+    const boat = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=", { nameHint: "a boat" });
+    const fox = chats.saveImage(chat.id, "data:image/png;base64,d29ybGQ=", { nameHint: "a fox" });
+    imageMeta.set(boat, { description: "a boat on the lake" });
+    imageMeta.set(fox, { description: "a fox in the snow" });
+    const line = chats.addUserMessage(chat, "two pictures", [boat, fox]);
+
+    chats.editPictureOf(chat, chat.messages.find((m) => m.id === line.id)!, boat, {
+      description: "a blue boat",
+    });
+
+    const saved = chats.get(chat.id)!.messages[0];
+    expect(saved.text).toBe("two pictures");
+    expect(saved.pictures?.[boat]?.description).toBe("a blue boat");
+    expect(saved.pictures?.[fox]?.description).toBe("a fox in the snow");
+    expect(imageMeta.get(fox)?.description).toBe("a fox in the snow");
   });
 
   it("setMessageText rewrites one row's caption (a background job has no message object)", () => {
@@ -741,7 +765,7 @@ describe("replaceMessageImage", () => {
     const saved = chats.get(chat.id)!.messages[0];
     expect(saved.images).toEqual([replacement]);
     // what hangs on the message now is the user's file: no prompt, no source
-    expect(saved.generation).toBeUndefined();
+    expect(saved.pictures?.[replacement]?.generation).toBeUndefined();
     expect(saved.text).toBe("a red fox in the snow");
     expect(imageMeta.get(replacement)).toMatchObject({ description: "a red fox in the snow" });
     expect(imageMeta.get(replacement)?.prompt).toBeUndefined();
@@ -807,7 +831,7 @@ describe("the picture data on read", () => {
     });
     const msg = chats.get(chatId)!.messages[0];
     expect(msg.text).toBe("edited in the browser");
-    expect(msg.generation?.prompt).toBe("a red boat at dusk with gulls over the harbour");
+    expect(msg.pictures?.[id]?.generation?.prompt).toBe("a red boat at dusk with gulls over the harbour");
   });
 
   it("a picture with no row reads as a card with an empty caption", () => {
@@ -817,7 +841,7 @@ describe("the picture data on read", () => {
     expect(imageMeta.get(id)).toBeNull();
     const card = chats.get(chat.id)!.messages[0];
     expect(card.text).toBe("");
-    expect(card.generation).toBeUndefined();
+    expect(card.pictures).toBeUndefined();
     // the moment somebody describes the picture, every reader sees it
     imageMeta.set(id, { description: "described later" });
     expect(chats.get(chat.id)!.messages[0].text).toBe("described later");
@@ -854,7 +878,7 @@ describe("the picture data on read", () => {
     const other = chats.create(["b"], "me");
     const elsewhere = chats.saveImage(other.id, "data:image/png;base64,aGVsbG8=", { nameHint: "another picture" });
     imageMeta.set(id, { refs: [elsewhere] });
-    expect(chats.get(chatId)!.messages[0].generation?.refs).toEqual([elsewhere]);
+    expect(chats.get(chatId)!.messages[0].pictures?.[id]?.generation?.refs).toEqual([elsewhere]);
   });
 });
 
@@ -975,13 +999,15 @@ describe("the chat ID (the date by default, the rename)", () => {
     // the row of the picture moved with the file, so the card still reads its
     // caption and its prompt from the table
     expect(seenCard.text).toBe("a boat");
-    expect(seenCard.generation?.prompt).toBe("a red boat");
+    expect(seenCard.pictures?.[newId]?.generation?.prompt).toBe("a red boat");
     expect(imageMeta.get(id)).toBeNull();
     expect(imageMeta.get(newId)?.description).toBe("a boat");
     // and the reference set of the OTHER chat points at the new path — in the
     // row (the one source) and through the card that reads it
     expect(imageMeta.get(otherId)?.refs).toEqual([newId]);
-    expect(peek(other.id)!.messages.find((m) => m.id === otherCard.id)!.generation?.refs).toEqual([newId]);
+    expect(peek(other.id)!.messages.find((m) => m.id === otherCard.id)!.pictures?.[otherId]?.generation?.refs).toEqual([
+      newId,
+    ]);
   });
 
   it("the rename takes the orphan rows of the folder along (a file the user deleted by hand)", () => {

@@ -246,6 +246,31 @@
 .img-regen:hover {
   background: rgba(79, 140, 255, 0.85);
 }
+/* The ✎ of one picture inside somebody's line: the same editor the row's ✎
+   opens for a neutral card, reached per picture because a line may show
+   several. It sits right of the redraw so the two never overlap. */
+.img-edit-picture {
+  position: absolute;
+  top: 8px;
+  left: 48px;
+  width: 34px;
+  height: 34px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 16px;
+  cursor: pointer;
+}
+.msg-img-wrap:hover .img-edit-picture {
+  display: flex;
+}
+.img-edit-picture:hover {
+  background: rgba(79, 140, 255, 0.85);
+}
 .img-spinner {
   width: 16px;
   height: 16px;
@@ -329,16 +354,22 @@
   filter: brightness(1.15);
 }
 
-/* ---------- the image card ---------- */
+/* ---------- the pictures of a line ---------- */
 
-/* One picture with what the app knows about it: the caption (what is on it),
+/* Every picture with what the app knows about it: the caption (what is on it),
    the prompt it was drawn from and how many references it used. The text lines
-   sit under the image, never beside it (the layout invariant). */
+   sit under the image, never beside it (the layout invariant), and a line may
+   show several pictures — each one is a block of its own, in order. */
 .card-body {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 10px;
   margin-top: 8px;
+}
+.picture {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 .card-body .msg-img-wrap img,
 .card-body .img-placeholder {

@@ -5,8 +5,10 @@ import { ConfigStore } from '../../services/config-store';
 import { ImageStore } from '../../services/image-store';
 import { UiStore } from '../../services/ui-store';
 
-// The picture editor — one dialog for everything a picture card says about
-// itself. A card is one of two things:
+// The picture editor — one dialog for everything ONE picture says about itself.
+// A line may show several pictures, so the dialog is opened for a picture id
+// (ImageStore.pictureEdit) and edits that picture's row, not the line. A picture
+// is one of two things:
 //   "generated" — a picture drawn by the app: the prompt it is redrawn from
 //                 (with two LLM helpers: plan it from the dialogue, or
 //                 translate + tune the typed text for the generator);
@@ -15,8 +17,8 @@ import { UiStore } from '../../services/ui-store';
 // Both kinds carry a description (what is on the picture), which the model can
 // also write from the picture itself.
 //
-// The dialog only EDITS the card: saving never generates anything — redrawing
-// is the ↻ button of the card, as before. The target card comes from
+// The dialog only EDITS the picture: saving never generates anything — redrawing
+// is the ↻ button of the picture, as before. The target comes from
 // ImageStore.pictureEdit (the row opens the dialog), so the dialog is a thin
 // view over the stores.
 
@@ -259,15 +261,19 @@ export class PictureDialog implements OnInit {
     const msg = this.chatStore.chat()?.messages.find((m) => m.id === target?.messageId) ?? null;
     this.message.set(msg);
     if (!msg || !target) return;
-    const generation = msg.generation;
+    // The dialog edits ONE picture of a line, and what it can say about it is
+    // that picture's row of the images table — the line may show several, so
+    // `pictures` keyed by id is the only place their facts are kept apart.
+    const facts = msg.pictures?.[target.image];
+    const generation = facts?.generation;
     const generated = generation?.prompt !== undefined || (generation?.source !== undefined && generation.source !== 'upload');
     this.kind.set(generated ? 'generated' : 'file');
     this.prompt.set(generation?.prompt ?? '');
     this.refs.set(generation?.refs ?? []);
-    this.depicts.set(msg.depicts ?? []);
+    this.depicts.set(facts?.depicts ?? []);
     this.initialRefs = [...this.refs()];
     this.initialDepicts = [...this.depicts()];
-    this.description.set(msg.text);
+    this.description.set(facts?.description ?? '');
     this.chosenId.set(target.image);
     this.api
       .listPictures()

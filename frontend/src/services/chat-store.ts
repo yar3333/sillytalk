@@ -292,7 +292,7 @@ export class ChatStore {
         // decoration: that sentence is what a chat model without vision reads
         // about the picture in the history, and what the 📷 planner reads in its
         // catalogue. Fire-and-forget — the message is already sent.
-        this.captionAttachments(res.chat.id, res.messages);
+        this.captionAttachments(res.chat.id, res.message);
         // The reply queue starts with the character mentioned by name,
         // otherwise — in turn order.
         return this.runReplyQueue(
@@ -313,17 +313,20 @@ export class ChatStore {
     return true;
   }
 
-  // Captions the picture cards of a just-sent message: every attached picture
-  // becomes its own card with an empty caption, and the vision model writes one
-  // (the picture's row of the images table). Skipped without a model that can
-  // see, and never in the error banner — a picture that stays unlabelled is a
-  // normal state, and the card's ✎ is there for a manual try.
-  private captionAttachments(chatId: string, messages: ChatMessage[]): void {
+  // Captions the pictures of a just-sent message: an attached picture arrives
+  // with no description unless its bytes were already a described picture of the
+  // data folder, and the vision model writes the missing sentence (into the
+  // picture's row of the images table). Skipped without a model that can see,
+  // and never in the error banner — a picture that stays unlabelled is a normal
+  // state, and the picture's ✎ is there for a manual try.
+  private captionAttachments(chatId: string, message: ChatMessage): void {
     if (!this.canDescribePictures()) return;
-    const cards = messages.filter((m) => m.kind === 'image' && !m.text.trim() && m.images.length > 0);
-    for (const card of cards) {
+    const uncaptioned = (message.images ?? []).filter(
+      (id) => !(message.pictures?.[id]?.description ?? '').trim(),
+    );
+    for (const image of uncaptioned) {
       this.api
-        .captionPicture(chatId, card.id)
+        .captionPicture(chatId, message.id, image)
         .then((res) => {
           if (this.chat()?.id === chatId) this.applyChat(res.chat);
         })

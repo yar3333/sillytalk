@@ -267,6 +267,20 @@ export class PersonsService {
     return this.writePicture(id, DataUrl.image(dataUrl), nameHint);
   }
 
+  // The id a NEW picture of this persona will be saved under — the file does not
+  // exist yet, so this is how a picture that still has to be DRAWN gets its name
+  // in advance: a 🎨 request attached to the user's line reserves its place here,
+  // because the bytes will belong to the person who asked for the picture, and
+  // the id in the message is what says so. The folder is created (a picture with
+  // no folder to live in is a card that can never become a picture); the file is
+  // not. Throws on a bad id.
+  reservedPictureId(id: string, nameHint: string, extension = ".png"): string {
+    if (!this.isValidId(id)) throw new Error(`Invalid persona ID: ${String(id)}`);
+    const dir = PathHelper.personDir(id, this.personsRoot());
+    fs.mkdirSync(dir, { recursive: true });
+    return PathHelper.imageIdOf(path.join(dir, PictureName.fileName(nameHint, "image", extension)));
+  }
+
   // Places the bytes of a picked file: a byte-identical picture already in the
   // data folders gives its id back; otherwise a new file lands in the persona's
   // folder with a row carrying its facts. The lookup is by CONTENT, not by a row

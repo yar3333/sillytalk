@@ -148,21 +148,21 @@ export function createImageRouter(
     }
   });
 
-  // Writes the caption of a picture card the user attached without one (the 📎
-  // flow calls this right after saving the message, so the picture gets a line
-  // the chat model can read even when it cannot see). A card that already has a
-  // caption, a chat with nothing to look with and a model that could not answer
-  // all leave the card as it is — and the answer is the current chat either way,
-  // so the client just applies it. An unlabelled picture is a normal state, not
-  // a failed request, so this route has no error path of its own.
+  // Writes the caption of ONE picture of a message that has none (the 📎 flow
+  // calls this for every such picture right after saving the line, so it gets a
+  // sentence the chat model can read even when it cannot see). A picture that
+  // already has a caption, a chat with nothing to look with and a model that
+  // could not answer all leave it as it is — and the answer is the current chat
+  // either way, so the client just applies it. An unlabelled picture is a normal
+  // state, not a failed request, so this route has no error path of its own.
   router.post("/caption", async (req, res) => {
     try {
-      const { chatId, messageId } = req.body ?? {};
-      if (typeof chatId !== "string" || typeof messageId !== "string") {
-        res.status(400).json({ error: "chatId and messageId are required" });
+      const { chatId, messageId, image } = req.body ?? {};
+      if (typeof chatId !== "string" || typeof messageId !== "string" || typeof image !== "string") {
+        res.status(400).json({ error: "chatId, messageId and image are required" });
         return;
       }
-      const chat = await reply.captionPicture(chatId, messageId);
+      const chat = await reply.captionPicture(chatId, messageId, image);
       if (!chat) {
         res.status(404).json({ error: "Chat not found" });
         return;

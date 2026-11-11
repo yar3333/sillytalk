@@ -167,10 +167,10 @@ export function createChatsRouter(
 
   // ---- messages ----
 
-  // Saves what the user sent: their text becomes a text message and every
-  // attached picture an image card right after it. The characters' replies are
-  // requested by the frontend one at a time (POST /reply) — that way it knows
-  // who is "typing" now and adds lines as they are generated.
+  // Saves what the user sent: ONE message of theirs, carrying their text and the
+  // pictures they showed. The characters' replies are requested by the frontend
+  // one at a time (POST /reply) — that way it knows who is "typing" now and adds
+  // lines as they are generated.
   router.post("/:id/messages", (req, res) => {
     const body = req.body ?? {};
     const text = typeof body.text === "string" ? body.text : "";
@@ -184,11 +184,7 @@ export function createChatsRouter(
       res.status(404).json({ error: "Chat not found" });
       return;
     }
-    if (result.messages.length === 0) {
-      res.status(400).json({ error: "No readable message or picture in the request" });
-      return;
-    }
-    res.json({ chat: result.chat, messages: result.messages });
+    res.json({ chat: result.chat, message: result.message });
   });
 
   // The reply of a SINGLE chat character. The frontend calls it for each
@@ -462,12 +458,14 @@ export function createChatsRouter(
     res.json({ chat: fresh });
   });
 
-  // Edits what the card says about its picture — the picture-editor dialog:
-  // the description (what is on it), the prompt it should be redrawn with, the
-  // picture itself (`image` — an existing image id of the data folder the card
-  // should point at) and the `kind` the card is now ("generated" / "file").
-  // The picture's row of the images table is updated along with the message, so
-  // the one source a card is read from never lags behind.
+  // Edits what ONE picture says about itself — the picture-editor dialog: the
+  // description (what is on it), the prompt it should be redrawn with, another
+  // picture of the data folder to point at instead (`repointTo`) and the `kind`
+  // the picture is now ("generated" / "file"). `image` names which picture of the
+  // message is meant — a line may show several, and it is the same field every
+  // other per-picture route uses; a message with exactly one picture may leave it
+  // out. Everything edited here is a field of the picture's row of the images
+  // table, so the one source a picture is read from never lags behind.
   router.patch("/:id/messages/:messageId/picture", (req, res) => {
     const chat = chats.get(req.params.id);
     if (!chat) {
@@ -479,7 +477,13 @@ export function createChatsRouter(
       res.status(404).json({ error: "Message not found" });
       return;
     }
-    const { description, prompt, image, kind, refs, depicts } = req.body ?? {};
+    const { description, prompt, repointTo, kind, refs, depicts } = req.body ?? {};
+    // Which of the line's pictures the edit is about.
+    const target = imageOf(req.body, msg.images) ?? (msg.images.length === 1 ? msg.images[0] : null);
+    if (!target) {
+      res.status(400).json({ error: "Say which picture of the message to edit (image field)" });
+      return;
+    }
     if (description !== undefined && typeof description !== "string") {
       res.status(400).json({ error: "Expected description (string)" });
       return;
@@ -511,29 +515,29 @@ export function createChatsRouter(
       res.status(400).json({ error: 'Expected kind "generated" or "file"' });
       return;
     }
-    if (image !== undefined) {
-      if (typeof image !== "string") {
-        res.status(400).json({ error: "Expected image (string)" });
+    if (repointTo !== undefined) {
+      if (typeof repointTo !== "string") {
+        res.status(400).json({ error: "Expected repointTo (string)" });
         return;
       }
-      // The picture the card should point at: a picture of the data folder the
-      // media route can serve (the same rule the /media route applies).
-      const file = PathHelper.resolveImageId(image);
+      // The picture the line should point at instead: a picture of the data
+      // folder the media route can serve (the same rule the /media route applies).
+      const file = PathHelper.resolveImageId(repointTo);
       if (!file || !fs.existsSync(file) || !HttpHelper.isImage(file)) {
-        res.status(400).json({ error: `Unknown picture "${image}"` });
+        res.status(400).json({ error: `Unknown picture "${repointTo}"` });
         return;
       }
-      // The picture the card carries now may still be generating — repointing
-      // it would leave the job writing to an id nobody points at any more.
-      if (msg.images[0] !== image && msg.imageStatus?.[msg.images[0]] === "pending") {
+      // A picture that is still being drawn cannot be swapped out: the job would
+      // be left writing to an id nobody points at any more.
+      if (repointTo !== target && msg.imageStatus?.[target] === "pending") {
         res.status(400).json({ error: "The picture is still being generated" });
         return;
       }
     }
-    const fresh = reply.editPicture(chat, msg, {
+    const fresh = reply.editPicture(chat, msg, target, {
       ...(description !== undefined ? { description } : {}),
       ...(prompt !== undefined ? { prompt } : {}),
-      ...(image !== undefined ? { image } : {}),
+      ...(repointTo !== undefined ? { repointTo } : {}),
       ...(kind !== undefined ? { kind } : {}),
       ...(refs !== undefined
         ? { refs: (refs as unknown[]).filter((x): x is string => typeof x === "string") }

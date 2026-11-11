@@ -18,9 +18,10 @@ export type ImageBrief = {
   id: string;
   description?: string;
   prompt?: string;
-  // Who showed the user this picture ("the user", "Alice") and when it
-  // appeared ("3 messages ago"), so the model can tell the recent from the old.
-  owner?: string;
+  // When the picture appeared ("3 messages ago"), so the model can tell the
+  // recent from the old. Who a picture belongs to is never said: the id carries
+  // it (a chat's, a persona's or a character's folder) and the planner has no
+  // use for it — what matters to a drawing is what is ON the picture.
   age?: string;
   // upload — the user attached it, manual/auto — it was generated.
   origin?: string;
@@ -644,7 +645,6 @@ export class TextGenerationService {
               ? `shows: ${img.description}`
               : "no description",
           img.prompt ? `generated from prompt: ${img.prompt}` : img.origin === "uploaded" ? "uploaded by the user" : "",
-          img.owner ? `shared by ${img.owner}` : "",
           img.age ?? "",
         ].filter(Boolean);
         return `#${i + 1} — ${bits.join("; ")}`;
@@ -853,50 +853,64 @@ export class TextGenerationService {
     throw new Error("Provider returned an empty response");
   }
 
-  // Message content for the provider: the text plus, for a model with image
-  // support, the message images as image_url data-URIs. An image is addressed
-  // by its id (a path relative to the data folder); a missing file — a picture
-  // that is still being generated, or one the user deleted — is skipped.
+  // Message content for the provider: the words of the line plus the pictures it
+  // carries — as image_url data-URIs for a model with vision, as a sentence each
+  // for one without. A picture is addressed by its id (a path relative to the
+  // data folder); a missing file — a picture that is still being generated, or
+  // one the user deleted — is skipped.
   //
-  // A model without vision gets a sentence in place of the picture: the card's
-  // description, so the dialogue still knows what was shown.
+  // A neutral card says so in words ("A picture you are shown"), because it has
+  // no other text and the model must not read it as the author's message.
   private buildContent(model: Model, message: ChatMessage): string | ContentPart[] {
     const files = (message.images ?? [])
       .map((id) => PathHelper.resolveImageId(id))
       .filter((file): file is string => file !== null && fs.existsSync(file));
 
+    if (!model.supportsImages || files.length === 0) return TextGenerationService.historyText(message);
+
+    const parts: ContentPart[] = [];
     if (isImageMessage(message)) {
       const caption = message.text.trim();
-      if (!model.supportsImages || files.length === 0) return TextGenerationService.historyText(message);
-      const parts: ContentPart[] = [];
       parts.push({
         type: "text",
         text: caption ? `A picture you are shown, it shows: ${caption}` : "A picture you are shown.",
       });
-      for (const file of files) {
-        parts.push({ type: "image_url", image_url: { url: TextGenerationService.imageDataUrl(file) } });
-      }
-      return parts;
+    } else if (message.text) {
+      parts.push({ type: "text", text: message.text });
     }
-
-    if (model.supportsImages && files.length > 0) {
-      const parts: ContentPart[] = [];
-      if (message.text) parts.push({ type: "text", text: message.text });
-      for (const file of files) {
-        parts.push({ type: "image_url", image_url: { url: TextGenerationService.imageDataUrl(file) } });
-      }
-      return parts;
+    for (const file of files) {
+      parts.push({ type: "image_url", image_url: { url: TextGenerationService.imageDataUrl(file) } });
     }
-    return message.text;
+    return parts;
   }
 
-  // The text stand-in of a message, for a model that cannot see: an image card
-  // becomes its description (or a plain note when nobody wrote one), everything
-  // else is its own text.
+  // The text stand-in of a message, for a model that cannot see: a neutral card
+  // becomes its description (or a plain note when nobody wrote one); a line is
+  // its own words plus one sentence per picture it shows. Without those
+  // sentences a message that says "look at this" would arrive with nothing to
+  // look at, and the pictures of the line would simply never have existed.
   private static historyText(message: ChatMessage): string {
-    if (!isImageMessage(message)) return message.text;
-    const caption = message.text.trim();
-    return caption ? `[A picture: ${caption}]` : "[A picture without a description]";
+    if (isImageMessage(message)) {
+      const caption = message.text.trim();
+      return caption ? `[A picture: ${caption}]` : "[A picture without a description]";
+    }
+    const shown = TextGenerationService.pictureLines(message);
+    if (shown.length === 0) return message.text;
+    return [message.text, ...shown].filter((line) => line).join("\n");
+  }
+
+  // One sentence per picture a TEXT line carries, built from the caption its row
+  // holds. A picture nobody described is still announced — the model has to know
+  // a picture was shown, even when nothing says what is on it — but a picture
+  // whose file is not there yet (still being drawn) or anymore (deleted) is not:
+  // the sentence would describe something nobody can be shown.
+  private static pictureLines(message: ChatMessage): string[] {
+    return (message.images ?? []).flatMap((id) => {
+      const file = PathHelper.resolveImageId(id);
+      if (!file || !fs.existsSync(file)) return [];
+      const caption = (message.pictures?.[id]?.description ?? "").trim();
+      return [caption ? `[A picture shows: ${caption}]` : "[A picture without a description]"];
+    });
   }
 
   private static imageDataUrl(file: string): string {

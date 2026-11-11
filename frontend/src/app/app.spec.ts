@@ -10,6 +10,7 @@ import {
   Character,
   ChatSummary,
   Picture,
+  PictureFacts,
   PictureLanguage,
   User,
 } from '../services/api';
@@ -589,7 +590,9 @@ describe('ChatStore — canceling the generation', () => {
           provide: ApiService,
           useValue: {
             nextReply,
-            postMessage: () => Promise.resolve({ chat: baseChat }),
+            // the server answers a send with the chat AND the user's own line
+            postMessage: () =>
+              Promise.resolve({ chat: baseChat, message: baseChat.messages[0] ?? null }),
             cancelReply: () => Promise.resolve({ chat: baseChat }),
             getChat: () => Promise.resolve(baseChat),
             getConfig: () => Promise.resolve({ llmModels: {} }),
@@ -938,7 +941,9 @@ describe('ChatStore.isUserTurn — when the 📷 button belongs', () => {
         userId: 'u1',
         text: '',
         images: ['chat-1/a-picture-for-the-conversation-1a2b3c.png'],
-        generation: { source: 'auto', model: 'm1' },
+        pictures: {
+          'chat-1/a-picture-for-the-conversation-1a2b3c.png': { generation: { source: 'auto', model: 'm1' } },
+        },
         imageStatus: { 'chat-1/a-picture-for-the-conversation-1a2b3c.png': 'pending' as const },
         timestamp: 3,
       },
@@ -981,7 +986,7 @@ describe('ChatStore.isUserTurn — when the 📷 button belongs', () => {
   });
 });
 
-describe('MessageRow — the image card', () => {
+describe('MessageRow — the pictures of a line', () => {
   const mediaUrl = (id: string) => `http://localhost:3000/api/media?path=${encodeURIComponent(id)}`;
   const cardImage = 'chat-1/a-red-boat-at-dusk-1a2b3c.png';
 
@@ -1001,15 +1006,22 @@ describe('MessageRow — the image card', () => {
     return { fixture, el: fixture.nativeElement as HTMLElement };
   }
 
-  it('shows the picture by its id, its description, the prompt it was drawn from and its references', () => {
+  it('a neutral card shows the picture by its id, its description, the prompt it was drawn from and its references', () => {
     const { el } = renderMessage({
       id: 'card-1',
       role: 'user',
       kind: 'image',
       userId: 'u1',
+      // the server writes the picture's caption into a card's text too; the row
+      // is what the card reads, so the fixture carries it the way a read does
       text: 'a red boat on a calm lake at dusk',
       images: [cardImage],
-      generation: { prompt: 'a red boat, the sky orange', refs: ['chat-1/a-harbour-9f8e7d.png'], source: 'auto' },
+      pictures: {
+        [cardImage]: {
+          description: 'a red boat on a calm lake at dusk',
+          generation: { prompt: 'a red boat, the sky orange', refs: ['chat-1/a-harbour-9f8e7d.png'], source: 'auto' },
+        },
+      },
       timestamp: 3,
     });
 
@@ -1023,8 +1035,80 @@ describe('MessageRow — the image card', () => {
     // a drawn picture can be redrawn; everything else about it (the prompt,
     // the description, the file) lives in the picture editor dialog
     expect(el.querySelector('[data-testid=img-regenerate]')).toBeTruthy();
+    // the row's own ✎ is enough for a card — it has exactly one picture
+    expect(el.querySelector('[data-testid=picture-edit]')).toBeNull();
     expect(el.querySelector('[data-testid=img-edit-prompt]')).toBeNull();
     expect(el.querySelector('[data-testid=img-replace]')).toBeNull();
+  });
+
+  it('a text line shows its words ABOVE its pictures, each with its own caption', () => {
+    const boat = 'users/me/a-boat-1a2b3c.png';
+    const fox = 'users/me/a-fox-4d5e6f.png';
+    const { el } = renderMessage({
+      id: 'msg-7',
+      role: 'user',
+      kind: 'text',
+      userId: 'u1',
+      text: 'look at these',
+      images: [boat, fox],
+      pictures: {
+        [boat]: { description: 'a red boat', generation: { prompt: 'a red boat at dusk', source: 'manual' } },
+        [fox]: { description: 'a fox in the snow' },
+      },
+      timestamp: 4,
+    });
+
+    // the words first, then the pictures — the order of the DOM is the layout
+    expect(el.querySelector('.msg-text')?.textContent).toContain('look at these');
+    const pictures = [...el.querySelectorAll('[data-testid=line-picture]')];
+    expect(pictures).toHaveLength(2);
+    expect(pictures[0].querySelector('img')?.getAttribute('src')).toBe(mediaUrl(boat));
+    expect(pictures[1].querySelector('img')?.getAttribute('src')).toBe(mediaUrl(fox));
+    expect(pictures[0].querySelector('[data-testid=card-caption]')?.textContent?.trim()).toBe('a red boat');
+    expect(pictures[1].querySelector('[data-testid=card-caption]')?.textContent?.trim()).toBe('a fox in the snow');
+    // only the picture with a prompt can be redrawn, and each picture of a line
+    // carries its own ✎: the editor edits one picture, not the whole line
+    expect(pictures[0].querySelector('[data-testid=img-regenerate]')).toBeTruthy();
+    expect(pictures[1].querySelector('[data-testid=img-regenerate]')).toBeNull();
+    expect(pictures.map((p) => p.querySelectorAll('[data-testid=picture-edit]').length)).toEqual([1, 1]);
+    // a line is not a card, so it is never labelled as one
+    expect(el.querySelector('[data-testid=image-card]')).toBeNull();
+    expect(el.querySelector('[data-testid=msg-sender]')?.textContent).not.toBe('A picture');
+  });
+
+  it('the ✎ of one picture of a line opens the editor for THAT picture', () => {
+    const imageStore = TestBed.inject(ImageStore);
+    const boat = 'users/me/a-boat-1a2b3c.png';
+    const fox = 'users/me/a-fox-4d5e6f.png';
+    const { el } = renderMessage({
+      id: 'msg-8',
+      role: 'assistant',
+      kind: 'text',
+      characterId: 'c1',
+      text: 'here you are',
+      images: [boat, fox],
+      timestamp: 4,
+    });
+    const edits = [...el.querySelectorAll('[data-testid=picture-edit]')] as HTMLButtonElement[];
+    edits[1].click();
+    expect(imageStore.pictureEdit()).toEqual({ messageId: 'msg-8', image: fox });
+  });
+
+  it('a line that was nothing but picture markers saves no empty words', () => {
+    const { el } = renderMessage({
+      id: 'msg-9',
+      role: 'assistant',
+      kind: 'text',
+      characterId: 'c1',
+      text: '',
+      images: ['characters/alice/at-the-harbour-1a2b3c.png'],
+      pictures: { 'characters/alice/at-the-harbour-1a2b3c.png': { description: 'Alice at the harbour' } },
+      timestamp: 5,
+    });
+    // an empty bubble in front of a picture would be the only thing on screen
+    expect(el.querySelector('.msg-text')).toBeNull();
+    expect(el.querySelector('[data-testid=line-picture] img')).toBeTruthy();
+    expect(el.querySelector('[data-testid=card-caption]')?.textContent?.trim()).toBe('Alice at the harbour');
   });
 
   it('the ✎ of a card opens the picture editor for that card', () => {
@@ -1036,7 +1120,7 @@ describe('MessageRow — the image card', () => {
       userId: 'u1',
       text: 'a red boat on a calm lake',
       images: [cardImage],
-      generation: { prompt: 'a red boat', source: 'manual' },
+      pictures: { [cardImage]: { description: 'a red boat on a calm lake', generation: { prompt: 'a red boat', source: 'manual' } } },
       timestamp: 3,
     });
     (el.querySelector('[data-testid=msg-edit]') as HTMLButtonElement).click();
@@ -1060,15 +1144,16 @@ describe('MessageRow — the image card', () => {
     expect(imageStore.pictureEdit()).toBeNull();
   });
 
-  it('an uploaded photo has no prompt, so it offers no redraw — only the replace', () => {
+  it('a picture somebody brought has no prompt, so it offers no redraw', () => {
+    const photo = 'chats/chat-1/my-photo-1a2b3c.jpg';
     const { el } = renderMessage({
       id: 'card-2',
       role: 'user',
       kind: 'image',
       userId: 'u1',
       text: 'my own photo',
-      images: ['chat-1/my-photo-1a2b3c.jpg'],
-      generation: { source: 'upload' },
+      images: [photo],
+      pictures: { [photo]: { description: 'my own photo', generation: { source: 'upload' } } },
       timestamp: 3,
     });
     expect(el.querySelector('[data-testid=card-prompt]')).toBeNull();
@@ -1086,7 +1171,7 @@ describe('MessageRow — the image card', () => {
       userId: 'u1',
       text: '',
       images: [cardImage],
-      generation: { source: 'auto', model: 'm1' },
+      pictures: { [cardImage]: { generation: { source: 'auto', model: 'm1' } } },
       imageStatus: { [cardImage]: 'pending' as const },
       timestamp: 3,
     });
@@ -1105,7 +1190,7 @@ describe('MessageRow — the image card', () => {
       userId: 'u1',
       text: '',
       images: [cardImage],
-      generation: { prompt: 'a red fox', source: 'manual' },
+      pictures: { [cardImage]: { generation: { prompt: 'a red fox', source: 'manual' } } },
       imageStatus: { [cardImage]: 'pending' as const },
       timestamp: 3,
     });
@@ -1119,7 +1204,7 @@ describe('MessageRow — the image card', () => {
       userId: 'u1',
       text: '',
       images: [cardImage],
-      generation: { prompt: 'a red fox', source: 'manual' },
+      pictures: { [cardImage]: { generation: { prompt: 'a red fox', source: 'manual' } } },
       imageStatus: { [cardImage]: 'failed' as const },
       imageErrors: { [cardImage]: 'GPU exploded' },
       timestamp: 3,
@@ -1129,7 +1214,7 @@ describe('MessageRow — the image card', () => {
     expect(failed.el.querySelector('.img-error-text')?.textContent).toBe('GPU exploded');
   });
 
-  it('a text message is still a plain bubble: no card, no picture buttons', () => {
+  it('a text message without pictures is still a plain bubble', () => {
     const { el } = renderMessage({
       id: 'msg-1',
       role: 'assistant',
@@ -1140,6 +1225,7 @@ describe('MessageRow — the image card', () => {
       timestamp: 1,
     });
     expect(el.querySelector('[data-testid=image-card]')).toBeNull();
+    expect(el.querySelector('[data-testid=line-picture]')).toBeNull();
     expect(el.querySelector('.msg-text')?.textContent).toContain('just words');
   });
 });
@@ -1149,7 +1235,7 @@ describe('PictureDialog — the picture editor', () => {
   const cardImage = 'chat-1/a-red-fox-1a2b3c.png';
   const otherImage = 'characters/alice/photo1.jpg';
 
-  type Patched = { chatId: string; messageId: string; patch: Record<string, unknown> };
+  type Patched = { chatId: string; messageId: string; image: string; patch: Record<string, unknown> };
   let patched: Patched[];
   let replaced: Array<{ chatId: string; messageId: string; image: string; data: string }>;
   let described: Array<{ chatId: string; image?: string; data?: string }>;
@@ -1157,15 +1243,22 @@ describe('PictureDialog — the picture editor', () => {
   let planned: Array<{ chatId: string; messageId?: string }>;
   let chat: Chat;
 
-  function card(over: Partial<ChatMessage> = {}): ChatMessage {
+  // A line whose one picture is the editor's target. The words the dialog edits
+  // are the PICTURE's row (`facts`), not the line's — a line can show several
+  // pictures and each of them says something different.
+  function card(facts: PictureFacts = {}, over: Partial<ChatMessage> = {}): ChatMessage {
+    const description = facts.description ?? 'a fox in the snow';
+    const generation = facts.generation ?? { prompt: 'a red fox', source: 'manual' as const };
     return {
       id: 'card-1',
       role: 'user',
       kind: 'image',
       userId: 'u1',
-      text: 'a fox in the snow',
+      text: description,
       images: [cardImage],
-      generation: { prompt: 'a red fox', source: 'manual' },
+      pictures: {
+        [cardImage]: { description, generation, ...(facts.depicts ? { depicts: facts.depicts } : {}) },
+      },
       timestamp: 2,
       ...over,
     };
@@ -1200,8 +1293,13 @@ describe('PictureDialog — the picture editor', () => {
         described.push({ chatId, ...body });
         return Promise.resolve({ description: 'a picture the model saw' });
       },
-      patchPicture: (chatId: string, messageId: string, patch: Record<string, unknown>) => {
-        patched.push({ chatId, messageId, patch });
+      patchPicture: (
+        chatId: string,
+        messageId: string,
+        image: string,
+        patch: Record<string, unknown>,
+      ) => {
+        patched.push({ chatId, messageId, image, patch });
         return Promise.resolve({ chat });
       },
       replaceImage: (chatId: string, messageId: string, image: string, data: string) => {
@@ -1218,6 +1316,7 @@ describe('PictureDialog — the picture editor', () => {
 
   async function render(
     message: ChatMessage,
+    image?: string,
   ): Promise<{ fixture: ComponentFixture<PictureDialog>; el: HTMLElement }> {
     chat = {
       id: 'chat-1',
@@ -1232,7 +1331,7 @@ describe('PictureDialog — the picture editor', () => {
       providers: [{ provide: ApiService, useValue: fakeApiForPicture() }],
     }).compileComponents();
     TestBed.inject(ChatStore).chat.set(chat);
-    TestBed.inject(ImageStore).openPictureEdit(message.id, message.images[0]);
+    TestBed.inject(ImageStore).openPictureEdit(message.id, image ?? message.images[0]);
     const fixture = TestBed.createComponent(PictureDialog);
     fixture.detectChanges();
     await fixture.whenStable();
@@ -1268,6 +1367,7 @@ describe('PictureDialog — the picture editor', () => {
       {
         chatId: 'chat-1',
         messageId: 'card-1',
+        image: cardImage,
         patch: { description: 'a fox in the snow', kind: 'generated', prompt: 'a red fox' },
       },
     ]);
@@ -1327,6 +1427,7 @@ describe('PictureDialog — the picture editor', () => {
       {
         chatId: 'chat-1',
         messageId: 'card-1',
+        image: cardImage,
         patch: {
           description: 'a fox in the snow',
           kind: 'generated',
@@ -1357,7 +1458,7 @@ describe('PictureDialog — the picture editor', () => {
     expect(patched[0]?.patch).toMatchObject({ depicts: ['char:c1', 'user:u1'] });
   });
 
-  it('a card nobody touched is saved without touching its people or its references', async () => {
+  it('a picture nobody touched is saved without touching its people or its references', async () => {
     const { fixture, el } = await render(card({ depicts: ['char:c1'], generation: { prompt: 'a red fox', source: 'auto', refs: [otherImage] } }));
     fixture.detectChanges();
     (el.querySelector('[data-testid=picture-save]') as HTMLButtonElement).click();
@@ -1371,13 +1472,13 @@ describe('PictureDialog — the picture editor', () => {
     });
   });
 
-  it('an uploaded picture opens in "from a file": the catalog id pick saves the card as a file', async () => {
-    const { el } = await render(card({ generation: { source: 'upload' }, text: 'my photo' }));
+  it('a picture somebody brought opens in "from a file": the catalog id pick saves it as a file', async () => {
+    const { el } = await render(card({ generation: { source: 'upload' }, description: 'my photo' }));
     expect((el.querySelector('[data-testid=picture-kind-file]') as HTMLInputElement).checked).toBe(true);
     expect(el.querySelector('[data-testid=picture-prompt]')).toBeNull();
 
     const select = el.querySelector('[data-testid=picture-id]') as HTMLSelectElement;
-    // the catalog of the data folder, the card's own picture selected
+    // the catalog of the data folder, the picture's own id selected
     expect(Array.from(select.options).map((o) => o.value)).toEqual(['', cardImage, otherImage]);
     expect(select.value).toBe(cardImage);
 
@@ -1390,13 +1491,16 @@ describe('PictureDialog — the picture editor', () => {
       {
         chatId: 'chat-1',
         messageId: 'card-1',
-        patch: { description: 'my photo', kind: 'file', image: otherImage },
+        image: cardImage,
+        // the LINE is pointed at another picture of the data folder — the id of
+        // the picture the fields above now describe
+        patch: { description: 'my photo', kind: 'file', repointTo: otherImage },
       },
     ]);
   });
 
-  it('a file picked from disk is previewed, saved into the chat and then given the description', async () => {
-    const { fixture, el } = await render(card({ generation: { source: 'upload' }, text: 'my photo' }));
+  it('a file picked from disk is previewed, saved and then given the description', async () => {
+    const { fixture, el } = await render(card({ generation: { source: 'upload' }, description: 'my photo' }));
     const input = el.querySelector('[data-testid=picture-file]') as HTMLInputElement;
     const file = new File([new Uint8Array([1, 2, 3])], 'cat.png', { type: 'image/png' });
     Object.defineProperty(input, 'files', { value: [file], configurable: true });
@@ -1421,7 +1525,45 @@ describe('PictureDialog — the picture editor', () => {
     expect(replaced[0].data.startsWith('data:image/png')).toBe(true);
     // the description lands on the swapped card
     expect(patched).toEqual([
-      { chatId: 'chat-1', messageId: 'card-1', patch: { description: 'my photo', kind: 'file' } },
+      {
+        chatId: 'chat-1',
+        messageId: 'card-1',
+        image: cardImage,
+        patch: { description: 'my photo', kind: 'file' },
+      },
+    ]);
+  });
+
+  // A line can show several pictures and the dialog edits ONE of them, so the
+  // request names the picture twice over: which of the line's pictures it is
+  // (`image`) and which picture it should point at instead (`repointTo`).
+  it('of a line with two pictures it edits the one that was opened', async () => {
+    const boat = 'users/me/a-boat-9f8e7d.png';
+    const message: ChatMessage = {
+      id: 'msg-3',
+      role: 'user',
+      kind: 'text',
+      userId: 'u1',
+      text: 'look at these',
+      images: [cardImage, boat],
+      pictures: {
+        [cardImage]: { description: 'a fox in the snow', generation: { prompt: 'a red fox', source: 'manual' } },
+        [boat]: { description: 'a red boat', generation: { prompt: 'a red boat', source: 'manual' } },
+      },
+      timestamp: 2,
+    };
+    const { el } = await render(message, boat);
+    expect((el.querySelector('[data-testid=picture-description]') as HTMLTextAreaElement).value).toBe('a red boat');
+    (el.querySelector('[data-testid=picture-save]') as HTMLButtonElement).click();
+    await tick();
+
+    expect(patched).toEqual([
+      {
+        chatId: 'chat-1',
+        messageId: 'msg-3',
+        image: boat,
+        patch: { description: 'a red boat', kind: 'generated', prompt: 'a red boat' },
+      },
     ]);
   });
 });
@@ -2395,30 +2537,30 @@ describe('ChatStore — the global model picks', () => {
     expect(puts[1]).not.toHaveProperty('visionModel');
   });
 
-  it('captions an attached picture the user gave no text to', async () => {
-    const card: ChatMessage = {
+  it('captions the attached picture of the line the user gave no words to', async () => {
+    // The 📎 flow: one line of theirs carrying the picture, no caption for it.
+    const picture = 'users/carol/a-photo-1a2b3c.png';
+    const line: ChatMessage = {
       id: 'msg-2',
       role: 'user',
-      kind: 'image',
-      text: '',
-      images: ['chats/chat-1/a.png'],
+      kind: 'text',
+      userId: 'user-1',
+      text: 'look',
+      images: [picture],
       timestamp: 2,
     };
     const captioned: Chat = {
       ...chat,
-      messages: [...chat.messages, { ...card, text: 'a red boat on a calm lake' }],
+      messages: [...chat.messages, { ...line, pictures: { [picture]: { description: 'a red boat on a calm lake' } } }],
     };
     const captionCalls: string[] = [];
     const { store } = await setup(
       {},
       {
         postMessage: (_id: string, text: string) =>
-          Promise.resolve({
-            chat: { ...chat, messages: [...chat.messages, card] },
-            messages: [{ ...chat.messages[0], id: 'msg-1b', text }, card],
-          }),
-        captionPicture: (_chatId: string, messageId: string) => {
-          captionCalls.push(messageId);
+          Promise.resolve({ chat: captioned, message: { ...line, text } }),
+        captionPicture: (_chatId: string, messageId: string, image: string) => {
+          captionCalls.push(`${messageId} ${image}`);
           return Promise.resolve({ chat: captioned });
         },
         nextReply: () => Promise.resolve({ chat: captioned, reply: null }),
@@ -2428,17 +2570,54 @@ describe('ChatStore — the global model picks', () => {
     expect(store.send('look')).toBe(true);
     await tick();
     await tick();
-    expect(captionCalls).toEqual(['msg-2']);
-    expect(store.chat()?.messages[1].text).toBe('a red boat on a calm lake');
+    // the caption is asked for per PICTURE of the line, not per message
+    expect(captionCalls).toEqual([`msg-2 ${picture}`]);
+    expect(store.chat()?.messages[1].pictures?.[picture]?.description).toBe('a red boat on a calm lake');
+  });
+
+  it('does not ask for a caption a picture already has', async () => {
+    // The bytes were already a picture of the data folder with a description, so
+    // the server sent the line back with that caption on the picture — asking the
+    // vision model again would only overwrite what the user wrote there.
+    const picture = 'users/carol/a-photo-1a2b3c.png';
+    const line: ChatMessage = {
+      id: 'msg-2',
+      role: 'user',
+      kind: 'text',
+      userId: 'user-1',
+      text: 'look',
+      images: [picture],
+      pictures: { [picture]: { description: 'my own words about it' } },
+      timestamp: 2,
+    };
+    const captionCalls: string[] = [];
+    const { store } = await setup(
+      {},
+      {
+        postMessage: () => Promise.resolve({ chat: { ...chat, messages: [...chat.messages, line] }, message: line }),
+        captionPicture: (_chatId: string, messageId: string, image: string) => {
+          captionCalls.push(`${messageId} ${image}`);
+          return Promise.resolve({ chat });
+        },
+        nextReply: () => Promise.resolve({ chat, reply: null }),
+      },
+    );
+    store.pendingImages.set(['data:image/png;base64,aGVsbG8=']);
+    store.send('look');
+    await tick();
+    await tick();
+    expect(captionCalls).toEqual([]);
   });
 
   it('does not caption anything when no model of the config can see', async () => {
-    const card: ChatMessage = {
+    const picture = 'users/carol/a-photo-1a2b3c.png';
+    const line: ChatMessage = {
       id: 'msg-2',
       role: 'user',
-      kind: 'image',
-      text: '',
-      images: ['chats/chat-1/a.png'],
+      kind: 'text',
+      userId: 'user-1',
+      text: 'look',
+      images: [picture],
       timestamp: 2,
     };
     const captionCalls: string[] = [];
@@ -2446,13 +2625,9 @@ describe('ChatStore — the global model picks', () => {
       // nothing in the config can see
       { llmModels: { blind } },
       {
-        postMessage: () =>
-          Promise.resolve({
-            chat: { ...chat, messages: [...chat.messages, card] },
-            messages: [card],
-          }),
-        captionPicture: (_chatId: string, messageId: string) => {
-          captionCalls.push(messageId);
+        postMessage: () => Promise.resolve({ chat: { ...chat, messages: [...chat.messages, line] }, message: line }),
+        captionPicture: (_chatId: string, messageId: string, image: string) => {
+          captionCalls.push(`${messageId} ${image}`);
           return Promise.resolve({ chat });
         },
         nextReply: () => Promise.resolve({ chat, reply: null }),

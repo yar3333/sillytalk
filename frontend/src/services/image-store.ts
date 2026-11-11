@@ -12,8 +12,8 @@ import { UiStore } from './ui-store';
 // There is no "generation mode" any more: a picture of this app is always a
 // PICTURE WITH A STORY, so it is asked for in words and the model turns those
 // words into a drawing prompt plus a reference set. The one place a literal
-// prompt is still written by hand is the picture editor of a card (✎), and it
-// redraws through regenerateImage.
+// prompt is still written by hand is the picture editor of one picture (✎), and
+// it redraws through regenerateImage.
 //
 // It depends ONE-WAY on ChatStore (reads the current chat / sending flag and
 // applies the server chat after an action) — the store graph stays acyclic
@@ -173,11 +173,13 @@ export class ImageStore {
       .catch((e) => this.ui.error.set(String((e as Error).message)));
   }
 
-  // Saves the picture-editor dialog in one go. A card the user calls "from a
-  // file" is re-pointed at the picture they picked — an id of the data folder
-  // or a file just read from disk — and stops claiming a generation; a
-  // "generated" card keeps its picture and gets the prompt it is redrawn with.
-  // Resolves true when the saved card was applied (the dialog closes).
+  // Saves the picture-editor dialog for ONE picture of a line. A picture the
+  // user calls "from a file" is re-pointed at the picture they picked — an id of
+  // the data folder or a file just read from disk — and stops claiming a
+  // generation; a "generated" picture keeps its place and gets the prompt it is
+  // redrawn with. The `image` id says WHICH picture of the line is meant, since
+  // a line may show several.
+  // Resolves true when the saved picture was applied (the dialog closes).
   async savePictureEdit(
     messageId: string,
     image: string,
@@ -194,26 +196,31 @@ export class ImageStore {
     const c = this.chatStore.chat();
     if (!c) return false;
     try {
-      // A file picked from disk becomes a picture of the chat's own folder
-      // first (the server reuses an identical one rather than copying) — the
-      // swap drops the old generation data, the description below then lands on
-      // the new card.
+      // A file picked from disk becomes a picture of the app's own folders first
+      // (the server reuses an identical one rather than copying) and takes the
+      // old picture's place in the line — which is the position it keeps: the
+      // swap replaces one id with another, so the picture at this index of the
+      // line is the one the fields below describe.
       let target = image;
       if (edit.kind === 'file' && edit.data) {
+        const index = c.messages.find((m) => m.id === messageId)?.images.indexOf(image) ?? -1;
         const saved = await this.api.replaceImage(c.id, messageId, image, edit.data);
         this.chatStore.applyChat(saved.chat);
-        target = saved.chat.messages.find((m) => m.id === messageId)?.images[0] ?? image;
+        const after = saved.chat.messages.find((m) => m.id === messageId)?.images ?? [];
+        target = index >= 0 && after[index] ? after[index] : image;
       }
-      const res = await this.api.patchPicture(c.id, messageId, {
+      const res = await this.api.patchPicture(c.id, messageId, target, {
         description: edit.description,
         kind: edit.kind,
         ...(edit.kind === 'generated' ? { prompt: edit.prompt ?? '' } : {}),
         // The references travel with the prompt that names them ("the first
-        // reference image shows …"), so a card redrawn later draws the same
+        // reference image shows …"), so a picture redrawn later draws the same
         // face rather than a new one.
         ...(edit.kind === 'generated' && edit.refs ? { refs: edit.refs } : {}),
         ...(edit.depicts ? { depicts: edit.depicts } : {}),
-        ...(edit.kind === 'file' && edit.imageId && edit.imageId !== target ? { image: edit.imageId } : {}),
+        ...(edit.kind === 'file' && edit.imageId && edit.imageId !== target
+          ? { repointTo: edit.imageId }
+          : {}),
       });
       this.chatStore.applyChat(res.chat);
       return true;
@@ -224,8 +231,8 @@ export class ImageStore {
   }
 
   // ---- the picture-editor dialog ----
-  // Which card is being edited (null — closed). The dialog lives in the app
-  // shell, so its target is a signal here; a row only opens it.
+  // Which picture of which line is being edited (null — closed). The dialog
+  // lives in the app shell, so its target is a signal here; a row only opens it.
   readonly pictureEdit = signal<{ messageId: string; image: string } | null>(null);
   openPictureEdit(messageId: string, image: string): void {
     this.pictureEdit.set({ messageId, image });

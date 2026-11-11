@@ -335,3 +335,45 @@ describe("reservedPictureId (a name for a new picture of the character)", () => 
     expect(() => characters.reservedPictureId("a b", "a cat")).toThrow(/character ID/i);
   });
 });
+
+// The bytes of a picture the user brings INTO one of the character's lines (the
+// picture editor's file pick) are filed in HER folder: the id of a picture is
+// the app's only statement of whose it is, so a file that rides in her line has
+// to say so in its path.
+describe("storePicture (the bytes of a picture of the character's line)", () => {
+  let meta: ImageMetaService;
+  let svc: CharactersService;
+  const PNG = "data:image/png;base64,aGVsbG8=";
+  const pngBytes = Buffer.from("aGVsbG8=", "base64");
+  const fileOf = (id: string) => path.join(root, ...id.split("/"));
+
+  beforeEach(() => {
+    meta = new ImageMetaService(() => root);
+    svc = new CharactersService(() => dir, () => path.join(root, "catalogs.db"), meta);
+    svc.save({ id: "alice", name: "Alice", description: "" });
+  });
+  afterEach(() => {
+    svc.close();
+    meta.close();
+  });
+
+  it("writes the file into the character's folder, named from the hint", () => {
+    const id = svc.storePicture("alice", PNG, "the boat at dusk");
+    expect(id).toMatch(/^characters\/alice\/the-boat-at-dusk-[0-9a-f]{6}\.png$/);
+    expect(fs.existsSync(fileOf(id))).toBe(true);
+    // the row carries the facts of the file, so the dedup and the sync see it
+    expect(meta.get(id)?.fileHash).toBe(createHash("sha256").update(pngBytes).digest("hex"));
+  });
+
+  it("reuses a picture whose bytes already live somewhere, writing no copy", () => {
+    const existing = "chats/room/a-boat-1a2b3c.png";
+    fs.mkdirSync(path.dirname(fileOf(existing)), { recursive: true });
+    fs.writeFileSync(fileOf(existing), pngBytes);
+    expect(svc.storePicture("alice", PNG)).toBe(existing);
+    expect(svc.pictureIdsOf("alice")).toEqual([]);
+  });
+
+  it("refuses an id that cannot name a folder", () => {
+    expect(() => svc.storePicture("a b", PNG)).toThrow(/character ID/i);
+  });
+});

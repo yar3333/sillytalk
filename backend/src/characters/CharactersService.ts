@@ -1,6 +1,5 @@
 import fs from "fs";
 import path from "path";
-import { randomUUID } from "crypto";
 import { DatabaseSync } from "node:sqlite";
 import { Character } from "./Character";
 import { PathHelper } from "../shared/PathHelper";
@@ -287,11 +286,34 @@ export class CharactersService {
     id: string,
     picked: { buffer: Buffer; ext: string; hash: string },
   ): string {
+    return this.writePicture(id, picked, "avatar");
+  }
+
+  // Stores a picture the user brings into one of this character's lines (the
+  // file that takes the place of one of her pictures in the editor) in HER
+  // folder and returns its id — the mirror of the persona's storePicture: a
+  // picture that rides in her line lives with her other pictures, which is what
+  // its id then says out loud. As everywhere, a byte-identical picture already
+  // in the data folders gives its id back instead of being written again.
+  // Throws on a bad character id or a payload that is not an image data URL.
+  storePicture(id: string, dataUrl: string, nameHint = "photo"): string {
+    if (!this.isValidId(id)) throw new Error(`Invalid character ID: ${String(id)}`);
+    return this.writePicture(id, DataUrl.image(dataUrl), nameHint);
+  }
+
+  // The one write of a picture into the character's folder (see storePicture and
+  // storePickedPicture above): the file is named from `nameHint`, so a picture
+  // reads by what it shows while an avatar stays recognisable in a listing.
+  private writePicture(
+    id: string,
+    picked: { buffer: Buffer; ext: string; hash: string },
+    nameHint: string,
+  ): string {
     const duplicate = this.imageMeta?.findPictureByContent(picked.buffer.length, picked.hash);
     if (duplicate) return duplicate;
     const dir = PathHelper.characterDir(id, this.charactersRoot());
     fs.mkdirSync(dir, { recursive: true });
-    const file = path.join(dir, `avatar-${randomUUID().slice(0, 6)}${picked.ext}`);
+    const file = path.join(dir, PictureName.fileName(nameHint, "photo", picked.ext));
     fs.writeFileSync(file, picked.buffer);
     const newId = PathHelper.imageIdOf(file);
     this.imageMeta?.set(newId, {

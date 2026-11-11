@@ -122,26 +122,34 @@ export interface PictureLanguage {
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
-  // 'text' (default) — a line of the dialogue; 'image' — an image card: one
-  // picture with its own description and generation data. Only the user
-  // produces cards; a character reply is text.
+  // 'text' (default) — a line of the dialogue: the author's words AND, when they
+  // show pictures, those pictures too (rendered right under the words).
+  // 'image' — the NEUTRAL picture card: nothing but one picture, belonging to
+  // the conversation and nobody else. Only the two controls that hand a picture
+  // to the chat make one (the 🖼 disk pick and the 📷 picture of the turn) and
+  // their files live in the chat's own folder — which is what their id says.
   kind?: 'text' | 'image';
-  // A text message: the line. An image card: what is on the picture.
+  // A text line: the words. A neutral card: that picture's caption — the card
+  // has no words of its own, so the caption of its row stands as its text.
   text: string;
   // Image identifiers — paths relative to the data folder
-  // ("chats/<chatId>/a-sunset-3f2a1c.png"). A card carries exactly one.
+  // ("chats/<chatId>/a-sunset-3f2a1c.png"). Whose picture it is, is written in
+  // the id itself: "characters/<id>/…" is a character's, "users/<id>/…" a
+  // persona's, "chats/<id>/…" one the conversation owns. A line carries the
+  // pictures its author shows (any number); a neutral card carries exactly one.
   images: string[];
   timestamp: number;
   error?: boolean;
   // The message author: for user — a persona (users/<id>), for assistant —
-  // a character (characters/<id>); stored at send time.
+  // a character (characters/<id>); stored at send time. A neutral card has no
+  // author, and that is the point of it.
   characterId?: string;
   userId?: string;
-  // The card's generation data (absent when the user uploaded the file).
-  generation?: ImageGenerationData;
-  // Who is ON the picture: the participant ids ("char:alice", "user:carol")
-  // the picture planner uses to draw the same person twice in a row.
-  depicts?: string[];
+  // What is known about each picture of `images` (id -> its facts): the caption,
+  // the generation block, the cast on it. Filled from the one images table on
+  // every read, so a picture inside a line and a picture of a card are described
+  // by exactly one source — and there is no per-message copy of it.
+  pictures?: Record<string, PictureFacts>;
   // Generation status of the message's images (id -> status): only the images
   // still being generated ("pending") or whose generation failed ("failed") or
   // was cancelled ("cancelled") are listed — an id absent from the map is a
@@ -149,6 +157,20 @@ export interface ChatMessage {
   imageStatus?: Record<string, 'pending' | 'failed' | 'cancelled'>;
   // The reason a generated image is "failed" (id -> error text).
   imageErrors?: Record<string, string>;
+}
+
+// What the app knows about ONE picture of a message. All three fields are the
+// picture's row of the global images table; the message only names the picture
+// by its id.
+export interface PictureFacts {
+  // What is visible on it — the caption under the picture, and the sentence a
+  // model without vision is told in place of it.
+  description?: string;
+  // How it was made (absent for a file somebody brought).
+  generation?: ImageGenerationData;
+  // Who is ON the picture ("char:alice", "user:carol") — content, not
+  // ownership: it is what keeps the same face in the next picture.
+  depicts?: string[];
 }
 
 // How a picture was made: the prompt it was drawn from, the pictures it was
@@ -159,8 +181,9 @@ export interface ImageGenerationData {
   prompt?: string;
   refs?: string[];
   negativePrompt?: string;
-  // upload — the user attached it; manual — the 🎨 mode; auto — the picture of
-  // the user's turn, planned by the model.
+  // upload — somebody brought the file; manual — a picture that was ASKED FOR in
+  // words (the 🎨 dialog, a character's [IMAGE_BY_PROMPT]); auto — a picture the
+  // app drew on its own (the 📷 picture of the turn).
   source?: 'upload' | 'manual' | 'auto';
   generator?: string;
   model?: string;
@@ -406,11 +429,11 @@ export class ApiService {
     });
   }
 
-  // Saves what the user sends: their text becomes a text message and every
-  // attached picture an image card right after it. The characters' replies are
-  // separate nextReply calls.
-  postMessage(id: string, text: string, images: string[]): Promise<{ chat: Chat; messages: ChatMessage[] }> {
-    return this.req<{ chat: Chat; messages: ChatMessage[] }>('/chats/' + id + '/messages', {
+  // Saves what the user sends: ONE message of theirs — their text and, when they
+  // showed pictures, those pictures inside the same line. The characters' replies
+  // are separate nextReply calls.
+  postMessage(id: string, text: string, images: string[]): Promise<{ chat: Chat; message: ChatMessage }> {
+    return this.req<{ chat: Chat; message: ChatMessage }>('/chats/' + id + '/messages', {
       method: 'POST',
       body: JSON.stringify({ text, images }),
     });
@@ -449,18 +472,22 @@ export class ApiService {
     });
   }
 
-  // Edits what a card says about its picture — the picture-editor dialog: the
-  // description (what is on it), the prompt to redraw it with, the picture the
-  // card should point at (`image` — an existing id of the data folder) and what
-  // the card IS now (`kind`). The picture's row of the images table is updated
-  // along with the message.
+  // Edits what ONE picture of a message says about itself — the picture-editor
+  // dialog: the description (what is on it), the prompt it is redrawn with,
+  // another picture of the data folder to point the line at instead
+  // (`repointTo`) and what the picture IS now (`kind`). `image` names WHICH
+  // picture of the line is meant — a line may show several — and is the same
+  // field every other per-picture route uses. Everything edited here is a field
+  // of the picture's row of the images table, so the picture and every line that
+  // shows it are never two versions of the same thing.
   patchPicture(
     chatId: string,
     messageId: string,
+    image: string,
     patch: {
       description?: string;
       prompt?: string;
-      image?: string;
+      repointTo?: string;
       kind?: 'generated' | 'file';
       refs?: string[];
       depicts?: string[];
@@ -468,7 +495,7 @@ export class ApiService {
   ): Promise<{ chat: Chat }> {
     return this.req('/chats/' + chatId + '/messages/' + messageId + '/picture', {
       method: 'PATCH',
-      body: JSON.stringify(patch),
+      body: JSON.stringify({ image, ...patch }),
     });
   }
 
@@ -547,15 +574,15 @@ export class ApiService {
     });
   }
 
-  // Writes the caption of a picture card the user attached without one: the
-  // chat's vision model looks at the file and its sentence becomes the card's
-  // caption (the picture's row of the images table). A card that already has a
+  // Writes the caption of ONE picture of a message that has none: the chat's
+  // vision model looks at the file and its sentence becomes the picture's
+  // description (the row of the images table). A picture that already has a
   // caption and a chat with nothing that can see both come back unchanged — so
   // this is safe to fire after every attachment.
-  captionPicture(chatId: string, messageId: string): Promise<{ chat: Chat }> {
+  captionPicture(chatId: string, messageId: string, image: string): Promise<{ chat: Chat }> {
     return this.req<{ chat: Chat }>('/image/caption', {
       method: 'POST',
-      body: JSON.stringify({ chatId, messageId }),
+      body: JSON.stringify({ chatId, messageId, image }),
     });
   }
 
@@ -606,10 +633,11 @@ export class ApiService {
     });
   }
 
-  // A picture the user asked for in their own words: the sentence becomes the
-  // caption of a new "pending" card at once, and the model turns it into a
-  // drawing prompt plus a reference set before the generator draws it — all in
-  // the background, so the answer already carries the placeholder.
+  // A picture the user asked for in their own words: it belongs to THEIR line,
+  // so the sentence becomes the caption of a new picture of that message, shown
+  // "pending" at once, and the model turns the words into a drawing prompt plus
+  // a reference set before the generator draws it — all in the background, so
+  // the answer already carries the placeholder.
   requestPicture(chatId: string, text: string): Promise<{ chat: Chat; message: ChatMessage }> {
     return this.req<{ chat: Chat; message: ChatMessage }>(`/chats/${chatId}/picture-request`, {
       method: 'POST',
@@ -617,9 +645,9 @@ export class ApiService {
     });
   }
 
-  // A file from the disk as a picture of THIS conversation: the server saves it
-  // into the chat's folder — or reuses the picture of the data folder whose
-  // bytes are identical — and answers with the ready card.
+  // The 🖼 button: a file from the disk as a NEUTRAL picture of this
+  // conversation — a card of its own, owned by nobody but the chat, so its file
+  // goes to the chat's folder (unless the app already holds exactly these bytes).
   addPictureFile(chatId: string, data: string): Promise<{ chat: Chat; message: ChatMessage }> {
     return this.req<{ chat: Chat; message: ChatMessage }>(`/chats/${chatId}/picture-file`, {
       method: 'POST',

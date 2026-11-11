@@ -41,7 +41,7 @@ backend/               Express API; also serves the built frontend
     text_generation/   the LLM domain: the top-level service class
                        (TextGenerationService.ts — the OpenAI-compatible provider client:
                        chatCompletion (text + the image_url parts of the
-                       pictures a card shows), translatePrompt, tunePrompt
+                       pictures a line shows), translatePrompt, tunePrompt
                        (English + shaped for the generator — the picture
                        editor's "Make it English"), describePicture (a vision
                        caption for the editor's "Describe the picture") and
@@ -68,7 +68,7 @@ backend/               Express API; also serves the built frontend
                        pictureProtocol/parsePictureMarkers),
                        the [SILENT] marker, the picture markers of the end of a
                        line (parsePictureMarkers), author labels, the text
-                       description of a card in a history line, history trimming;
+                       description of a picture in a history line, history trimming;
                        DI token DI_TEXT_GENERATION_SERVICE) and
                        TextGenerationService.test.ts — jest unit tests
     image_generation/  image generation: the driver
@@ -127,11 +127,11 @@ backend/               Express API; also serves the built frontend
                        flag + the ComfyUI model list +
                        the picture editor's LLM helpers: /prompt, /tune-prompt,
                        /describe, and /caption — the caption the vision model
-                       writes into an attached card that has none). There is NO
+                       writes into an attached picture that has none). There is NO
                        "draw this literal prompt" route any more: a picture is
                        asked for in words through the /chats routes
                        (/chats/:id/picture-request, /auto-image, /picture-file)
-                       or redrawn from its own row through the card's
+                       or redrawn from its own row through the picture's
                        regenerate-image; what reaches a generator is always a
                        prompt the model wrote);
                        ImageGenerationService.test.ts —
@@ -144,7 +144,8 @@ backend/               Express API; also serves the built frontend
                        (the path of the picture relative to the data root):
                        the description, the prompt and its refs/depicts/source/
                        generator/model/size/steps and the row timestamps; the
-                       one source an image card is filled from on read; merge-
+                       one source a picture's words are read from on every read
+                       of the line that shows it; merge-
                        on-write where undefined/empty removes a field and a row
                        left saying nothing is deleted; get/getMany/list/set/
                        remove/move/copy/removeUnder/repointRefs, plus the
@@ -186,7 +187,8 @@ backend/               Express API; also serves the built frontend
                        a description comes back to a picture renamed outside the
                        app); the new folder must already exist, the target must
                        have neither a file nor a record, and a picture still
-                       being generated waits. The chat cards and the stored
+                       being generated waits. The lines of every chat that show
+                       the picture and the stored
                        reference lists follow through
                        ChatsService.repointImageId; the refusal is an error the
                        banner shows; forget() = drops the record of a picture
@@ -239,12 +241,11 @@ backend/               Express API; also serves the built frontend
                        holds the chat fields, messages one row per message —
                        both as JSON blobs; the images stay files in
                        chats/<id>/, WHAT IS KNOWN about them lives in the
-                       one global images table — an image-card row stores no
-                       caption/prompt/depicts of its own, get() fills a card
-                       from the table on every read, and with no row the card
-                       reads as a picture nobody described: a message row that
-                       still carries words of its own (the old format) is not
-                       read and its copy is dropped from the stored row on the
+                       one global images table — a line of a picture message
+                       carries its ids, its derived `pictures` map and — for the
+                       neutral card only — the caption mirrored into `text`; the
+                       message's OWN caption/prompt/depicts copy of the old format
+                       is not read, and is dropped from the stored row on the
                        first write; the legacy chat.json folders
                        are imported once at database open and renamed to
                        chat.json.migrated; the service opens the database
@@ -273,19 +274,22 @@ backend/               Express API; also serves the built frontend
                        picture is
                        addressed by its data-root-relative ID, never by an
                        absolute path), the message primitives (addUserMessage,
-                       addImageMessage — the card is NEUTRAL: role "user" and no
-                       author, because a picture is not something a character
-                       says, — editMessage, setMessageText,
-                       deleteMessage), the picture-card edits (editImageCard —
-                       the description and the generation block, which can be
-                       dropped as a whole (a card that is "just a file": the
+                       addImageMessage — the NEUTRAL card of the 🖼 / 📷 buttons:
+                       role "user" and no author, because a picture the
+                       conversation owns is not something somebody said, while a
+                       picture a person shows rides in their own line's `images`,
+                       — editMessage, setMessageText,
+                       deleteMessage), the per-picture edits (editImageCard —
+                       the description and the generation block of ONE picture of
+                       the line, which can be
+                       dropped as a whole (a picture that is "just a file": the
                        row's generation fields go with it, or the prompt would
                        come back on read) — replaceMessageImage,
                        replaceMessageImageId),
                        the per-image generation status (setMessageImageStatus),
                        the chat-exists check a queued image job asks for
                        (exists()) and the rename support for the picture
-                       browser (repointImageId — the cards and the status maps
+                       browser (repointImageId — the lines and the status maps
                        of every chat follow a renamed picture; repointImageIds
                        applies several replacements in ONE pass, which is what a
                        trade of two ids needs — and is what the disk sync calls);
@@ -297,8 +301,9 @@ backend/               Express API; also serves the built frontend
                        rename (POST /:id/rename), the
                        messages, the reply queue, the
                        picture of the user's turn (POST /:id/auto-image), the
-                       card edit (PATCH /:id/messages/:id/picture), the
-                       per-image generation controls);
+                       per-picture edit (PATCH /:id/messages/:id/picture) and the
+                       per-image generation controls — every one of them names
+                       the picture it means with `image` in the body);
                        ChatsService.test.ts — jest unit tests
     persons/           the person (persona card) domain: the Person.ts type and
                        the top-level service class (PersonsService.ts — the
@@ -357,35 +362,39 @@ backend/               Express API; also serves the built frontend
                        appendAssistantReply (system prompt, the history, the
                        model call, the [SILENT] parsing, the PICTURE MARKERS the
                        line may end with — the marker text is stripped and the
-                       line is saved without it, the pictures it named are
-                       attached or queued as background jobs, see "A character
-                       shares a picture" below; a line that said nothing but
-                       markers saves NO message),
-                       attachUserImages (the caption message + one image card
-                       per attached picture, each filed by storeAttachment: the
+                       line is saved without it, the pictures it named ride INSIDE
+                       that one assistant line (ids written before the draw starts),
+                       see "A character shares a picture" below; a line with
+                       neither words nor a picture saves NO message),
+                       attachUserImages (ONE user line carrying the words AND the
+                       pictures, each filed by storeAttachment: the
                        bytes already somewhere in the data folders give their id,
                        otherwise a NEW file goes into the PERSONA's folder —
-                       the person who shares a picture owns it, not one chat),
+                       the person who shows a picture owns it, not one chat),
                        requestPicture (the 🎨 dialog: the user's own words,
-                       a neutral pending card at once, the planner + the drawing
-                       behind it, the file into the CHAT folder), addPictureFile
+                       their own pending picture in their line at once, the
+                       planner + the drawing behind it, the file into the PERSONA's
+                       folder — the chat's when there is no persona), addPictureFile
                        (the 🖼 button: a disk picture as a neutral card of the
                        chat folder),
                        requestUserTurnImage (the 📷
-                       picture of the user's turn: a placeholder card at once,
+                       picture of the user's turn: a neutral card at once,
                        the model's plan + the generation in the background),
                        resolveChatModel (the
                        chat's model with the first-model fallback),
                        saveErrorMessage (the visible error line), the
                        in-flight reply registry (beginReply/endReply/
-                       cancelReply), the per-card image operations (
+                       cancelReply), the per-picture image operations (
                        regenerateImage, editPicture — the picture editor's save:
-                       description / prompt / the image the card points at /
-                       kind "generated"|"file", replaceImage, cancelImage) and
+                       description / prompt / the picture repointed at another
+                       file (`repointTo`) / kind "generated"|"file",
+                       replaceImage — a disk file for the picture, filed by
+                       storePictureFor where that line keeps its pictures —
+                       cancelImage) and
                        the editor's LLM helpers (planPicturePrompt — the prompt
                        from the dialogue, tunePicturePrompt — English + shaped
                        for the generator, describePicture — a vision caption,
-                       captionPicture — the caption of an attached card, written
+                       captionPicture — the caption of an attached picture, written
                        by the chat's vision model); DI token
                        DI_REPLY_SERVICE, the seven services injected (the five
                        domain ones plus configuration and the image-metadata
@@ -470,7 +479,7 @@ frontend/              Angular app
                        PictureLibraryStore: the picture browser — open/refresh
                        (GET /pictures), the selected picture, savePicture (the
                        PATCH of the description/prompt/refs — the row IS the
-                       chat card, so the current chat is re-read after it) and
+                       picture, so the current chat is re-read after it) and
                        renamePicture (the server-side file move; the catalog is
                        re-read, the selection follows the new id)
     ui-store.ts        UiStore: cross-cutting UI state (global error banner)
@@ -488,20 +497,22 @@ frontend/              Angular app
                        model chip (menu + edit icons), ⋮ menu (Settings +
                        Pictures — the picture browser dialog)
     message-list/      history: empty state, messages, typing indicator
-    message-row/       one message: avatar, text, or the image CARD (the picture
-                       with its caption, prompt and reference count; the
-                       pending/broken/cancelled placeholders; the ↻ quick
+    message-row/       one message: avatar, its words, then the PICTURES OF THE LINE
+                       under them (one `.picture` block per id of message().images:
+                       the picture with its caption, prompt and reference count, the
+                       pending/broken/cancelled placeholders, the ↻ quick
                        redraw) + the hover buttons (image actions via
-                       ImageStore, the ✎ of a card = the picture editor).
-                       A card is NEUTRAL: its sender line says "A picture" and
-                       its letter tile is 🖼 — a picture message belongs to the
-                       conversation, not to whoever spoke last
-    picture-dialog/    the picture editor, opened by the ✎ of a card — the
+                       ImageStore, a ✎ per picture = the editor of THAT picture,
+                       because one line can show several of them).
+                       A NEUTRAL card (kind 'image' — the 🖼 / 📷 picture) is the
+                       one line with no author: its sender line says "A picture",
+                       its letter tile is 🖼 and its words are only the caption
+    picture-dialog/    the picture editor, opened by the ✎ of ONE picture — the
                        kind (generated / from a file), the prompt (with "From
                        the chat" and "Make it English"), the description (with
                        "Describe the picture"), the picture id pick of the data
                        folder (GET /pictures) / a file from disk, the preview;
-                       Save only edits the card (drawing stays the card's ↻).
+                       Save only edits that picture (drawing stays its ↻).
                        The one place a LITERAL prompt is ever written
     picture-request-dialog/
                        the 🎨 dialog (opened by the 🎨 of the input bar): one
@@ -510,7 +521,7 @@ frontend/              Angular app
                        what the picture should show, with the hint saying that
                        the sentence is kept as the caption while the English
                        prompt and the references are built behind it; OK posts
-                       it and closes (no waiting), Cancel closes without a card
+                       it and closes (no waiting), Cancel closes without a picture
     picture-library/   the picture browser (the ⋮ menu → Pictures): every
                        picture of the data folder with its row of the images
                        table — the filterable thumbnail list (a row shows the
@@ -521,8 +532,8 @@ frontend/              Angular app
                        reference list the prompt names, the ID field with its
                        Rename action right of the field and the "used as a
                        reference by N" hint under it — a rename moves the file
-                       and the cards
-                       follow); state/actions in PictureLibraryStore
+                       and every line that shows the picture
+                       follows); state/actions in PictureLibraryStore
     input-panel/       input: error banner, 📎 attachments, the 🎨 "ask for a
                        picture" button (opens the request dialog, needs a
                        generator), the 🖼 "a picture of my disk" button beside it
@@ -555,15 +566,17 @@ e2e/                   Playwright suite
                        of the data folder by its data-root-relative id, with
                        its description, prompt, references and cast, plus the
                        facts of its file (size, mtime, sha256) kept by the disk
-                       sync; the picture browser edits it, chat cards read it;
+                       sync; the picture browser edits it, the chat lines that
+                       show a picture read it;
                        nothing is
                        migrated in — a leftover <image>.png.json of the old
                        format is not read and left where it is)
   chats/chats.db      (node:sqlite: the chats + messages tables; the legacy
                        chats/<chatId>/chat.json files are imported at database
                        open and renamed to chat.json.migrated; a message row
-                       of a picture card stores only the image id and its
-                       status — the caption/prompt live in images.db)
+                       stores its text, its author and its picture ids (plus the
+                       per-picture status map) — the caption/prompt of a picture
+                       live in images.db, never in the message)
   chats/<chatId>/   — the pictures of a chat, sitting directly in the chat's folder,
                        every one of them addressable by its data-root-relative id
                        (<chatId>/<slug>-<6hex>.png); plain pictures, nothing is
@@ -677,7 +690,7 @@ or through the in-app **Settings** dialog. Paths may use `~` (resolved by `expan
   // The one that talks (replies, and the default of every other role); unset or
   // unknown = the first model of llmModels.
   "chatModel": "openrouter/anthropic/claude-3.5-sonnet",
-  // The one that LOOKS at pictures (card captions, the describe helpers); unset
+  // The one that LOOKS at pictures (the picture captions, the describe helpers); unset
   // or unknown = the chat model when it can see, else the first that can.
   "visionModel": "",
   // the llmModels key of the model that PLANS the picture prompts (the 📷 "picture of
@@ -820,17 +833,18 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   (`ChatStore.visionModel`): the configured vision model wins — even when it cannot see, so the
   banner can say "«x» cannot see pictures" instead of silently using another — else the chat model
   when it `supportsImages`, else the first vision-capable model of the config (a roleplay model with
-  no vision still gets its cards described). Nothing configured that can see → the
+  no vision still gets every picture described to it). Nothing configured that can see → the
   `"Describe the picture"` call answers a 400 with that sentence. An empty vision pick is a real
   choice (the field is removed, back to that default), and `ConfigurationService` drops a pick whose
   model is gone on load.
   What uses it: the editor's `POST /api/image/describe`, and the caption of an attached picture —
-  `ChatStore.send` calls `POST /api/image/caption` `{ chatId, messageId }` for every 📎 card that
-  has no caption (`ReplyService.captionPicture`), which writes the vision model's sentence into the
-  picture's row (`description` — what the card shows as its `text`); an empty caption, a config with nothing that can see and a model that
-  failed all leave the card as it is (a FAILED caption is never a banner — an unlabelled picture is
+  `ChatStore.send` calls `POST /api/image/caption` `{ chatId, messageId, image }` for every 📎 picture
+  of the line that has no caption (`ReplyService.captionPicture`), which writes the vision model's
+  sentence into the
+  picture's row (`description` — what the picture shows as its caption under it); an empty caption, a config with nothing that can see and a model that
+  failed all leave the picture as it is (a FAILED caption is never a banner — an unlabelled picture is
   a normal state; the only banner near this path is the attach-time one that says the picture will
-  arrive undescribed, see "Pictures belong to the user" below).
+  arrive undescribed, see "A picture rides in the line of the person who shows it" below).
   That caption is what a chat model without vision reads about the picture in the history and what
   the 📷 planner reads in its catalogue, so it is not decoration.
 - **A separate planner model (`Config.imagePromptModel`).** The model that writes a picture's
@@ -856,63 +870,89 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   means when it is absent), and `ReplyService.resolvePictureLanguage()` is the one rule every
   caller uses: `describePicture` — the editor's "Describe the picture", the picture browser's own
   helper and the caption of an attached picture (`captionPicture`) — and the 📷 plan
-  (`composeImagePrompt`, whose `description` becomes the card's caption). The plan's `name`, its
+  (`composeImagePrompt`, whose `description` becomes the picture's caption). The plan's `name`, its
   `prompt` and its subject phrases stay ENGLISH regardless: the generator reads the prompt, and the
   name is the English slug of the file. `translatePrompt`/`tunePrompt` ("Make it English") are
   untouched — they exist to produce an English generation prompt.
-- **A picture is a message of its own, and it has NO author.** There is no `[IMG:…]` /
-  `[PHOTO:…]` protocol and no `accessAllImages` flag. Every picture card is a `kind: 'image'` message
-  with `role: 'user'` and **no `userId` / `characterId`** (`ChatsService.addImageMessage`): a picture
-  is not something somebody said, it is a thing the conversation contains — "сообщения-картинки
-  нейтральны, автор у них не нужен". Who is ON it is the row's `depicts`, who asked for it is the
-  row's `source` (`upload` / `manual` / `auto`), and the UI says `A picture` where a sender name
-  would stand (with a 🖼 letter tile). A card is shown with its caption (what is on it), the prompt it
-  was drawn from and the number of references it used (`image-card` / `card-caption` / `card-prompt`
-  / `card-refs`); a model that supports images receives the card as an image part plus a `A picture
-  you are shown, it shows: …` text part, and as `[A picture: …]` in the history text of a model
-  without vision — and the history line of a card carries no author either (`conversationBrief`
-  renders it as `[a picture is shown here: …]`), because the planner must not infer from a card who
-  is in it, only what is on it.
+- **A picture rides in the line of the person who shows it; only the neutral card stands
+  alone.** There is no `[IMG:…]` / `[PHOTO:…]` protocol and no `accessAllImages` flag. A picture is
+  not a field of a message: a line carries a LIST of picture ids (`ChatMessage.images`) and each is
+  rendered right under its words — text above, picture below. **`kind: 'image'` — the neutral card —
+  is what the two
+  controls that hand a picture to the CONVERSATION produce** (the 🖼 disk pick and the 📷 picture of
+  the turn): such a message is nothing but one picture, has `role: 'user'` and **no `userId` /
+  `characterId`** (`ChatsService.addImageMessage`), and its file lives in the CHAT's folder — which
+  is what its id says out loud. The UI prints `A picture` where a sender name would stand (with a 🖼
+  letter tile) and nothing above the picture, because the card has no words of its own: its caption
+  (the row's `description`) is written under the picture and is mirrored into the card's `text` by
+  the read, so every reader of a line finds its words in one place.
+  **There are no ownership fields anywhere.** Whose a picture is, is the folder inside its id
+  (`characters/<id>/…` hers, `users/<id>/…` theirs, `chats/<id>/…` the conversation's) — so no
+  message, row or prompt ever repeats it (`ImageBrief.owner` and the planner's `shared by …` line are
+  gone: what a drawing needs is what is ON the picture, and the planner is told that, never who owns
+  the file). What is on it is the row's `depicts` (content, kept — it is what draws the same face
+  twice), what brought it is the row's `source` (`upload` / `manual` / `auto`).
+  **What is known about one picture is its row of the images table, read into
+  `ChatMessage.pictures` — a map keyed by the picture id (`{description, generation, depicts}`),
+  derived on every read and never stored** (`ChatsService.applyImageMeta` fills it,
+  `ChatsService.messageData` strips it back out before writing, `shared/ImageMeta.ts` is the row
+  shape). A message therefore carries **no `generation` and no `depicts` of its own**: a line can show
+  several pictures and each says something different, so a per-message copy would be a lie about the
+  wrong picture. Every per-picture route names the picture it means (`image` in the body): the picture
+  edit, the redraw, the cancel, the replace, the caption.
+  A model that supports images gets a line's pictures as `image_url` parts after its words (plus a
+  `A picture you are shown, it shows: …` part for a wordless card); a blind model gets the words plus
+  one `[A picture shows: …]` line per picture (`TextGenerationService.buildContent` / `historyText` /
+  `pictureLines`). A picture whose file is not there yet — a draw still running — is announced
+  NEITHER as a file nor as a sentence: the model is not told about a picture that does not exist.
   A picture enters a chat in exactly four user actions — plus the one marker a
   character ends its line with, two bullets below:
   - **📎 attach** (`POST /api/chats/:id/messages`, body `{ text, images: [data URLs] }`, backend
-    `ReplyService.attachUserImages` / `storeAttachment`): the text becomes a user message and every
-    picture becomes its OWN `kind: 'image'` message right after it ("Look at this picture", then a
-    card per picture). **The bytes of a new file go into the PERSONA's folder**
-    (`PersonsService.storePicture` → `users/<id>/<name>-6hex.png`), because a photo belongs to the
-    person who shared it rather than to one chat: the same photo attached in another chat is the
-    same picture with the same row. Without a persona the chat's folder takes it. A byte-identical
-    picture that already lives anywhere in the data folders gives its existing id back instead of
-    being copied (`ImageMetaService.findPictureByContent`), and an id that arrives instead of a file
-    is kept as it stands when the file is really there (`ChatsService.existingImageIds` — it checks,
-    it never writes: the folder is the caller's decision).
-  - **🎨 ask for a picture** (the 🎨 button opens the request dialog;
+    `ReplyService.attachUserImages` / `storeAttachment`, answer `{ chat, message }`): ONE line of
+    theirs — the words and the pictures together, so the photo reads under their own name. **The
+    bytes of a new file go into the PERSONA's folder** (`PersonsService.storePicture` →
+    `users/<id>/<name>-6hex.png`), because a photo belongs to the person who shows it rather than to
+    one chat: the same photo shown tomorrow in another chat is the same picture with the same row.
+    Without a persona the chat's folder takes it. A byte-identical picture that already lives
+    anywhere in the data folders gives its existing id back instead of being copied
+    (`ImageMetaService.findPictureByContent`), and an id that arrives instead of a file is kept as it
+    stands when the file is really there (`ChatsService.existingImageIds` — it checks, it never
+    writes: the folder is the caller's decision).
+  - **🎨 ask for a picture in words** (the 🎨 button opens the request dialog;
     `POST /api/chats/:id/picture-request` body `{ text }`, backend `ReplyService.requestPicture`):
-    the user describes the picture **in their own words and their own language** — the sentence is
-    the request, it is stored as the row's `description` (the card's caption) and is NEVER translated
-    or used as a prompt. A neutral pending card is saved and returned at once; behind it the planner
-    turns the sentence into an English prompt plus a reference set
-    (`TextGenerationService.composeImagePromptFromRequest`) and the generator draws it into the
-    CHAT's folder (`generation.source: 'manual'`). This replaced the old "type a literal prompt"
-    mode, which is gone: a literal prompt is only ever written in the card's own editor (✎).
+    the user describes the picture **in their own words and their own language** — the sentence is the
+    request, it becomes the picture's `description` (its caption) and is NEVER translated or used as a
+    prompt. It is THEIR picture, so the pending placeholder is reserved in the persona's folder
+    (`PersonsService.reservedPictureId`, the chat's folder when there is no persona) and the finished
+    draw is renamed to the model's 2–5 English words **in the same folder**
+    (`generation.source: 'manual'`); behind the placeholder
+    `TextGenerationService.composeImagePromptFromRequest` turns the sentence into an English prompt
+    plus a reference set. This replaced the old "type a literal prompt" mode, which is gone: a
+    literal prompt is only ever written in the picture's own editor (✎).
   - **🖼 a picture from disk** (`POST /api/chats/:id/picture-file` body `{ data }`, backend
-    `ReplyService.addPictureFile`): the file becomes a neutral card of the CHAT's folder
-    (`generation.source: 'upload'`, no prompt — the app did not draw it). It needs no generator, so
-    unlike 🎨 it is always available.
+    `ReplyService.addPictureFile`): the NEUTRAL card — a picture message of its own, in the CHAT's
+    folder (`generation.source: 'upload'`, no prompt — the app did not draw it). It needs no
+    generator, so unlike 🎨 it is always available, and it never interrupts what the user is typing:
+    it is not part of their line, it is the conversation's.
   - **📷 the picture of the user's turn** (`POST /api/chats/:id/auto-image`, backend
-    `ReplyService.requestUserTurnImage`) — see the bullet after the next one.
+    `ReplyService.requestUserTurnImage`) — see the bullet after the next one. The app planned it on
+    its own for the conversation, so it is the other neutral card: the chat's folder, `source: 'auto'`.
+  The four buttons are therefore TWO pairs: 📎 + 🎨 put a picture in the user's own message and file
+  it with the person; 🖼 + 📷 hand it to the conversation and file it with the chat. A picture the
+  editor later swaps for a file (`ReplyService.replaceImage`) follows the same rule through
+  `storePictureFor` — it is filed where the line it joins keeps its pictures.
   **Attaching a picture is only a warning when the picture will really arrive undescribed**
   (`ChatStore.onImagesAdded`). The old banner judged by the CHAT model alone ("The model "x" does
   not support images — the photos will not be passed") and was wrong twice: a text-only chat model
   still gets the picture as a sentence, either the caption the VISION model writes on send or the
   description the picture's row already holds — the backend's de-dup reuses a byte-identical file
-  (size + sha256), so the card comes back carrying the images-table caption. The check therefore
+  (size + sha256), so the picture comes back carrying the images-table caption. The check therefore
   asks three questions and stays quiet when any answers yes: the chat model sees pictures itself;
   `canDescribePictures()` (the vision rule) is true; or every added picture is already a described
   picture of the data folder — a data URL matched against the catalog of `GET /api/pictures` by
   `fileSize` + `fileHash`, an id by its path. Only when none holds does it say what the model will
   actually be told (naming the vision pick that cannot see, or that none is configured) and point at
-  the 👁 and the card's ✎. The lookup is async (the catalog + a SHA-256 of the data URL, computed
+  the 👁 and the picture's ✎. The lookup is async (the catalog + a SHA-256 of the data URL, computed
   with `crypto.subtle`), so the banner is skipped once the attachments were sent or removed.
 - **A character shares a picture by ENDING ITS LINE with a marker (always on, no
   toggle).** The app is what draws and files pictures, so a character is told the one
@@ -940,26 +980,30 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
     picture establishes is hers in the next one) with `generation.source: 'auto'`.
   The marker is an instruction to the APP, not words the character said: it is removed
   before the line is saved, so neither the reader nor any later model call ever sees a
-  file name (`[IMG:…]`/`[PHOTO:…]` and `accessAllImages` are gone for good). A line that
-  is nothing but a marker saves NO message — the picture is then the whole line, and an
-  empty bubble in front of a photo would be the only thing on screen. At most
-  `ReplyService.maxPicturesPerLine` (2) pictures per line, attaches first, then requests.
-  The cards are saved AFTER the line, as separate messages following it, and they are
-  neutral (no author) like every other card.
+  file name (`[IMG:…]`/`[PHOTO:…]` and `accessAllImages` are gone for good). The pictures
+  the markers named are pushed into the assistant message's own `images` list — the ids are
+  written into the line BEFORE the draw starts, so the reader sees her words with the picture
+  that is still being drawn under them, under HER name and avatar; nothing is appended as a
+  separate message. A line that is nothing but markers still saves a message — it is a line
+  whose whole content is its picture (the message is skipped only when it would say nothing at
+  all: no words AND no picture). At most `ReplyService.maxPicturesPerLine` (2) pictures in ONE
+  line, the ones she already owns first, then the ones she asked for.
 - **The picture of the user's turn (📷).** The button appears in the input bar when a generator is
   available AND it is the user's turn (the last message is a non-error assistant one —
   `ChatStore.isUserTurn`). One click calls `POST /api/chats/:id/auto-image`, which
-  **returns immediately** with the chat containing a placeholder image card (pending,
-  `generation.source: 'auto'`) — the rest runs in the background (`runUserTurnImage`) and the client
+  **returns immediately** with the chat containing the neutral card of the picture (pending,
+  in the CHAT's folder, `generation.source: 'auto'`) — the rest runs in the background
+  (`runUserTurnImage`) and the client
   polls, so typing and sending are never blocked. The background half asks the model
   (`composeImagePrompt`) for a plan: the input is the whole dialogue as TEXT (who is in it, the
   labeled lines, the **cast** — see the next bullet — and a numbered catalogue of the pictures the
-  chat already has, with what each shows, how it got there, who shared it and how long ago), and its
+  chat already has, with what each shows, how it got there and how long ago — never who owns it,
+  which the id already says and a drawing has no use for), and its
   own placeholder is left out of both; the output is strict JSON
   `{"name","description","prompt","refs","cast","subjects"}` extracted from whatever wrapping the
   model chose (`parseJsonPlan`), with `refs` clamped to the catalogue and `cast`/`subjects` to the
-  cast it was given. The placeholder card is then repointed at a file named from the model's 2–5
-  English words, the description becomes the card's caption, and the generation runs as the usual
+  cast it was given. The card's picture is then named from the model's 2–5
+  English words, the description becomes its caption, and the generation runs as the usual
   background job. If the model cannot produce a readable plan the card becomes the broken placeholder
   with the reason and a Regenerate button — it never stays pending.
 - **A person is a face and a description, never a name (`ReplyService.pictureMaterial` /
@@ -970,7 +1014,8 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
     `description`, which is where the user writes the appearance ("tall, short red hair, always in a
     green coat") together with the personality, capped at 400 characters by
     `ReplyService.visualLine` so one long card cannot eat the planning prompt — and, as **anchors**,
-    up to two of their actual pictures: newest first a card of THIS chat that depicts them, else
+    up to two of their actual pictures: newest first a picture THIS chat already shows that depicts
+    them, else
     the pictures of `characters/<id>/` and the avatar (the avatar is itself one of
     those pictures, so it leads the list). The planner is told `char:alice — Alice: <look>
     (shown on picture 2)` and answers with the cast ids the picture shows plus the 2–4 word noun
@@ -986,7 +1031,10 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
     (`ComfyUiDriver` keeps it — `PARAM_STRING_INPUT_IMAGE_FILENAME_1`/`_2`).
   - **What is remembered:** the people on a picture are stored in its row of the
     images table as `depicts: ["char:alice", "user:carol"]` (`ChatsService.setMessageDepicts` /
-    `editImageCard`, read back by `applyImageMeta`). That record is what offers the card as the
+    `editImageCard`, read back into the line's `pictures` map by `applyImageMeta`, and
+    `pictureMaterial` / `personChatPictureIds` is what reads it back across EVERY line of the chat —
+    a picture that rides in somebody's message anchors the next plan exactly like a neutral card
+    does). That record is what offers the picture as the
     person's anchor in the next plan, so the next picture of the same chat draws the same woman
     instead of a stranger.
 - **One look per conversation (`Chat.stylePrompt`).** The chat-settings dialog's *Picture style*
@@ -1022,7 +1070,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   name whose extension is a picture format (`HttpHelper.isImage` — png / jpg / jpeg / webp / gif / bmp
   / avif), which also covers the files that sit *inside* a picture folder (`chats/chats.db`, a
   `chat.json.migrated`, any leftover JSON) with `404`. This is the one file route the app serves
-  pictures through — the chat cards, the character/persona pictures and the avatars all load their
+  pictures through — the chat pictures, the character/persona pictures and the avatars all load their
   preview by id from here, so every file response of the app goes through `sendImage`. The storage
   side stays looser on purpose: a reference may name any image of the data folders.
 - **What is known about a picture lives in ONE global table, `images.db`** — keyed by the image id,
@@ -1030,9 +1078,9 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   width, height, steps, createdAt, updatedAt }` (`shared/ImageMeta.ts` is the row shape,
   `images/ImageMetaService.ts` the store; `depicts` — the cast ids of the people on the picture —
   is content, not generation data, so it is NOT in `IMAGE_GENERATION_KEYS` and survives a
-  generation block being dropped). The table is the authority: `ChatsService.get()` fills every
-  image card from it on every read, and a message row stores **no copy** of the caption/prompt —
-  a card whose picture has no row reads as a picture nobody described. A row is merge-on-write: a
+  generation block being dropped). The table is the authority: `ChatsService.get()` fills the
+  `pictures` map of every line from it on every read, and a message row stores **no copy** of the
+  caption/prompt — a picture with no row reads as a picture nobody described. A row is merge-on-write: a
   field given as `undefined` or empty is removed, and a row left saying nothing is deleted.
   `source` says how the picture got there: `upload` / `manual` / `auto`. The old format of this
   data — a `<image>.png.json` sidecar next to each described picture (plus the short
@@ -1051,7 +1099,8 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   app**: a row whose file is gone and a file with the same size and hash are the same picture — the
   bytes are the identity, so the folder, the file name and even its extension may have changed —
   and the row FOLLOWS the file (`meta.move` + `ChatsService.repointImageIds`, the same trail the
-  app's own Rename walks), so the chat cards and the stored reference lists name the new path and
+  app's own Rename walks), so the lines that show the picture and the stored reference lists name the
+  new path and
   the picture keeps working. The user may therefore sort the pictures into folders himself. A file
   keeps its path only when the record there already remembers THESE bytes (a copy of the same
   picture); when it carries a record of DIFFERENT bytes, that description is stranded and the two
@@ -1072,10 +1121,10 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   `GET /api/pictures` lists every picture of the picture folders with its row (newest file first,
   orphan rows — a row whose file is gone — last, visible so the user can clear them),
   `PATCH /api/pictures` edits the `description` / `prompt` / `refs` of ANY picture (a caption
-  written for a character's photo is what a chat card of that photo shows — one source), and
+  written for a character's photo is what the line showing that photo says — one source), and
   `POST /api/pictures/rename` renames one. An id is a path, so a rename moves **what is there**:
-  a picture with a file moves the file (the row, the cards of every chat and the stored reference
-  lists follow through `ChatsService.repointImageId`), while a record whose file is gone moves the
+  a picture with a file moves the file (the row, every line of every chat that shows it and the
+  stored reference lists follow through `ChatsService.repointImageId`), while a record whose file is gone moves the
   ROW — and when a file already lives at the new id it attaches to it, its facts are re-read from
   that file, which is how a description comes back to a picture renamed outside the app in a way
   the sync could not recognise (another extension, rewritten bytes, a row without facts). Both
@@ -1100,7 +1149,8 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   `get` scans once per read; a row naming itself (a hand-edited table) does not count itself.
 - **Image generation runs in the BACKGROUND.** Each generation (a requested picture — the 🎨
   dialog, a `[IMAGE_BY_PROMPT]` marker, the picture of the
-  user's turn, or a regeneration) is started with the TARGET IMAGE ID already stored in the card with
+  user's turn, or a regeneration) is started with the TARGET IMAGE ID already stored in the line that
+  will show it (the person's own message, or the neutral card) with
   `ChatMessage.imageStatus[id] = 'pending'`, the message is saved and returned without waiting, and
   `ImageGenerationService.startImageJob` runs the job (`image_generation/ImageGenerationService.ts`).
   The job writes to a temp file (a dot-file next to the target, so the rename stays atomic) and
@@ -1120,35 +1170,41 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   is kept and the image stays ready. The **frontend polls** the chat (`GET /chats/:id`) on a 1.5 s
   interval while any image of the current chat is `pending` (stops when none are), so a generation
   never blocks sending messages. The UI shows a spinner placeholder with a **Cancel** button while
-  pending (the label says what the app is doing — "Planning and drawing the picture…" for the 📷
-  flow, "Generating the image…" otherwise) and a broken-image placeholder with a **Regenerate**
-  button when failed.
-  `POST /api/chats/:id/messages/:messageId/cancel-image` (body `{ image }` — an id) cancels the in-flight
-  job and marks the image failed. `POST /api/chats/:id/messages/:messageId/regenerate-image`
+  pending (the label says what the app is doing — "Planning and drawing the picture…" for a picture
+  that has no prompt yet, "Generating the image…" for a redraw of a stored one) and a broken-image
+  placeholder with a **Regenerate** button when failed.
+  Every one of these routes names the picture it means, because a line can show several of them:
+  `POST /api/chats/:id/messages/:messageId/cancel-image` (body `{ image }` — an id) cancels the
+  in-flight job and marks the picture failed. `POST /api/chats/:id/messages/:messageId/regenerate-image`
   (body `{ image, prompt? }`) re-runs the generator in the background against the SAME id (no
   file swap, so no later reference needs repointing), after cancelling any job still running for it.
-  `PATCH /api/chats/:id/messages/:messageId/picture` (body `{ description?, prompt?, image?, kind?,
-  refs?, depicts? }`)
-  is what the picture editor saves — every field is a field of the picture's row: the description
-  and the prompt, `image` — an existing picture id of the data folder the card should point at (the
-  card's generation data is dropped; a card whose picture is still `pending` refuses the swap), and
+  `PATCH /api/chats/:id/messages/:messageId/picture` (body `{ image, description?, prompt?,
+  repointTo?, kind?, refs?, depicts? }` — `image` here says WHICH picture of the line is being edited)
+  is what the picture editor saves — every other field is a field of that picture's row: the
+  description and the prompt, `repointTo` — an existing picture id of the data folder the picture
+  should point at instead (its generation data is dropped; a picture whose draw is still `pending`
+  refuses the swap), and
   `kind` — `"generated"` (keep/create the generation fields, source `manual` when it had none) or
   `"file"` (drop them from the row, or the prompt would come back on the next read). An empty prompt
-  is a real edit — the card then has nothing to redraw from. `refs` — the picture ids the saved
+  is a real edit — the picture then has nothing to redraw from. `refs` — the picture ids the saved
   prompt names in order (each must resolve with `PathHelper.resolveImageId`), because a prompt that
   says "the first reference image shows …" is only true together with its pictures; `depicts` — the
   cast ids of the people on the picture, `[]` being a real edit that clears the note.
   `POST /api/chats/:id/messages/:messageId/replace-image`
-  (body `{ image, data }`) repoints the card at a file the user picked — the old picture keeps its
-  own file and row (nothing references it anymore) and the card's generation data is dropped,
-  because the new file was not generated by the app.
+  (body `{ image, data }`) replaces one picture of the line with a file the user picked — the old
+  picture keeps its
+  own file and row (nothing references it anymore) and the new one's generation data is dropped,
+  because the app did not draw it. The bytes go where that line keeps its pictures
+  (`ReplyService.storePictureFor`): the persona's folder for the user's line, the character's for
+  hers, the chat's for a neutral card — so the new id never contradicts the line that shows it.
 - **The picture editor's LLM helpers** (`/api/image`, all taking `chatId`; the model work is
   `TextGenerationService`, the orchestration `ReplyService`, and all of it uses the chat's sampling):
   (the catalog the "from a file" pick fills is the picture browser's
   `GET /api/pictures` — one list, with the row each picture carries);
-  `POST /api/image/prompt` `{ chatId, messageId? }` → `{ prompt, description, refs }`, the finished
-  plan of the card from the dialogue (`composeImagePrompt` on the whole dialogue, cast and picture
-  catalogue, the card itself left out; `ReplyService.planPicturePrompt` returns the prompt WITH the
+  `POST /api/image/prompt` `{ chatId, messageId? }` → `{ prompt, description, refs }`, the
+  finished plan from the dialogue (`composeImagePrompt` on the whole dialogue,
+  cast and picture
+  catalogue, the line named by `messageId` left out; `ReplyService.planPicturePrompt` returns the prompt WITH the
   reference binding already appended and the references assembled — the two are one thing, so they
   come back together; 502 when the model gives nothing readable); `POST /api/image/tune-prompt`
   `{ chatId, prompt }` → `{ prompt }`, the typed prompt translated to English and shaped for the
@@ -1159,13 +1215,13 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   for in the user's own language (the 🎨 dialog, a `[IMAGE_BY_PROMPT]` marker) and that sentence is
   kept verbatim as the picture's `description`; the ENGLISH prompt is a separate field the planner
   writes (`composeImagePromptFromRequest` asks for English outright, so it needs no translation).
-  A prompt that is edited by hand afterwards — in the card's editor (✎), and therefore any stored
+  A prompt that is edited by hand afterwards — in the picture's editor (✎), and therefore any stored
   non-English prompt a regeneration re-runs — is translated via the chat's model
   (`translatePrompt` in `TextGenerationService`, called by
   `ImageGenerationService.ensureEnglishPrompt`) before hitting the generator; on translation failure
   the original text is used.
-  The final prompt lives in the picture's row (which is what the card shows as
-  `generation.prompt`), so the caption line and the hover hint show it.
+  The final prompt lives in the picture's row (which is what the picture shows under it as its
+  prompt line), so the caption and the hover hint show it.
 - **Characters are NOT in the config.** Each character is a row of the `characters` table of
   `~/.config/sillytalk/catalogs.db` (`node:sqlite`, `catalogsDatabaseFile()`): the id is the primary
   key and at the same time the name of the character's picture folder
@@ -1229,7 +1285,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   `users/<id>/`) at once, so it is not a label the app slaps on
   something — it is written into the chats (`Chat.characterIds`, `Chat.userId`, the `characterId` /
   `userId` of every stored line), into the picture ids of that folder (`characters/<id>/*.png` —
-  the primary keys of the images table and the ids the cards point at), into the row's own `avatar`
+  the primary keys of the images table and the ids the lines point at), into the row's own `avatar`
   column (the avatar id starts with the folder name, so a rename repoints it too) and into the
   picture rows' `depicts` (the cast refs `char:<id>` / `user:<id>`). Both entity dialogs therefore
   carry an **ID field**: when creating, the user writes the ID (the field suggests one from the name —
@@ -1244,7 +1300,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   that is taken — by a row or by a folder still standing there (`isValidId` = letters, digits, `.`,
   `-`, `_`, no leading dot, ≤ 100 chars — mirrored
   in `helpers.isEntityId`); **`entities/EntityIdService.ts`** is the piece that walks the trail above
-  (`renameCharacter` / `renamePerson`: the cards and reference lists through
+  (`renameCharacter` / `renamePerson`: the lines that show the pictures and the reference lists through
   `ChatsService.repointImageId`, the rows through `ImageMetaService.move`, the chats through the new
   `ChatsService.repointAuthor`, the cast through `ImageMetaService.repointDepicts` and the entity's
   own avatar id through the catalog's `repointAvatar`) — it sits above
@@ -1269,11 +1325,11 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   domain, so no EntityIdService-like piece above it is needed: the folder
   moves, the `chats` row is re-keyed (its blob carries the id) and the
   `messages` `chat_id` follows, then every picture id under `chats/<old>/` is
-  repointed — the cards and status maps through `repointImageId`, the
+  repointed — the lines and status maps through `repointImageId`, the
   `images.db` rows through `ImageMetaService.move`, orphan rows included. It
   refuses a malformed ID, a name that is taken (by a row or by a folder still
   standing there) and a chat with a **pending picture** — a running job writes
-  to the old ids, the same guard the card swap applies. On the frontend
+  to the old ids, the same guard the picture swap (`repointTo`) applies. On the frontend
   `ChatStore.renameChat(newId)` applies the renamed chat the server answers
   with and re-reads the chat list; the dialog stays open on the new name (the
   other fields of the dialog are untouched by a move).
@@ -1407,12 +1463,16 @@ that needs the databases resolves them here — the one place allowed to.
   as the row's `title` attribute. "Clone chat" (the chat-actions ⋮) calls
   `POST /api/chats/:id/clone` → `{ chat }` (`ChatsService.clone`): a new id, a copy of every message,
   the participants / persona / model / sampling / systemSuffix, the name suffixed " (copy)" (a
-  nameless copy stays nameless), and the chat `files/` folder copied into the copy's folder with
-  every image id repointed — in the cards, in their `generation.refs` and with a picture row of its
-  own per copied file — so the
-  two chats are independent and deleting either leaves the other intact. A card whose picture was
+  nameless copy stays nameless), and the chat's own picture folder copied into the copy's folder
+  with every id under it repointed — in the lines that show them, in the rows' `refs` and with a
+  picture row of its own per copied file — so the
+  two chats are independent and deleting either leaves the other intact. **A picture that lives in a
+  person's folder is not copied**: an id outside `chats/<chatId>/` keeps its path, so the copy shows
+  the same photo of the persona as the original does — one picture, one row, because the person owns
+  it and not one chat does (this is what the ownership-by-folder rule costs a clone, and it is the
+  point: the user's photo is not duplicated per conversation). A picture whose draw was
   still "pending" becomes **failed** in the copy with its own reason (the job belongs to the source
-  chat, and a pending card in the copy would poll forever). The frontend opens the copy and refreshes
+  chat, and a pending picture in the copy would poll forever). The frontend opens the copy and refreshes
   the chat list (`ChatStore.cloneCurrentChat`).
 - **Per-chat settings** (the chat-actions ⋮ → "Chat settings…", `chat-settings-dialog`): the chat's
   **name** plus the
@@ -1460,35 +1520,47 @@ that needs the databases resolves them here — the one place allowed to.
   reply, so the edit and the in-flight reply both persist (like delete-during-generation). The cancel
   (✕) styling/behaviour applies only outside the editing mode.
 - User and assistant messages are visually distinct (avatar + sender label + colored bubble).
-- **A picture is a message of its own** (`kind: 'image'` — an image CARD, `image-card`), never an
-  attachment glued to a text bubble: attaching a picture with a caption produces the caption message
-  followed by one card per picture. A card is stretched to the full chat width — its bubble grows to
-  the row width via the `has-images` class — and capped at two thirds of the viewport height
+- **A picture rides under the words of the line that shows it** (`ChatMessage.images` — ids, each
+  with its own row of knowledge in the derived `pictures` map), and **`kind: 'image'` — the neutral
+  CARD, `image-card` — is only the picture the 🖼 / 📷 buttons hand to the conversation** (see "A
+  picture rides in the line of the person who shows it" above). A 📎 attach therefore produces ONE
+  user message: their words, then their pictures under them — never a caption message followed by a
+  card per picture; and a character's `[IMAGE_BY_ID]` / `[IMAGE_BY_PROMPT]` pictures appear inside
+  HER line, under her name. A picture is stretched to the full chat width — the bubble grows to the
+  row width via the `has-images` class — and capped at two thirds of the viewport height
   (`width:100%; max-height:2/3vh; object-fit:contain`); when the height cap kicks in and the image
   ends up narrower than the row, `object-fit:contain` centers it. Everything is block-level and in
-  order: the picture, then its caption (`card-caption`), then the prompt it was drawn from
-  (`card-prompt`) and how many references it used (`card-refs`) — the text of a message is above and
-  below the images, never beside. Where a sender name would stand a card says **`A picture`** and its
-  letter tile is 🖼 (`MessageRow.senderName` / `letter`): a card has no author to print, whatever
-  brought it here (see "A picture is a message of its own, and it has NO author" above).
-- **The picture editor is the ONE place a card is edited** (the ✎ of the card opens the
-  `picture-dialog`; the bottom input's edit mode is for text messages only). A card is one of two
+  order: the words of the line, then, per picture, the picture, its caption (`card-caption`), the
+  prompt it was drawn from (`card-prompt`) and how many references it used (`card-refs`) — the text
+  of a message is above and below the images, never beside. Where a sender name would stand a neutral
+  card says **`A picture`** and its letter tile is 🖼 (`MessageRow.senderName` / `letter`): the
+  conversation owns that picture, so there is no author to print. Every other line is printed with
+  its real author, and `MessageRow` renders no words at all when the line has none (a line that is
+  nothing but pictures is a picture with a name over it, not an empty bubble).
+- **The picture editor is the ONE place a picture is edited** (the ✎ of one picture opens the
+  `picture-dialog` for THAT picture — a line can show several and the dialog edits one of them; the
+  bottom input's edit mode is for text messages only). A picture is one of two
   things, and the dialog's kind says which: **generated** — a prompt (with "From the chat", which
   plans it from the dialogue via the model, and "Make it English", which translates + shapes the
   typed text for the generator) — or **from a file** — the picture's id, picked from the catalog of
-  the data folder (`GET /api/pictures`, the same list the picture browser shows) or from disk. Both carry a **description** (with
+  the data folder (`GET /api/pictures`, the same list the picture browser shows) or from disk; a file
+  picked from disk is filed where the LINE it joins keeps its pictures (`ReplyService.storePictureFor`:
+  the persona's folder for the user's line, the character's for hers, the chat's for a neutral card),
+  because the id is the app's only statement of whose a picture is. Both carry a **description** (with
   "Describe the picture", a vision call) and the **"who is on this picture"** chips
   (`picture-depicts`, the chat's characters and every persona that ever spoke here; the note the next
-  plan reads to draw the same person again). A generated card also shows the **reference set** its
+  plan reads to draw the same person again). A generated picture also shows the **reference set** its
   prompt names, in order (`.refs` / `.ref-thumb`) — "From the chat" fills the prompt and those
   pictures together and Save writes both, because a prompt that says "the first reference image
   shows the woman in the green coat" is only true with its pictures. Save sends only the fields the
-  dialog actually changed: an untouched card keeps its `refs` and `depicts` (`sameList` compares
-  against what the card said on open — and an empty list IS a change, so clearing works).
-  Save only edits what the card says and which file it
-  points at — it never draws: redrawing stays the card's ↻ (shown only when there is a prompt). The
-  dialog is destroyed/re-initialized per card, so it always reads the card from the store, and it
-  closes itself when the card is gone.
+  dialog actually changed: a picture that was not touched there keeps its `refs` and `depicts`
+  (`sameList` compares against what the picture said on open — and an empty list IS a change, so
+  clearing works), and the body always names the picture being edited (`image`), with another picture
+  asked for as `repointTo`.
+  Save only edits what the picture says and which file it
+  points at — it never draws: redrawing stays that picture's ↻ (shown only when there is a prompt). The
+  dialog is destroyed/re-initialized per picture, so it always reads it from the store, and it
+  closes itself when the line is gone.
 - **A character/persona card has no appearance field.** The dialogs carry name, description, the
   avatar and Delete/Clone only — the description is the single text the picture planner reads for the
   look (see the cast bullet), so a user who wants the same face in every picture writes it into the
@@ -1516,26 +1588,27 @@ that needs the databases resolves them here — the one place allowed to.
   `picture-empty` is the "nothing matched" state. The right pane edits the SELECTED picture's row:
   its **description** and **prompt**
   (Save
-  writes them to the images table, which is the SAME row every chat card of that picture reads — so a
+  writes them to the images table, which is the SAME row every line showing that picture reads — so a
   caption written here is what the chat shows, and the current chat is re-read after the save), the
   **reference list** the prompt names (added from the catalog, minus the picture itself and minus any
   row whose file is gone), and its **ID** with a separate **Rename** action sitting right of the ID
   field (`.id-row`), not at the bottom of the dialog — a rename is the field's own action. The
   description has its own **"Describe the picture"** (`picture-describe` — the same call and the same
-  button the card editor has): the model that looks is the OPEN CHAT's vision model, so with no chat
+  button the picture editor has): the model that looks is the OPEN CHAT's vision model, so with no chat
   at all the button is disabled, and the answer only fills the form (Save is still the write).
   For a picture the app planned **on its own** from somebody else's words (the 📷 turn picture and a
   character's `[IMAGE_BY_PROMPT]` draw — both `source: 'auto'`, and the browser's rule is exactly
   `source !== 'auto'`) the prompt and
-  the reference list are NOT shown: both are the planner's, and they are edited where the card is
-  (`picture-dialog`); a draw the user asked for (🎨, `manual`) keeps its prompt here, because
+  the reference list are NOT shown: both are the planner's, and they are edited in the picture's own
+  editor (`picture-dialog`); a draw the user asked for (🎨, `manual`) keeps its prompt here, because
   that picture is the user's own request and the text under it is what really drew it. Under the
   field the hint line states **"Used as a reference by N other picture(s)"** (`picture-used-by`,
   the same `referencedBy` number as the row badge) — it is what tells the user whether a rename has
   followers. Renaming is not a label:
-  an id is a path, so it moves the file and the server repoints every chat card and stored reference
-  list at the new path; a name that is taken or points outside the picture folders comes back as a
-  visible error (the banner) and changes nothing. The field works on a row whose file is gone too:
+  an id is a path, so it moves the file and the server repoints every line that shows the picture and
+  every stored reference list at the new path; a name that is taken or points outside the picture
+  folders comes back as a visible error (the banner) and changes nothing. The field works on a row
+  whose file is gone too:
   then it moves only the record, and pointing it at a file that is already there attaches the
   description to that picture — which is what the hint under the field says, together with the
   **Forget record** button (`picture-forget`, shown only for such a row: the one delete the browser
@@ -1544,8 +1617,11 @@ that needs the databases resolves them here — the one place allowed to.
   well carries a **"N copies"** badge (`sameAs`, with the other ids in its hover hint) — the table
   keeps byte-identical files as separate pictures, so the browser names them instead of letting the
   user find out by accident. This dialog edits the picture, not a message — the
-  card's own ✎ (`picture-dialog`) is for pointing a card at a file/attaching; this one is for the
-  words and the name, for a picture that may belong to no chat at all (a character's photo).
+  picture's own ✎ (`picture-dialog`, the `picture-edit` button of a picture inside a
+  line, or the row ✎ of a neutral card) is for pointing that picture at a file and for
+  its prompt; this one is for the
+  words and the name, for a picture that may belong to no chat at all (a character's photo,
+  a persona's own attachment).
   Picking a picture FILLS the form from its row, so an edit that was neither saved nor discarded is
   in the way of the list: while `dirty()` (a field differs from the row — the description, the
   prompt, the reference list or the ID) the other rows are `.blocked` and a click on one is refused
@@ -1570,8 +1646,10 @@ that needs the databases resolves them here — the one place allowed to.
   with the 🎨 dialog, the edit mode, or a turn that already has the user's message in it (the 🖼
   disk pick is the one picture control that is always there — a file needs no generator and no
   turn). One
-  click adds the placeholder card and the button steps back (the card is the user's message now, so
-  it is the characters' turn); the planning and the drawing happen behind the placeholder.
+  click adds the neutral card and the button steps back (the picture is the user's message of the
+  turn now, so it is the characters' turn); the planning and the drawing happen behind the
+  placeholder. Note the two pairs of buttons differ here: 📷 is the one picture control tied to the
+  turn, while 🎨 asks for a picture of the user's OWN line and is there whenever a generator works.
 - Responsive for both desktop and phone. The header is the tight spot (names + date + model + 👁 +
   two ⋮) and its narrow-screen rules in `top-bar.scss` are a measured budget, not a guess: the names
   keep 44px each (`.name-wrap` must not shrink below its name, or the two names paint over each
@@ -1636,8 +1714,8 @@ that needs the databases resolves them here — the one place allowed to.
     domains. The images metadata got its own `images/` domain for the same reason:
     `ImageMetaService` is plain storage below the chat store (both `ChatsService`
     and `ImageGenerationService` depend on it, it depends on neither), while the
-    chat-aware half — the browser that renames a file and repoints every chat's
-    cards at it — is `PictureLibraryService`, which sits above both (it needs
+    chat-aware half — the browser that renames a file and repoints every chat line
+    that shows it at the new path — is `PictureLibraryService`, which sits above both (it needs
     `ChatsService.repointImageId`). When pulling code into the service, grep the rest of the project for
     logic that belongs to the domain and move what fits (`ensureEnglishPrompt`,
     `appendAssistantReply`, the in-flight reply
@@ -1674,8 +1752,11 @@ that needs the databases resolves them here — the one place allowed to.
     (`pendingImages`), `isUserTurn` (the last message is a plain assistant answer — the only moment
     the 📷 button belongs), edit, chat mgmt, new-chat dialog. Injects `ConfigStore` + `UiStore`.
     Editing a message never re-attaches its picture: `startEdit` clears `pendingImages` and
-    `saveEdit` patches the text only (a card's ✎ does not go through `startEdit` at all — it opens
-    the picture editor, whose Save is `ImageStore.savePictureEdit`).
+    `saveEdit` patches the text only (the ✎ of a picture does not go through `startEdit` at all — it
+    opens the picture editor, whose Save is `ImageStore.savePictureEdit`). After the send the store
+    asks for a caption of every picture of the returned LINE that has none
+    (`captionAttachments(chatId, message)` → `POST /image/caption` per picture id), because the
+    backend now answers with the one message that carries both the words and the pictures.
   - `ImageStore` — the image-GENERATION domain: `generating` (the short save call
     of a dialog, not the drawing), `canGen`, the 🎨 request dialog (`pictureRequest` /
     `openPictureRequest` / `closePictureRequest` / `requestPicture` — the user's own
@@ -1683,12 +1764,16 @@ that needs the databases resolves them here — the one place allowed to.
     (`addPictureFile`),
     `requestTurnImage()` (the 📷 picture of the user's turn — it only fires the request and applies
     the chat with the placeholder card; the background job and the polling do the rest),
-    `cancelImage`/`regenerateImage`, the picture editor (`pictureEdit` — the card it edits, opened by
-    a row; `savePictureEdit` — the one Save of the dialog: the description, the prompt, the kind and
-    the picture the card points at, a disk pick going through `replaceImage` first), the `lightbox`,
+    `cancelImage`/`regenerateImage`, the picture editor (`pictureEdit` — WHICH message and WHICH
+    picture of it, opened by that picture's ✎; `savePictureEdit` — the one Save of the dialog: the
+    description, the prompt, the kind and the file it points at, a disk pick going through
+    `replaceImage` first and then tracked by the edited picture's INDEX in the line, since a line can
+    hold several pictures and `images[0]` is not "the one I edited"), the `lightbox`,
     and the background-job polling (re-reads the chat on a
-    1.5 s interval while any image is "pending"). The editor closes itself when its card is gone
-    (chat switched or message deleted), and the 🎨 dialog closes with the chat switch. Injects
+    1.5 s interval while any image is "pending"). The editor closes itself when its line is gone, when
+    the message no longer carries the picture it was opened for, or when the chat was switched away
+    from (three separate conditions in `pictureEdit`'s effect — a line can lose ONE picture while the
+    message stays), and the 🎨 dialog closes with the chat switch. Injects
     `ChatStore` (one-way) + `ConfigStore`
     + `UiStore`. It reads the current chat / character / edit target and applies the server chat
     back through `ChatStore.applyChat()`. The "what to send" decision (edit → `saveEdit`,
@@ -1717,7 +1802,8 @@ that needs the databases resolves them here — the one place allowed to.
     a rejected request body) → non-2xx →
     the root `error` signal → a dismissable red banner above the input.
   - A picture that did not happen (the plan could not be read, the generator failed or was
-    cancelled) is NOT an error banner and never an error message: the card itself becomes the broken
+    cancelled) is NOT an error banner and never an error message: the picture itself becomes the
+    broken
     placeholder with the reason (`imageErrors[id]`, `img-error-text`) and a Regenerate button,
     because the failure belongs to that one picture, not to the conversation.
 
@@ -1803,7 +1889,7 @@ that needs the databases resolves them here — the one place allowed to.
   that the prompt named the reference and never named the person). What a job does follows the prompt
   text the app substituted into the workflow: "fail" → the server reports an execution error, "slow" →
   5 s, anything else → a short pause and a real generated PNG from `/view` — so the failure, the
-  pending/spinner and the ready-card paths are all covered without a real ComfyUI. `beforeAll` starts
+  pending/spinner and the ready-picture paths are all covered without a real ComfyUI. `beforeAll` starts
   the mock LLM and the mock ComfyUI, `beforeEach` points the config's `llmModels`/`imageGenerators`
   at them, so the run is fast and does not depend on the user's real models. The mock LLM recognizes
   the calls by their system prompt: a chat reply answers
@@ -1847,24 +1933,34 @@ that needs the databases resolves them here — the one place allowed to.
   same cell** (`chat-dots` — `chat-settings` "Chat settings…", `clone-chat` "Clone chat" and
   `delete-chat` live in its dropdown,
   not in the label's own menu), `new-chat` / `new-chat-dialog` / `new-chat-confirm`, `user-name`,
-  `settings`, `history`, `message`, `msg-sender`, `msg-edit` (the ✎ of a message,
-  and of a picture card — a text message goes into the bottom field's edit mode, a card opens
-  the picture editor), `input`, `send` (➤ normally; ✕
+  `settings`, `history`, `message`, `msg-sender`, `msg-edit` (the ✎ of a message —
+  a text message goes into the bottom field's edit mode, a NEUTRAL card opens the
+  picture editor for the picture it is), `input`, `send` (➤ normally; ✕
   while a reply is generating — it is the cancel then), `attach`,
   `ask-picture` (the 🎨 button — it opens the request dialog, and with it
   `picture-ask-dialog` / `picture-ask-text` / `picture-ask-ok` / `picture-ask-cancel`),
   `chat-picture` (the 🖼 disk pick, a `<label>` wrapping a hidden single-file input —
-  a test drives it with `setInputFiles('[data-testid=chat-picture] input', file)`;
-  always visible, a file needs no generator),
+  a test drives it with `setInputFiles('[data-testid=chat-picture] input', file)`, and a
+  `{ name, mimeType, buffer }` payload works too; always visible, a file needs no
+  generator),
   `auto-image` (the 📷 picture of the user's turn; only on the user's turn),
-  `error-banner`, `typing`. The picture card: `image-card` (the card BODY — the sender
-  line `msg-sender` and the hover ✎ are on the `message` ROW around it, so a test that
-  wants those filters `getByTestId('message')` by `has: image-card` rather than starting
-  from `image-card`), `card-caption`,
-  `card-prompt`, `card-refs`, and inside it the state placeholders `img-pending`
-  (+ `img-cancel`), `img-cancelled` / `img-broken` (+ `img-regen`, `img-error-text`) and the
-  ready picture's quick redraw `img-regenerate` + `lightbox`/`lightbox-close`. The picture
-  editor (`picture-dialog`, opened by the card's ✎): `picture-kind-generated` /
+  `error-banner`, `typing`. **A picture is `image-card` when it is the neutral card of
+  the 🖼 / 📷 buttons and `line-picture` when it rides inside somebody's line** — the
+  testid says whose line it is, so a test of a 📎 attach or a character's marker looks
+  for `line-picture` and one of 🖼 / 📷 for `image-card`. Either one is the BODY of the
+  picture (a `.picture` block: the image, its caption, its prompt): the sender line
+  `msg-sender` and the hover buttons of the message are on the `message` ROW around it,
+  so a test that wants those filters `getByTestId('message')` by `has: <testid>` rather
+  than starting from the picture (`ux-explore.spec.ts` keeps `cardRows()` /
+  `linePicRows()` for exactly that, and `blockOrder()` to assert the words come ABOVE the
+  pictures). Inside a picture: `card-caption`, `card-prompt`, `card-refs`, the state
+  placeholders `img-pending` (+ `img-cancel`), `img-cancelled` / `img-broken`
+  (+ `img-regen`, `img-error-text`), the ready picture's quick redraw `img-regenerate`,
+  and — for a picture that lives inside a line — its own ✎ `picture-edit` (a line can
+  show several pictures, so the editor needs to be opened for one of them)
+  + `lightbox`/`lightbox-close`. The picture
+  editor (`picture-dialog`, opened by that `picture-edit`, or by the row ✎ of a neutral
+  card): `picture-kind-generated` /
   `picture-kind-file` (the radios), `picture-prompt`, `picture-prompt-from-chat`,
   `picture-prompt-english`, `picture-description`, `picture-describe`, `picture-id` (the catalog
   `<select>`), `picture-file` (the disk pick), `picture-depicts` (the "who is on this picture" chips,

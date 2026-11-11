@@ -350,9 +350,9 @@ describe("editing a picture from the browser", () => {
     // the ONE source: the chat card is the row, so it reads the new words at once
     const card = chats.get(chat.id)!.messages[0];
     expect(card.text).toBe("corrected by hand");
-    expect(card.generation?.prompt).toBe("a red boat at dusk with gulls");
+    expect(card.pictures?.[id]?.generation?.prompt).toBe("a red boat at dusk with gulls");
     // and the untouched fields of the row survive the patch
-    expect(card.generation?.source).toBe("manual");
+    expect(card.pictures?.[id]?.generation?.source).toBe("manual");
   });
 
   it("edits a picture that belongs to no chat — a character's photo, or a file the user dropped in", () => {

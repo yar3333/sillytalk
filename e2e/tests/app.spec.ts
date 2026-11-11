@@ -1,6 +1,6 @@
 import http from 'http';
 import { test, expect } from '@playwright/test';
-import { MockComfy, MockLlm, startMockComfy, startMockLlm } from '../helpers/mocks';
+import { MockComfy, MockLlm, makePng, startMockComfy, startMockLlm } from '../helpers/mocks';
 
 // The server is started by the webServer from playwright.config.ts on
 // isolated data (SILLYTALK_DATA_DIR); the real chats and catalogs are
@@ -789,13 +789,18 @@ test('the ID of a chat: the creation date by default, renamed with its pictures 
   await page.goto('/');
   await expect(page.getByTestId('input')).toBeVisible();
 
-  // A drawn picture gives the rename a file and a row to move: the 🎨 dialog
-  // asks for one in words, the app plans and draws it in the background.
-  await page.getByTestId('ask-picture').click();
-  await page.getByTestId('picture-ask-text').fill('a red circle');
-  await page.getByTestId('picture-ask-ok').click();
-  await expect(page.getByTestId('img-pending')).toBeVisible({ timeout: 15000 });
-  await expect(page.getByTestId('img-pending')).toBeHidden({ timeout: 25000 });
+  // A picture of the CONVERSATION gives the rename a file and a row to move: the
+  // 🖼 button hands a disk file to the chat, which is what files it in the chat's
+  // own folder (a 📎 attach or a 🎨 ask would file it with the PERSON instead,
+  // and a chat rename has nothing to move there). The bytes are random so the
+  // de-dup by content cannot mistake this picture for one of an earlier run.
+  const png = makePng(64, 48, Math.floor(Math.random() * 256), Math.floor(Math.random() * 256), 90);
+  await page.setInputFiles('[data-testid=chat-picture] input', {
+    name: 'a-red-circle.png',
+    mimeType: 'image/png',
+    buffer: png,
+  });
+  await expect(page.getByTestId('image-card')).toBeVisible({ timeout: 15000 });
 
   // The open chat is named by its creation moment, not a UUID.
   const list0 = (await (await fetch(`${API}/chats`)).json()) as Array<{ id: string }>;
@@ -976,9 +981,15 @@ test('GET /api/media serves a picture of a chat and nothing else', async () => {
         images: [`data:image/png;base64,${png.toString('base64')}`],
       }),
     })
-  ).json()) as { chat: { messages: { kind?: string; images?: string[] }[] } };
-  const imageId = sent.chat.messages.find((m) => m.kind === 'image')?.images?.[0];
-  expect(imageId, 'the attached picture became a card with an image id').toBeTruthy();
+  ).json()) as {
+    chat: { messages: { images?: string[] }[] };
+    message: { id: string; images?: string[]; text: string };
+  };
+  // An attached picture is not a message of its own any more: it rides inside
+  // the user's line, which is the answer this route returns.
+  expect(sent.message.text).toBe('A picture of a pixel');
+  const imageId = sent.message.images?.[0];
+  expect(imageId, 'the attached picture became a picture of the user line').toBeTruthy();
 
   const media = await fetch(`${API}/media?path=${encodeURIComponent(imageId as string)}`);
   expect(media.status).toBe(200);

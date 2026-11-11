@@ -5,16 +5,17 @@ import { ChatStore } from '../../services/chat-store';
 import { ImageStore } from '../../services/image-store';
 import { avatarLetter, imageHintFor, splitNarration as splitNarrationParts } from '../../services/helpers';
 
-// One line of the history. Two shapes:
-//   a text message — the author, the line, the hover buttons (edit / delete);
-//   an image card  — the picture with its description (what is on it) and,
-//                    when it was drawn, the prompt and the references it came
-//                    from, plus the quick redraw (↻) — everything else about
-//                    the picture (its prompt, its description, the file it
-//                    points at) is the picture editor dialog its ✎ opens.
+// One line of the history. A text line carries its author's words and, when the
+// author shows pictures, those pictures right under the words — a picture a
+// character shares or a user attaches IS part of their line, not a message of
+// its own. The other shape is the NEUTRAL picture card: nothing but one picture
+// and no author, which only the two controls that hand a picture to the chat
+// produce (the 🖼 disk pick and the 📷 picture of the turn).
+// Every picture brings with it what its row of the images table says: the
+// caption (what is on it), the prompt it was drawn from, how many references it
+// used, plus the quick redraw (↻) and the ✎ of the picture editor.
 // Chat actions (edit / delete / regenerate the reply) — ChatStore; image
-// actions (cancel / regenerate / open the editor, add a reference) —
-// ImageStore.
+// actions (cancel / regenerate / open the editor) — ImageStore.
 @Component({
   selector: 'app-message-row',
   template: `
@@ -31,7 +32,7 @@ import { avatarLetter, imageHintFor, splitNarration as splitNarrationParts } fro
         data-testid="message"
         [class.user]="message().role === 'user'"
         [class.error]="message().error"
-        [class.has-images]="isCard()"
+        [class.has-images]="hasPictures()"
         [class.card]="isCard()"
         [class.regenerating]="isRegenerating()"
       >
@@ -74,96 +75,115 @@ import { avatarLetter, imageHintFor, splitNarration as splitNarrationParts } fro
         </button>
         <div class="msg-sender" data-testid="msg-sender">{{ senderName() }}</div>
 
-        @if (isCard()) {
-          <div class="card-body" data-testid="image-card">
-            @for (img of message().images; track img) {
-              @switch (imgStatus(img)) {
-                @case ('pending') {
-                  <span class="img-placeholder img-pending" data-testid="img-pending">
-                    <span class="img-spinner img-spinner-lg" aria-hidden="true"></span>
-                    <span class="img-placeholder-label">{{ pendingLabel() }}</span>
-                    <button
-                      class="img-cancel"
-                      data-testid="img-cancel"
-                      (click)="imageStore.cancelImage(message().id, img)"
-                      title="Cancel the generation"
-                    >
-                      ✕ Cancel
-                    </button>
-                  </span>
-                }
-                @case ('failed') {
-                  <span class="img-placeholder img-broken" data-testid="img-broken">
-                    <span class="img-broken-icon" aria-hidden="true">🖼️</span>
-                    <span class="img-placeholder-label">Image generation failed</span>
-                    @if (imageError(img)) {
-                      <span class="img-error-text" data-testid="img-error-text" [title]="imageError(img)">{{ imageError(img) }}</span>
-                    }
-                    <button
-                      class="img-regen-btn"
-                      data-testid="img-regen"
-                      (click)="imageStore.regenerateImage(message().id, img)"
-                      title="Regenerate the image"
-                    >
-                      🔄 Regenerate
-                    </button>
-                  </span>
-                }
-                @case ('cancelled') {
-                  <span class="img-placeholder img-cancelled" data-testid="img-cancelled">
-                    <span class="img-broken-icon" aria-hidden="true">🖼️</span>
-                    <span class="img-placeholder-label">Image generation cancelled</span>
-                    <button
-                      class="img-regen-btn"
-                      data-testid="img-regen"
-                      (click)="imageStore.regenerateImage(message().id, img)"
-                      title="Regenerate the image"
-                    >
-                      🔄 Regenerate
-                    </button>
-                  </span>
-                }
-                @default {
-                  <span class="msg-img-wrap">
-                    <img
-                      [src]="mediaUrl(img)"
-                      (click)="onImageClick(img)"
-                      [title]="imageHint(img)"
-                      [alt]="caption() || 'Picture'"
-                    />
-                    <!-- The quick redraw. Everything else about the picture
-                         (its prompt, its description, the file it points at)
-                         lives in the picture editor — the ✎ button. -->
-                    @if (canRedraw()) {
-                      <button
-                        class="img-regen"
-                        data-testid="img-regenerate"
-                        (click)="imageStore.regenerateImage(message().id, img)"
-                        title="Regenerate the image"
-                      >
-                        🔄
-                      </button>
-                    }
-                  </span>
-                }
-              }
-            }
-            @if (caption()) {
-              <div class="card-caption" data-testid="card-caption">{{ caption() }}</div>
-            }
-            @if (promptText()) {
-              <div class="card-prompt" data-testid="card-prompt" [title]="promptText()">
-                {{ promptText() }}
-              </div>
-            }
-            @if (refsText()) {
-              <div class="card-refs" data-testid="card-refs">{{ refsText() }}</div>
-            }
-          </div>
-        } @else {
+        <!-- A neutral card has no words of its own (its caption is written under
+             the picture), and a line that was nothing but picture markers has no
+             text either — in both cases there is nothing to print here. -->
+        @if (message().text.trim()) {
           <div class="msg-text">
             @for (p of splitNarration(message().text); track $index) {
               <span [class.narration]="p.narration">{{ p.text }}</span>
+            }
+          </div>
+        }
+
+        @if (hasPictures()) {
+          <div class="card-body">
+            @for (img of message().images; track img) {
+              <div class="picture" [attr.data-testid]="isCard() ? 'image-card' : 'line-picture'">
+                @switch (imgStatus(img)) {
+                  @case ('pending') {
+                    <span class="img-placeholder img-pending" data-testid="img-pending">
+                      <span class="img-spinner img-spinner-lg" aria-hidden="true"></span>
+                      <span class="img-placeholder-label">{{ pendingLabel(img) }}</span>
+                      <button
+                        class="img-cancel"
+                        data-testid="img-cancel"
+                        (click)="imageStore.cancelImage(message().id, img)"
+                        title="Cancel the generation"
+                      >
+                        ✕ Cancel
+                      </button>
+                    </span>
+                  }
+                  @case ('failed') {
+                    <span class="img-placeholder img-broken" data-testid="img-broken">
+                      <span class="img-broken-icon" aria-hidden="true">🖼️</span>
+                      <span class="img-placeholder-label">Image generation failed</span>
+                      @if (imageError(img)) {
+                        <span class="img-error-text" data-testid="img-error-text" [title]="imageError(img)">{{ imageError(img) }}</span>
+                      }
+                      <button
+                        class="img-regen-btn"
+                        data-testid="img-regen"
+                        (click)="imageStore.regenerateImage(message().id, img)"
+                        title="Regenerate the image"
+                      >
+                        🔄 Regenerate
+                      </button>
+                    </span>
+                  }
+                  @case ('cancelled') {
+                    <span class="img-placeholder img-cancelled" data-testid="img-cancelled">
+                      <span class="img-broken-icon" aria-hidden="true">🖼️</span>
+                      <span class="img-placeholder-label">Image generation cancelled</span>
+                      <button
+                        class="img-regen-btn"
+                        data-testid="img-regen"
+                        (click)="imageStore.regenerateImage(message().id, img)"
+                        title="Regenerate the image"
+                      >
+                        🔄 Regenerate
+                      </button>
+                    </span>
+                  }
+                  @default {
+                    <span class="msg-img-wrap">
+                      <img
+                        [src]="mediaUrl(img)"
+                        (click)="onImageClick(img)"
+                        [title]="imageHint(img)"
+                        [alt]="captionOf(img) || 'Picture'"
+                      />
+                      <!-- The quick redraw, and — for a picture that lives inside
+                           somebody's line — their own ✎: a line may show several
+                           pictures, so the editor needs to know which one.
+                           Everything else about the picture (its prompt, its
+                           description, the file it points at) lives there. -->
+                      @if (canRedraw(img)) {
+                        <button
+                          class="img-regen"
+                          data-testid="img-regenerate"
+                          (click)="imageStore.regenerateImage(message().id, img)"
+                          title="Regenerate the image"
+                        >
+                          🔄
+                        </button>
+                      }
+                      @if (!isCard()) {
+                        <button
+                          class="img-edit-picture"
+                          data-testid="picture-edit"
+                          (click)="onEditPicture(img)"
+                          title="Edit the picture"
+                        >
+                          ✎
+                        </button>
+                      }
+                    </span>
+                  }
+                }
+                @if (captionOf(img)) {
+                  <div class="card-caption" data-testid="card-caption">{{ captionOf(img) }}</div>
+                }
+                @if (promptOf(img)) {
+                  <div class="card-prompt" data-testid="card-prompt" [title]="promptOf(img)">
+                    {{ promptOf(img) }}
+                  </div>
+                }
+                @if (refsOf(img)) {
+                  <div class="card-refs" data-testid="card-refs">{{ refsOf(img) }}</div>
+                }
+              </div>
             }
           </div>
         }
@@ -181,47 +201,60 @@ export class MessageRow implements OnDestroy {
   readonly message = input.required<ChatMessage>();
   readonly isLast = input.required<boolean>();
 
-  // An image card carries one picture with its own description and generation
-  // data; a text message is a line of the dialogue.
+  // The neutral picture card: a message that is nothing but one picture and
+  // belongs to the conversation, not to a person. Any other line may still carry
+  // pictures — under its words.
   isCard(): boolean {
     return this.message().kind === 'image';
   }
-  caption(): string {
-    return this.message().text.trim();
+  hasPictures(): boolean {
+    return (this.message().images?.length ?? 0) > 0;
+  }
+  // What one picture of this line is said to show — its row of the images
+  // table, the same sentence a model without vision is given in its place. (For
+  // a neutral card the server also writes it into the message's `text`, which is
+  // why the card has no text block of its own above the picture.)
+  captionOf(img: string): string {
+    return this.message().pictures?.[img]?.description?.trim() ?? '';
   }
   // What the picture was drawn from — shown under it so the user can see and
-  // reuse it. Empty for an uploaded file, which has no prompt.
-  promptText(): string {
-    return this.message().generation?.prompt?.trim() ?? '';
+  // reuse it. Empty for a file somebody brought, which has no prompt.
+  promptOf(img: string): string {
+    return this.message().pictures?.[img]?.generation?.prompt?.trim() ?? '';
   }
   // How many reference pictures it was drawn from (their file names would only
   // be noise here — the hover hint of the image lists them).
-  refsText(): string {
-    const n = this.message().generation?.refs?.length ?? 0;
+  refsOf(img: string): string {
+    const n = this.message().pictures?.[img]?.generation?.refs?.length ?? 0;
     return n > 0 ? `references: ${n}` : '';
   }
   // A picture can be redrawn only when there is a prompt to draw from — an
   // uploaded photo has none until the user writes one.
-  canRedraw(): boolean {
-    return this.promptText().length > 0;
+  canRedraw(img: string): boolean {
+    return this.promptOf(img).length > 0;
   }
-  pendingLabel(): string {
+  pendingLabel(img: string): string {
     // A picture that is being asked for is first PLANNED (the model turns the
     // words into a drawing prompt and a reference set), so the label says both
     // halves. A redraw of a stored prompt needs no planning and says only what
     // it is doing.
-    return this.promptText() ? 'Generating the image…' : 'Planning and drawing the picture…';
+    return this.promptOf(img) ? 'Generating the image…' : 'Planning and drawing the picture…';
   }
 
-  // The ✎ of the row: a text message goes into the bottom field's edit mode; a
-  // picture card opens the picture editor (its prompt, its description and the
-  // file it points at all live there).
+  // The ✎ of the row: a text message goes into the bottom field's edit mode; the
+  // neutral card opens the picture editor (its prompt, its description and the
+  // file it points at all live there). A line with words AND pictures edits its
+  // words here — each of its pictures has its own ✎.
   onEdit(): void {
     if (this.isCard() && this.message().images[0]) {
       this.imageStore.openPictureEdit(this.message().id, this.message().images[0]);
       return;
     }
     this.chatStore.startEdit(this.message());
+  }
+  // The ✎ of one picture inside a line — the same editor, opened for that id.
+  onEditPicture(img: string): void {
+    this.imageStore.openPictureEdit(this.message().id, img);
   }
 
   // The "armed" state of the delete buttons: the 🗑 (this message) and the 🧹

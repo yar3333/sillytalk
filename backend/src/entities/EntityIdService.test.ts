@@ -125,7 +125,7 @@ describe("renaming a character", () => {
     const card = after.messages[2];
     expect(card.images).toEqual(["characters/lisa/photos/photo1.jpg"]);
     expect(card.text).toBe("alice at the window");
-    expect(card.depicts).toEqual(["char:lisa"]);
+    expect(card.pictures?.["characters/lisa/photos/photo1.jpg"]?.depicts).toEqual(["char:lisa"]);
   });
 
   it("follows the picture rows: the cast of her own pictures and the reference set of the ones drawn from them", () => {
@@ -243,7 +243,7 @@ describe("renaming a persona", () => {
     const card = after.messages[1];
     expect(card.images).toEqual(["users/karin/avatar.jpg"]);
     expect(card.text).toBe("carol at the door");
-    expect(card.depicts).toEqual(["user:karin"]);
+    expect(card.pictures?.["users/karin/avatar.jpg"]?.depicts).toEqual(["user:karin"]);
     // The card names nobody, and there is nothing left to rewrite: it is the
     // PICTURE that belongs to the persona (its id is a path under users/<id>/)
     // and the cast note that says whose face is on it — both follow the rename.

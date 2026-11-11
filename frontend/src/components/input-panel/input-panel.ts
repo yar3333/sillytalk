@@ -51,28 +51,36 @@ import { UiStore } from '../../services/ui-store';
         </div>
       }
       <div class="input-row">
-        <label class="icon-btn" data-testid="attach" title="Attach a picture you are showing — it becomes a picture of your own">
+        <!-- FOUR picture controls, in two pairs. The first pair puts a picture
+             INSIDE the user's own line (📎 a file they show, 🎨 a picture they
+             ask for in words) and files its bytes in the persona's folder,
+             because the id of a picture is what says whose it is. The second
+             pair hands a picture to the CONVERSATION instead: a message of its
+             own that belongs to nobody (🖼 a file from disk, 📷 the picture of
+             the turn), filed in the chat's folder. -->
+        <label class="icon-btn" data-testid="attach" title="Attach a picture to YOUR message: it shows right under your words and is saved as a picture of your persona.">
           📎
           <input type="file" hidden multiple accept="image/*" (change)="onFiles($event)" />
         </label>
         @if (imageStore.canGen()) {
           <!-- A picture the user asks for: they describe it in their own words
-               and language, the card appears as "pending" at once and the model
-               turns those words into a drawing prompt plus the reference
-               pictures, then the generator draws it — all in the background. -->
+               and language, the model turns those words into a drawing prompt
+               plus the reference pictures and the generator draws it — all in
+               the background. The sentence they wrote stays the picture's
+               caption and the picture rides in THEIR message. -->
           <button
             class="icon-btn"
             data-testid="ask-picture"
-            title="Ask for a picture — describe it in your own words"
+            title="Ask for a picture in your own words: it is drawn in the background and added to YOUR message, saved as a picture of your persona."
             (click)="imageStore.openPictureRequest()"
           >
             🎨
           </button>
         }
-        <!-- The same kind of message, but the picture already exists: a file
-             from disk, kept in this chat's folder unless the app already owns
-             exactly these bytes. Nothing is generated, so no generator needed. -->
-        <label class="icon-btn" data-testid="chat-picture" title="Add a picture file to this conversation">
+        <!-- The other kind of picture message: the file already exists and the
+             conversation owns it. Nothing is generated, so no generator needed,
+             and the field keeps whatever the user was typing. -->
+        <label class="icon-btn" data-testid="chat-picture" title="Add a picture from your disk as a message of its own: the conversation owns it, so it is saved in the chat's folder.">
           🖼
           <input type="file" hidden accept="image/*" (change)="onPictureFile($event)" />
         </label>
@@ -84,7 +92,7 @@ import { UiStore } from '../../services/ui-store';
             class="icon-btn"
             data-testid="auto-image"
             [disabled]="imageStore.requestingTurnImage()"
-            title="Draw a picture for this turn (from the conversation)"
+            title="Let the model plan a picture for this turn from the dialogue: it becomes a message of its own, saved in the chat's folder."
             (click)="imageStore.requestTurnImage()"
           >
             {{ imageStore.requestingTurnImage() ? '…' : '📷' }}

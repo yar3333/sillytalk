@@ -483,6 +483,8 @@ describe("chatCompletion", () => {
   // An existing picture, addressed the way the messages address pictures: by an
   // id relative to the data folder.
   let picture: string;
+  // A second one — a line can show more than one picture.
+  let picture2: string;
 
   beforeAll(() => {
     // A picture is only sent to the provider when its file really exists, so
@@ -493,6 +495,9 @@ describe("chatCompletion", () => {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, "not-a-real-png");
     picture = PathHelper.imageIdOf(file);
+    const file2 = path.join(PathHelper.chatDir("chat-test"), "b-photo.png");
+    fs.writeFileSync(file2, "also-not-a-real-png");
+    picture2 = PathHelper.imageIdOf(file2);
   });
 
   afterAll(() => {
@@ -666,6 +671,57 @@ describe("chatCompletion", () => {
     expect(init.body).not.toContain("image_url");
   });
 
+  // A line's pictures are part of the line now (the author shows them with their
+  // words), so the model has to be told about them exactly as the reader is.
+  it("a line with pictures goes to a vision model as its words plus the pictures", async () => {
+    const fetchMock = jest.fn().mockResolvedValue(jsonRes({ choices: [{ message: { content: "ok" } }] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const line: ChatMessage = {
+      ...msg("look at these", "user"),
+      images: [picture, picture2],
+      pictures: { [picture]: { description: "a red boat" } },
+    };
+    await textGenerationService.chatCompletion(model, "system", [line]);
+    const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
+    const body = JSON.parse(init.body) as { messages: Array<{ content: unknown }> };
+    const parts = body.messages[1].content as Array<{ type: string; text?: string }>;
+    expect(parts[0]).toEqual({ type: "text", text: "look at these" });
+    expect(parts.filter((p) => p.type === "image_url")).toHaveLength(2);
+  });
+
+  it("a blind model is told what each picture of a line shows", async () => {
+    const fetchMock = jest.fn().mockResolvedValue(jsonRes({ choices: [{ message: { content: "ok" } }] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const line: ChatMessage = {
+      ...msg("look at these", "user"),
+      images: [picture, picture2],
+      pictures: { [picture]: { description: "a red boat on a lake" }, [picture2]: {} },
+    };
+    await textGenerationService.chatCompletion({ ...model, supportsImages: false }, "system", [line]);
+    const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
+    const body = JSON.parse(init.body) as { messages: Array<{ content: string }> };
+    expect(body.messages[1].content).toBe(
+      "look at these\n[A picture shows: a red boat on a lake]\n[A picture without a description]",
+    );
+    expect(init.body).not.toContain("image_url");
+  });
+
+  it("a picture of the line that is still being drawn is not announced to the model", async () => {
+    const fetchMock = jest.fn().mockResolvedValue(jsonRes({ choices: [{ message: { content: "ok" } }] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const pending = PathHelper.imageIdOf(path.join(PathHelper.chatDir("chat-test"), "not-drawn-yet.png"));
+    const line: ChatMessage = { ...msg("one more", "user"), images: [pending] };
+    await textGenerationService.chatCompletion({ ...model, supportsImages: false }, "system", [line]);
+    const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
+    const body = JSON.parse(init.body) as { messages: Array<{ content: string }> };
+    // The words arrive as they were written: a sentence about a picture nobody
+    // can be shown yet would describe something that does not exist.
+    expect(body.messages[1].content).toBe("one more");
+  });
+
   it("a picture whose file is gone is skipped, not sent as a broken link", async () => {
     const fetchMock = jest.fn().mockResolvedValue(jsonRes({ choices: [{ message: { content: "ok" } }] }));
     global.fetch = fetchMock as unknown as typeof fetch;
@@ -699,21 +755,18 @@ describe("composeImagePrompt", () => {
     await textGenerationService.composeImagePrompt(model, {
       scene: "Alice: the lake is calm tonight.\nCarol: [shares a picture: a red boat]",
       images: [
-        {
-          id: "chats/c/files/boat.png",
-          description: "a red boat",
-          owner: "Carol",
-          age: "2 messages ago",
-          origin: "uploaded",
-        },
-        { id: "chats/c/files/harbour.png", prompt: "a harbour at dusk", owner: "Alice", age: "the last message" },
+        { id: "chats/c/files/boat.png", description: "a red boat", age: "2 messages ago", origin: "uploaded" },
+        { id: "chats/c/files/harbour.png", prompt: "a harbour at dusk", age: "the last message" },
       ],
     });
     const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
     const body = asked(init.body);
     expect(body.messages[0].content).toContain("JSON");
     expect(body.messages[1].content).toContain("Alice: the lake is calm tonight.");
-    expect(body.messages[1].content).toContain("#1 — shows: a red boat; uploaded by the user; shared by Carol; 2 messages ago");
+    expect(body.messages[1].content).toContain("#1 — shows: a red boat; uploaded by the user; 2 messages ago");
+    // Ownership is written in the id of the picture (whose folder it lives in),
+    // never said to the model: a drawing does not care who owns a file.
+    expect(body.messages[1].content).not.toContain("shared by");
     expect(body.messages[1].content).toContain("#2 — no description; generated from prompt: a harbour at dusk");
   });
 
