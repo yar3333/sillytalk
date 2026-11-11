@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { Character } from "./Character";
 import { PathHelper } from "../shared/PathHelper";
 import { DataUrl } from "../shared/DataUrl";
+import { PictureName } from "../shared/PictureName";
 import { ImageMetaService } from "../images/ImageMetaService";
 import { createToken } from "../di";
 
@@ -197,6 +198,23 @@ export class CharactersService {
       description: source.description,
     });
     return newId;
+  }
+
+  // The id a NEW picture of this character will be saved under — the file does
+  // not exist yet, the background generation writes it when it finishes and the
+  // card reserves the name in advance (the same trick a chat's reserved id is).
+  // It lands in the character's own folder, so a picture the character asked for
+  // becomes part of its starter set: the next scene of the same conversation can
+  // be drawn from the same face, and the picture browser shows it like any other
+  // picture of the folder.
+  //
+  // The folder is created here, because a picture with no folder to live in is a
+  // card that cannot ever become a picture. Throws on a bad id.
+  reservedPictureId(id: string, nameHint: string, extension = ".png"): string {
+    if (!this.isValidId(id)) throw new Error(`Invalid character ID: ${String(id)}`);
+    const dir = PathHelper.characterDir(id, this.charactersRoot());
+    fs.mkdirSync(dir, { recursive: true });
+    return PathHelper.imageIdOf(path.join(dir, PictureName.fileName(nameHint, "image", extension)));
   }
 
   // ---- avatar (an image id the row keeps in its `avatar` column) ----

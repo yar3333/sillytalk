@@ -4,15 +4,22 @@ import { ChatStore } from './chat-store';
 import { ConfigStore } from './config-store';
 import { UiStore } from './ui-store';
 
-// The image-generation domain: the generation mode and its references, the
-// in-flight draw, the cancel/regenerate of message images, and the polling
-// that reflects the background jobs' results into the chat.
+// The image domain of the input bar: asking for a picture (the 🎨 dialog and the
+// 🖼 disk pick), the picture of the user's turn, the cancel/regenerate of message
+// images, the picture editor, and the polling that reflects the background jobs'
+// results into the chat.
 //
-// It depends ONE-WAY on ChatStore (reads the current chat / character / edit
-// target / sending flag and applies the server chat after an action) — the
-// store graph stays acyclic (ImageStore -> ChatStore -> ConfigStore -> UiStore).
-// The "what to send" decision (text / draw / edit) is orchestrated by
-// InputPanel, which is why ChatStore never depends on this store.
+// There is no "generation mode" any more: a picture of this app is always a
+// PICTURE WITH A STORY, so it is asked for in words and the model turns those
+// words into a drawing prompt plus a reference set. The one place a literal
+// prompt is still written by hand is the picture editor of a card (✎), and it
+// redraws through regenerateImage.
+//
+// It depends ONE-WAY on ChatStore (reads the current chat / sending flag and
+// applies the server chat after an action) — the store graph stays acyclic
+// (ImageStore -> ChatStore -> ConfigStore -> UiStore). The "what to send"
+// decision (text / edit) is orchestrated by InputPanel, which is why ChatStore
+// never depends on this store.
 //
 // Note: the 📎 attachments (pendingImages) and the send/edit flow stay in
 // ChatStore — they are part of the message composition, not of generation.
@@ -23,18 +30,14 @@ export class ImageStore {
   protected configStore = inject(ConfigStore);
   protected ui = inject(UiStore);
 
-  // ---- generation state ----
-  readonly genMode = signal(false);
-  readonly genRefs = signal<string[]>([]);
-  // true while the draw request (POST /image) is in flight; the actual
-  // generation continues in the background and is shown by the placeholder.
+  // true while a request for a picture is in flight; the generation itself
+  // continues in the background behind the placeholder card and is shown by
+  // the polling below, so this only covers the short call that saves it.
   readonly generating = signal(false);
 
   // ---- lightbox ----
   // The image shown enlarged (a media URL) — set when the user clicks an
-  // image in the chat. null = closed. Clicking an image adds a generation
-  // reference (when the gen mode is relevant) AND opens the lightbox, so the
-  // user sees the image larger and is not left wondering what a click did.
+  // image in the chat. null — closed.
   readonly lightbox = signal<string | null>(null);
   openLightbox(url: string): void {
     this.lightbox.set(url);
@@ -44,20 +47,16 @@ export class ImageStore {
   }
 
   // ---- derived ----
-  // The first participant's pictures (reference candidates in the gen bar) —
-  // image ids, so a pick references the file in the character folder directly.
-  readonly characterPhotos = computed<string[]>(() => this.chatStore.character()?.photos ?? []);
-  // The 🎨 toggle is shown only when a generator is available.
+  // The picture buttons are shown only when a generator is available.
   readonly canGen = computed(() => this.configStore.imageGenAvailable());
-  // The input placeholder: editing / gen mode / a normal message.
-  readonly placeholder = computed<string>(() => {
-    if (this.chatStore.editTargetId()) return 'Editing message…';
-    return this.genMode() ? 'Prompt for the image (it will be translated)…' : 'Message…';
-  });
+  // The input placeholder.
+  readonly placeholder = computed<string>(() =>
+    this.chatStore.editTargetId() ? 'Editing message…' : 'Message…',
+  );
 
   constructor() {
-    // React to the chat changing: reset the per-chat generation setup when the
-    // chat is switched, and keep the background-job polling in sync (start it
+    // React to the chat changing: close the per-chat dialogs when the chat is
+    // switched, and keep the background-job polling in sync (start it
     // while any image of the current chat is "pending", stop it otherwise).
     // Reading chatStore.chat() makes the effect re-run on every chat change,
     // including ones driven by ChatStore (open/send/edit) — no cycle, because
@@ -67,8 +66,7 @@ export class ImageStore {
       const chat = this.chatStore.chat();
       const id = chat?.id ?? null;
       if (id !== lastChatId) {
-        this.genRefs.set([]);
-        this.genMode.set(false);
+        this.pictureRequest.set(false);
         lastChatId = id;
       }
       // The picture editor belongs to one card: it closes with the chat it was
@@ -80,47 +78,55 @@ export class ImageStore {
     });
   }
 
-  // ---- generation mode ----
-  toggleGen(): void {
-    this.genMode.set(!this.genMode());
-    if (!this.genMode()) this.genRefs.set([]);
+  // ---- a picture the user asks for ----
+  // The 🎨 dialog: the user describes the picture they want, in their own
+  // language, and may name the characters of the conversation — the request is
+  // the picture's description, and the model of the app turns it into a drawing
+  // prompt and picks the reference pictures that make a named face the same from
+  // one picture to the next. The server answers with the pending card at once,
+  // so the request never blocks the input.
+  readonly pictureRequest = signal(false);
+  openPictureRequest(): void {
+    this.pictureRequest.set(true);
   }
-  removeGenRef(r: string): void {
-    this.genRefs.set(this.genRefs().filter((x) => x !== r));
-  }
-  // A chat image becomes a generation reference (added from a message).
-  addChatRef(name: string): void {
-    if (!this.genRefs().includes(name)) this.genRefs.set([...this.genRefs(), name]);
-  }
-  // A character picture becomes a reference: it is already an image id of the
-  // data folder, so it is referenced where it stands (no copy into the chat).
-  addCharacterPhotoRef(photo: string): void {
-    this.addChatRef(photo);
+  closePictureRequest(): void {
+    this.pictureRequest.set(false);
   }
 
-  // Draws an image from the prompt (gen mode). The generation runs in the
-  // background: the server returns right away with the reserved "pending"
-  // name (a spinner placeholder) and the polling picks up the result. One draw
-  // per toggle — the mode is left after the request is accepted.
-  draw(prompt: string): boolean {
+  // Submits the description. Returns true when the card was accepted (the dialog
+  // then closes and the polling turns the placeholder into the picture).
+  requestPicture(request: string): boolean {
     const c = this.chatStore.chat();
-    if (!c || this.chatStore.sending()) return false;
-    if (!prompt) {
-      this.ui.error.set('Describe what to draw');
+    if (!c || this.generating()) return false;
+    const asked = request.trim();
+    if (!asked) {
+      this.ui.error.set('Describe the picture you want');
       return false;
     }
     this.ui.error.set('');
     this.generating.set(true);
     this.api
-      .postImage(c.id, prompt, this.genRefs())
+      .requestPicture(c.id, asked)
       .then((res) => {
-        this.genRefs.set([]);
-        this.genMode.set(false);
+        this.pictureRequest.set(false);
         this.chatStore.applyChat(res.chat);
       })
       .catch((e) => this.ui.error.set(String((e as Error).message)))
       .finally(() => this.generating.set(false));
     return true;
+  }
+
+  // The 🖼 button: a file from disk as a picture of this conversation. Nothing is
+  // generated, so the card arrives ready — and the server keeps it in the chat's
+  // folder unless the very same bytes are already a picture somewhere.
+  addPictureFile(dataUrl: string): void {
+    const c = this.chatStore.chat();
+    if (!c) return;
+    this.ui.error.set('');
+    this.api
+      .addPictureFile(c.id, dataUrl)
+      .then((res) => this.chatStore.applyChat(res.chat))
+      .catch((e) => this.ui.error.set(String((e as Error).message)));
   }
 
   // ---- the picture of the user's turn ----

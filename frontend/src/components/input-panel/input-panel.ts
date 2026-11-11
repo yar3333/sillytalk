@@ -4,14 +4,14 @@ import { ChatStore } from '../../services/chat-store';
 import { ImageStore } from '../../services/image-store';
 import { UiStore } from '../../services/ui-store';
 
-// The input panel: the error banner, the editing bar, the generation mode,
-// the attached images and the "📎 / 🎨 / textarea / send" row.
-// The chat state — ChatStore, the image-GENERATION state — ImageStore, the
+// The input panel: the error banner, the editing bar, the picture buttons, the
+// attached images and the "📎 / 🎨 / 🖼 / 📷 / textarea / send" row.
+// The chat state — ChatStore, the picture domain — ImageStore, the
 // error banner — UiStore. This component orchestrates the "what to send"
-// decision: edit -> ChatStore.saveEdit, gen mode -> ImageStore.draw,
-// otherwise -> ChatStore.send (which is why the stores don't depend on each
-// other). The input field text stays here: an effect substitutes it on
-// editTargetId (editing from the history) and clears it on a successful send.
+// decision: edit -> ChatStore.saveEdit, otherwise -> ChatStore.send (which is
+// why the stores don't depend on each other). The input field text stays here:
+// an effect substitutes it on editTargetId (editing from the history) and
+// clears it on a successful send.
 @Component({
   selector: 'app-input-panel',
   template: `
@@ -34,24 +34,6 @@ import { UiStore } from '../../services/ui-store';
           </button>
         </div>
       }
-      @if (imageStore.genMode()) {
-        <div class="gen-bar">
-          <span class="gen-label">References:</span>
-          @for (r of imageStore.genRefs(); track r) {
-            <span class="chip" [title]="r" (click)="imageStore.removeGenRef(r)">✕ {{ refLabel(r) }}</span>
-          }
-          @if (imageStore.genRefs().length === 0) {
-            <span class="gen-hint"
-              >click an image in the chat or a character photo — add a reference</span
-            >
-          }
-          <span class="gen-photos">
-            @for (ph of imageStore.characterPhotos(); track ph) {
-              <img [src]="photoUrl(ph)" (click)="imageStore.addCharacterPhotoRef(ph)" />
-            }
-          </span>
-        </div>
-      }
       @if (chatStore.pendingImages().length) {
         <div class="pending">
           @for (p of chatStore.pendingImages(); track $index) {
@@ -69,21 +51,31 @@ import { UiStore } from '../../services/ui-store';
         </div>
       }
       <div class="input-row">
-        <label class="icon-btn" data-testid="attach" title="Attach an image">
+        <label class="icon-btn" data-testid="attach" title="Attach a picture you are showing — it becomes a picture of your own">
           📎
           <input type="file" hidden multiple accept="image/*" (change)="onFiles($event)" />
         </label>
         @if (imageStore.canGen()) {
+          <!-- A picture the user asks for: they describe it in their own words
+               and language, the card appears as "pending" at once and the model
+               turns those words into a drawing prompt plus the reference
+               pictures, then the generator draws it — all in the background. -->
           <button
             class="icon-btn"
-            data-testid="gen-toggle"
-            [class.active]="imageStore.genMode()"
-            [title]="imageStore.genMode() ? 'Leave the generation mode' : 'Generate an image'"
-            (click)="imageStore.toggleGen()"
+            data-testid="ask-picture"
+            title="Ask for a picture — describe it in your own words"
+            (click)="imageStore.openPictureRequest()"
           >
             🎨
           </button>
         }
+        <!-- The same kind of message, but the picture already exists: a file
+             from disk, kept in this chat's folder unless the app already owns
+             exactly these bytes. Nothing is generated, so no generator needed. -->
+        <label class="icon-btn" data-testid="chat-picture" title="Add a picture file to this conversation">
+          🖼
+          <input type="file" hidden accept="image/*" (change)="onPictureFile($event)" />
+        </label>
         @if (imageStore.canGen() && chatStore.isUserTurn()) {
           <!-- The user's turn: the model looks over the dialogue, decides what
                picture fits it, and the generator draws it — all in the
@@ -112,7 +104,7 @@ import { UiStore } from '../../services/ui-store';
           [class.cancel]="chatStore.sending() && !chatStore.editTargetId()"
           (click)="onSend(ta)"
         >
-          {{ chatStore.editTargetId() ? '✓' : chatStore.sending() ? '✕' : imageStore.genMode() ? 'Draw' : '➤' }}
+          {{ chatStore.editTargetId() ? '✓' : chatStore.sending() ? '✕' : '➤' }}
         </button>
       </div>
     </div>
@@ -155,18 +147,6 @@ export class InputPanel {
     });
   }
 
-  // A character picture is an image id of the data folder, shown through the
-  // one media route.
-  photoUrl(id: string): string {
-    return this.api.mediaUrl(id);
-  }
-
-  // A reference chip shows the file name, not the whole data-relative path —
-  // the full id stays in the hover hint.
-  refLabel(id: string): string {
-    return id.slice(id.lastIndexOf('/') + 1);
-  }
-
   // The preview source: a data URL (just attached) — as-is, an image id of an
   // existing picture — through the media API (otherwise the URL is broken and
   // the thumbnail is black).
@@ -190,9 +170,9 @@ export class InputPanel {
     this.onSend(ta);
   }
 
-  // The "what to send" decision: the editing mode (✓) saves the edit, the
-  // generation mode (Draw) draws an image, otherwise it is a normal message.
-  // Keeping it here (not in a store) is what lets the store graph stay acyclic.
+  // The "what to send" decision: the editing mode (✓) saves the edit, otherwise
+  // it is a normal message (a picture is never sent from this field — it is
+  // asked for by its own button, which is what keeps the store graph acyclic).
   onSend(ta: HTMLTextAreaElement): void {
     // Editing a message always wins: the button is the save (✓) and saves the
     // edit, even while a reply is generating in the background (the backend
@@ -218,13 +198,7 @@ export class InputPanel {
       this.chatStore.cancelGeneration();
       return;
     }
-    if (this.imageStore.genMode()) {
-      ok = this.imageStore.draw(text.trim());
-      // A draw ignores the 📎 attachments — clear them on a successful send.
-      if (ok) this.chatStore.clearPendingImages();
-    } else {
-      ok = this.chatStore.send(text);
-    }
+    ok = this.chatStore.send(text);
     if (ok) {
       ta.value = '';
       this.autosize(ta);
@@ -241,6 +215,18 @@ export class InputPanel {
     }
     input.value = '';
     this.chatStore.onImagesAdded(urls);
+  }
+
+  // The 🖼 button: one file becomes a picture of this conversation right away —
+  // it is a message of its own, not part of the text being typed, so there is
+  // nothing to wait for and the field keeps whatever the user wrote in it.
+  async onPictureFile(e: Event): Promise<void> {
+    const input = e.target as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    const url = await this.readFile(file);
+    input.value = '';
+    this.imageStore.addPictureFile(url);
   }
 
   private readFile(file: File): Promise<string> {

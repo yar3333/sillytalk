@@ -9,10 +9,15 @@ import zlib from 'zlib';
 // The mock LLM reads the character name from the system prompt ("You are
 // <name> …") and answers "Mock reply from <name>." — enough for the suite
 // assertions (non-empty text, no [SILENT]/⚠️, the author is one of the chat
-// participants). The two side calls of the pipeline are answered by their own
-// branches: the prompt translation ("Translate …") and the picture planning of
-// the user's turn ("You write prompts for an image generator …"), which gets
-// the strict JSON plan the service parses.
+// participants). A responder (MockLlmOptions.customReplies) may answer with any
+// text, which is how a test makes a character END ITS LINE with a picture
+// marker — [IMAGE_BY_ID …] / [IMAGE_BY_PROMPT …]. The side calls of the pipeline
+// are answered by their own branches: the prompt translation ("Translate …"),
+// the two picture planners — the user's-turn one ("You plan one picture …") and
+// the one of a hand-written request ("You turn a hand-written request …", the
+// 🎨 dialog and the [IMAGE_BY_PROMPT] marker) — both getting the strict JSON plan
+// the service parses, plus the editor's "Make it English" and "Describe the
+// picture".
 //
 // The mock ComfyUI server speaks the part of the API the app uses — the
 // workflow converter, the input upload, the queue and history and the picture
@@ -91,6 +96,10 @@ export interface MockLlm {
   // prompt and the user text, so a test can see what the model was told about
   // the people and the pictures of the chat.
   lastPlanRequest(): { system: string; text: string } | null;
+  // The same for the planner of a hand-written picture request (the 🎨 dialog
+  // and the [IMAGE_BY_PROMPT] marker of a character) — what the model was told
+  // about the request, the dialogue and the people in it.
+  lastRequestPlanRequest(): { system: string; text: string } | null;
   close(): void;
 }
 
@@ -142,6 +151,8 @@ export async function startMockLlm(
   // + the dialogue/pictures/cast it was given) — a test reads it to check what
   // the model was actually told.
   let planRequest: { system: string; text: string } | null = null;
+  // The same for the planner of a hand-written request (🎨 / [IMAGE_BY_PROMPT]).
+  let requestPlanRequest: { system: string; text: string } | null = null;
   const responder = opts.customReplies;
   const server = http.createServer((req, res) => {
     let body = '';
@@ -176,6 +187,17 @@ export async function startMockLlm(
           // means the model "refused" — it answers with prose instead, which
           // the backend has to survive.
           planRequest = { system, text };
+          content = imagePlan
+            ? JSON.stringify(imagePlan)
+            : 'I am not sure what to draw here, sorry.';
+        } else if (system.startsWith('You turn a hand-written request')) {
+          // composeImagePromptFromRequest: the planner of a picture someone
+          // ASKED FOR in their own words — the 🎨 dialog of the user and the
+          // [IMAGE_BY_PROMPT] marker of a character. It reads the request, the
+          // dialogue around it, the cast and the pictures of the chat, and it
+          // answers with the same JSON shape (its caption is the request
+          // itself, so the plan's description is not used).
+          requestPlanRequest = { system, text };
           content = imagePlan
             ? JSON.stringify(imagePlan)
             : 'I am not sure what to draw here, sorry.';
@@ -217,6 +239,9 @@ export async function startMockLlm(
     },
     lastPlanRequest() {
       return planRequest;
+    },
+    lastRequestPlanRequest() {
+      return requestPlanRequest;
     },
     close() {
       server.close();

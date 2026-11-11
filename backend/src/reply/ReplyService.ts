@@ -12,6 +12,7 @@ import { createToken } from "../di";
 import { ImageBrief, ImageCastMember, ImagePromptPlan, TextGenerationService } from "../text_generation/TextGenerationService";
 import { ImageGenerationService } from "../image_generation/ImageGenerationService";
 import { ImageGenerationRecord } from "../shared/ImageMeta";
+import { ImageMetaService } from "../images/ImageMetaService";
 import { ImageJob } from "../image_generation/ImageJob";
 import { PersonsService } from "../persons/PersonsService";
 
@@ -30,10 +31,12 @@ export const DI_REPLY_SERVICE = createToken<ReplyService>("ReplyService");
 // returns the results the routes layer applies (a saved chat, a message, or a
 // typed failure).
 //
-// Pictures are the user's side of the conversation: a character reply is text
-// only. Each picture is its own message — an image card — carrying its
-// description and its generation data, and its file is named by a path relative
-// to the data folder.
+// Pictures are the neutral cards of the conversation: each is its own message
+// carrying its description and its generation data, its file named by a path
+// relative to the data folder, with no author of its own. A character's line
+// stays text — its picture markers ([IMAGE_BY_ID] / [IMAGE_BY_PROMPT]) are
+// executed here, so a character can show a picture without ever holding a file
+// or writing a drawing prompt.
 export class ReplyService {
   constructor(
     private readonly characters: CharactersService,
@@ -42,6 +45,10 @@ export class ReplyService {
     private readonly textGeneration: TextGenerationService,
     private readonly imageGeneration: ImageGenerationService,
     private readonly configuration: ConfigurationService,
+    // The images table, read for one thing: what the pictures a character owns
+    // show. A model cannot pick a reference it cannot read about, and the
+    // caption of a picture lives only there.
+    private readonly imageMeta: ImageMetaService,
   ) {}
 
   // The model the replies run on: the config's global chatModel, else the first
@@ -107,6 +114,12 @@ export class ReplyService {
 
   // ---- the character's reply ----
 
+  // How many pictures one line of the dialogue may ask for. A picture is the
+  // expensive thing in this app — one model call to plan it and a minute on a
+  // GPU to draw it — and a character that discovers it can attach things will
+  // happily attach five, so the limit is not a style preference.
+  private static readonly maxPicturesPerLine = 2;
+
   // Generates and appends a reply of the given character to the chat.
   // Returns null when the character stays silent (the reply is exactly
   // [SILENT]). The common part of a normal send, "another message from the AI"
@@ -137,8 +150,11 @@ export class ReplyService {
       .map((id) => this.characters.get(id))
       .filter((c): c is Character => c !== null);
     const person = chat.userId ? this.persons.get(chat.userId) : (this.persons.list()[0] ?? null);
+    // What the character may show: its own pictures, numbered exactly the way
+    // the prompt numbers them, because that list is what [IMAGE_BY_ID] counts.
+    const own = this.characterPictureCatalog(characterId);
     const system =
-      this.textGeneration.systemPromptFor(character, person, fellows) +
+      this.textGeneration.systemPromptFor(character, person, fellows, own) +
       (chat.systemSuffix ? `\n${chat.systemSuffix}` : "");
 
     // In a group chat we label lines with authors — the model must understand
@@ -197,7 +213,15 @@ export class ReplyService {
     if (spoken0 === null) return null;
     // Strip "Bob: …" / "Carol: Carol: …" — copies of author labels from the
     // history.
-    const spoken = this.textGeneration.stripNamePrefixes(spoken0, [character.name, ...fellows.map((c) => c.name)]);
+    const said = this.textGeneration.stripNamePrefixes(spoken0, [
+      character.name,
+      ...fellows.map((c) => c.name),
+    ]);
+    // The picture markers are an instruction to the APP, not part of what the
+    // character said: they are read here and stripped, so neither the reader nor
+    // the next model call ever has to look at a file name.
+    const markers = this.textGeneration.parsePictureMarkers(said, own.map((p) => p.id));
+    const spoken = markers.text;
 
     const assistantMsg: ChatMessage = {
       id: PathHelper.newId(),
@@ -221,9 +245,44 @@ export class ReplyService {
       const idx = fresh.messages.findIndex((m) => m.id === replacedMessage.id);
       if (idx === fresh.messages.length - 1) fresh.messages.splice(idx, 1);
     }
-    fresh.messages.push(assistantMsg);
+    // A line that is nothing but a marker says it with the picture alone — an
+    // empty speech bubble in front of a photo would be the only thing on screen.
+    const hasLine = spoken.length > 0;
+    if (hasLine) fresh.messages.push(assistantMsg);
     this.chats.save(fresh);
-    return assistantMsg;
+
+    // The cards come after the line is saved: a picture is its own message and
+    // follows the words that present it. (addImageMessage writes one row each;
+    // a save() after them would rewrite the table from this stale array.)
+    const slots = ReplyService.maxPicturesPerLine;
+    const attach = markers.attachIds.slice(0, slots);
+    const draw = markers.requests.slice(0, slots - attach.length);
+    for (const id of attach) {
+      // The picture is not rewritten — its row already says what it shows and
+      // who is in it. What the character decided is only WHICH picture is shown
+      // here, now, to whom.
+      this.chats.addImageMessage(fresh, id);
+    }
+    for (const request of draw) {
+      this.addRequestedPicture(fresh, request, { folder: "character", characterId });
+    }
+    return hasLine ? assistantMsg : null;
+  }
+
+  // What a character can show in a reply: its avatar first (the one picture the
+  // user picked to BE its face), then the rest of its folder — the same list the
+  // picture planner offers as its look references, and in the same order, so the
+  // character and the generator never disagree about which picture is its face.
+  // Capped: a folder of fifty photos would crowd the rest of the prompt out, and
+  // a model given thirty options picks none of them.
+  private characterPictureCatalog(characterId: string): Array<{ id: string; description?: string }> {
+    const avatar = this.characters.getAvatarId(characterId);
+    const ids = [...new Set([avatar, this.characters.pictureIdsOf(characterId)].flat().filter((id): id is string => !!id))];
+    const rows = this.imageMeta.getMany(ids);
+    return ids.slice(0, 12).map((id) => {
+      const shows = typeof rows.get(id)?.description === "string" ? (rows.get(id)?.description as string).trim() : "";
+      return shows ? { id, description: shows } : { id };
+    });
   }
 
   // ---- the user's pictures ----
@@ -235,58 +294,210 @@ export class ReplyService {
   attachUserImages(chatId: string, text: string, images: unknown[]): { chat: Chat; messages: ChatMessage[] } | null {
     const fresh = this.chats.get(chatId);
     if (!fresh) return null;
-    const ids = this.chats.normalizeImages(fresh.id, images);
     const caption = text.trim();
     const messages: ChatMessage[] = [];
     if (caption) messages.push(this.chats.addUserMessage(fresh, caption));
-    for (const id of ids) {
-      messages.push(this.chats.addImageMessage(fresh, id, { userId: fresh.userId, generation: { source: "upload" } }));
+    for (const item of images) {
+      const id = this.storeAttachment(fresh, item);
+      if (!id) continue;
+      messages.push(this.chats.addImageMessage(fresh, id, { generation: { source: "upload" } }));
     }
+    if (messages.length === 0) return null;
     return { chat: fresh, messages };
   }
 
-  // Draws a picture on the user's request (the 🎨 mode): a card of the active
-  // persona is saved right away with its reserved id and the "pending" status,
-  // and the generation runs in the background — the client polls and the file
-  // appears. The prompt is required in English, so a non-English one is
-  // translated with the chat model (the global pick) first; the file name is made of the
-  // prompt's first words, so a picture is recognisable in the files folder.
+  // Where the bytes of one 📎 attachment go.
   //
-  // Returns the saved chat and the new message, or null when the chat was
-  // deleted while the translation ran (nothing to save into).
-  async manualImage(chat: Chat, prompt: string, refs: string[]): Promise<{ chat: Chat; message: ChatMessage } | null> {
-    const spoken = await this.imageGeneration.ensureEnglishPrompt(this.resolveChatModel(), prompt);
-    const finalPrompt = this.withChatStyle(chat, spoken);
-    const id = this.chats.reservedImageId(chat.id, spoken);
-    const fresh = this.chats.get(chat.id);
-    if (!fresh) return null; // the chat was deleted while translating
-    const generation: ImageGenerationData = {
-      prompt: finalPrompt,
-      refs: refs.length > 0 ? refs : undefined,
-      source: "manual",
-      model: this.chatModelName(),
-      createdAt: new Date().toISOString(),
+  // A picture the user brings belongs to the PERSON who shared it, so a new file
+  // lands in that persona's folder (users/<id>/), not in one chat's: the same
+  // photo attached tomorrow in another chat is the same picture with the same
+  // description, and the persona's folder is where the user can find it again.
+  // The check comes before the write — a picture whose bytes already live
+  // anywhere in the data folders is used by its existing id rather than copied
+  // (ImageMetaService.findPictureByContent, the same rule the avatars follow) —
+  // and an id that arrives instead of a file is kept as it stands: the user
+  // pointed at a picture the app already has.
+  //
+  // Without a persona there is nobody's folder to write into, so the chat's own
+  // folder takes the file. A garbage item gives null and is dropped.
+  private storeAttachment(chat: Chat, item: unknown): string | null {
+    if (typeof item !== "string" || !item) return null;
+    if (item.startsWith("data:")) {
+      try {
+        return chat.userId
+          ? this.persons.storePicture(chat.userId, item)
+          : this.chats.saveImage(chat.id, item);
+      } catch {
+        return null; // not a readable picture — nothing was written
+      }
+    }
+    return this.chats.existingImageIds([item])[0] ?? null;
+  }
+
+  // ---- a picture somebody asked for in their own words ----
+
+  // The user pressed 🎨, wrote what they want to see (any language, a character's
+  // name in it is allowed and welcome — see composeImagePromptFromRequest) and
+  // pressed OK. A neutral card is saved right away with the "pending" status and
+  // the request as its caption, and the answer comes back at once: the plan and
+  // the drawing run in the background and the client's polling shows the
+  // placeholder becoming the picture, so typing and sending are never blocked.
+  //
+  // Returns the saved chat and the new card, or null when there is no such chat
+  // or nothing was asked for.
+  requestPicture(chatId: string, request: string): { chat: Chat; message: ChatMessage } | null {
+    const fresh = this.chats.get(chatId);
+    if (!fresh) return null;
+    const asked = request.trim();
+    if (!asked) return null;
+    return { chat: fresh, message: this.addRequestedPicture(fresh, asked, { folder: "chat" }) };
+  }
+
+  // A ready picture the user picked from disk, as its own neutral card (the 🖼
+  // button next to the generator). It goes to the CHAT's folder — the picture
+  // belongs to this conversation, which is what makes it different from a 📎
+  // attachment, and the request is exactly the same one the picture editor's
+  // "from a file" already makes: a byte-identical picture the app already owns
+  // is used by its existing id, not copied.
+  //
+  // Returns the saved chat and the card, or null when there is no such chat or
+  // the payload is not a picture.
+  addPictureFile(chatId: string, dataUrl: string): { chat: Chat; message: ChatMessage } | null {
+    const fresh = this.chats.get(chatId);
+    if (!fresh) return null;
+    let id: string;
+    try {
+      id = this.chats.saveImage(chatId, dataUrl);
+    } catch {
+      return null;
+    }
+    return {
+      chat: fresh,
+      message: this.chats.addImageMessage(fresh, id, { generation: { source: "upload" } }),
     };
-    const message = this.chats.addImageMessage(fresh, id, {
-      userId: fresh.userId,
-      generation,
+  }
+
+  // The card a requested picture starts with: a placeholder with a provisional
+  // name, "pending", and the request itself as its caption — so the user reads
+  // their own words under the spinner and, later, under the picture: what they
+  // asked for is what the card says it shows. (The drawing prompt the model wrote
+  // from those words is the card's prompt, a separate field of the same row.)
+  //
+  // `target` is where the file will live. A character's marker asks for a picture
+  // OF itself, so that file goes into the character's folder and joins its
+  // starter set — the next scene of the same conversation can then be drawn from
+  // the face this one established, and the user finds it with the character's
+  // other pictures. Anything the user asks for is part of the conversation, so it
+  // goes into the chat's folder.
+  private addRequestedPicture(
+    chat: Chat,
+    request: string,
+    target: { folder: "chat" } | { folder: "character"; characterId: string },
+  ): ChatMessage {
+    const placeholder =
+      target.folder === "character"
+        ? this.characters.reservedPictureId(target.characterId, "a picture")
+        : this.chats.reservedImageId(chat.id, "a picture");
+    const message = this.chats.addImageMessage(chat, placeholder, {
+      description: request,
+      generation: {
+        // A picture the user typed is one they asked for; a picture a character's
+        // marker asked for was written by the model, and the picture browser
+        // shows their fields differently for that reason.
+        source: target.folder === "character" ? "auto" : "manual",
+        model: this.chatModelName(),
+        createdAt: new Date().toISOString(),
+      },
       status: "pending",
     });
-    this.startChatImageJob(id, finalPrompt, refs, chat.id, {
-      prompt: finalPrompt,
-      refs,
-      source: "manual",
-      model: this.chatModelName(),
-    });
-    return { chat: fresh, message };
+    void this.runPictureRequest(chat.id, message.id, placeholder, request, target);
+    return message;
+  }
+
+  // The background half of a requested picture: ask the model for the drawing
+  // prompt and the references the words imply, repoint the placeholder at the
+  // readable name the plan chose, and run the generator on it.
+  //
+  // The reference set is the point of the model call rather than a detail of it:
+  // a request may name the people of the story, and a generator that has never
+  // heard those names needs the picture of the face instead of the name (see
+  // finishPlan, which assembles the references and the sentence that binds them).
+  //
+  // Each step re-reads the card — the user may have cancelled or deleted it while
+  // the model was thinking, and a cancelled card stays cancelled.
+  private async runPictureRequest(
+    chatId: string,
+    messageId: string,
+    placeholder: string,
+    request: string,
+    target: { folder: "chat" } | { folder: "character"; characterId: string },
+  ): Promise<void> {
+    const giveUp = (error: string): void => {
+      this.chats.setMessageImageStatus(chatId, messageId, placeholder, "failed", error);
+    };
+    try {
+      const chat = this.chats.get(chatId);
+      if (!chat) return;
+      const model = this.resolveImagePromptModel();
+      if (!model) {
+        giveUp("No model configured for the chat");
+        return;
+      }
+      const maxRefs = this.imageGeneration.maxReferenceCount();
+      const material = this.pictureMaterial(chat, messageId, maxRefs);
+      const plan = await this.textGeneration.composeImagePromptFromRequest(model, {
+        request,
+        context: this.conversationBrief(chat, messageId),
+        images: material.images,
+        cast: material.cast,
+        maxRefs,
+        ...(chat.stylePrompt ? { style: chat.stylePrompt } : {}),
+        sampling: chat.sampling,
+      });
+      if (!plan) {
+        giveUp("The model did not describe a picture to draw");
+        return;
+      }
+      // Cancelled or deleted while the model was thinking — leave it as the user
+      // left it.
+      if (!this.cardIsPending(chatId, messageId, placeholder)) return;
+      const done = this.finishPlan(chat, plan, material);
+      const id =
+        target.folder === "character"
+          ? this.characters.reservedPictureId(target.characterId, done.name)
+          : this.chats.reservedImageId(chatId, done.name);
+      // The rename carries the row along — the request that is its caption
+      // travels with it, so the caption of the finished picture is still the
+      // words it was asked for.
+      if (!this.chats.replaceMessageImageId(chatId, messageId, placeholder, id)) return;
+      this.chats.setMessageImageStatus(chatId, messageId, id, "pending");
+      const generation: ImageGenerationData = {
+        prompt: done.prompt,
+        refs: done.refs.length > 0 ? done.refs : undefined,
+        source: target.folder === "character" ? "auto" : "manual",
+        model: model.name,
+        createdAt: new Date().toISOString(),
+      };
+      if (done.depicts.length > 0) this.chats.setMessageDepicts(chatId, messageId, done.depicts);
+      this.chats.writeImageMeta(id, request, generation, done.depicts);
+      this.startChatImageJob(id, done.prompt, done.refs, chatId, {
+        prompt: done.prompt,
+        refs: done.refs,
+        source: target.folder === "character" ? "auto" : "manual",
+        model: model.name,
+      });
+    } catch (err) {
+      giveUp((err as Error).message);
+    }
   }
 
   // ---- the picture of the user's turn ----
 
-  // Draws the picture the user wants on their own turn, planned by the model
-  // from the whole dialogue. The call returns as soon as the placeholder card
-  // is in the chat: the planning and the generation run in the background, so
-  // the user can keep writing and send their own message meanwhile, and the
+  // Draws the picture the app picks for the user's own turn, planned by the model
+  // from the whole dialogue — nothing of it was asked for, which is what makes it
+  // different from the 🎨 dialog. The call returns as soon as the placeholder
+  // card is in the chat: the planning and the generation run in the background,
+  // so the user can keep writing and send their own message meanwhile, and the
   // client's polling shows the placeholder becoming the picture.
   //
   // Returns the saved chat with the placeholder, or null when the chat is gone.
@@ -299,7 +510,6 @@ export class ReplyService {
     // repointed at the readable name once the plan is in.
     const placeholder = this.chats.reservedImageId(fresh.id, "a picture for the conversation");
     const message = this.chats.addImageMessage(fresh, placeholder, {
-      userId: fresh.userId,
       generation: { source: "auto", model: this.chatModelName(), createdAt: new Date().toISOString() },
       status: "pending",
     });
@@ -376,27 +586,37 @@ export class ReplyService {
     return msg?.imageStatus?.[imageId] === "pending";
   }
 
-  // Everything the picture-planning call needs to know about the conversation:
-  // who is in it and what happened, as plain text. The plan is a text call —
-  // the pictures are described, not shown — so any model can make it.
+  // Everything the picture-planning calls need to know about the conversation:
+  // who is in it and what happened, as plain text. A plan is a text call — the
+  // pictures are described, not shown — so any model can make one.
   // The card being filled right now is left out: it is the app's own
   // placeholder, not something that happened in the dialogue.
-  private dialogueForImage(chat: Chat, exceptMessageId?: string): string {
+  private conversationBrief(chat: Chat, exceptMessageId?: string): string {
     const persona = this.persons.get(chat.userId);
     const lines = chat.messages
       .filter((m) => !m.error && m.id !== exceptMessageId)
       .map((m) => {
-        const who = this.authorName(m);
-        if (isImageMessage(m)) return `${who}: [shares a picture: ${m.text.trim() || "a picture with no description"}]`;
-        return `${who}: ${m.text}`;
+        // A picture card has no author, so the line says only that a picture was
+        // shown and what it shows — the people in it are in the picture
+        // catalogue below, by name, which is what the plan answers with.
+        if (isImageMessage(m)) {
+          return `[a picture is shown here: ${m.text.trim() || "a picture with no description"}]`;
+        }
+        return `${this.authorName(m)}: ${m.text}`;
       });
     return [
       `Characters: ${chat.characterIds.map((id) => this.characters.get(id)?.name ?? id).join(", ") || "nobody"}.`,
       `The user: ${persona?.name ?? "the user"}${persona?.description?.trim() ? ` — ${persona.description.trim()}` : ""}.`,
       "The conversation so far:",
       lines.length > 0 ? lines.join("\n") : "(it has just started)",
-      "The user is about to send their next message with a picture.",
     ].join("\n");
+  }
+
+  // The same brief with the question of the picture of the user's turn under it:
+  // what to show next, on the user's behalf. A requested picture does not ask
+  // that question — its subject came from the person who asked.
+  private dialogueForImage(chat: Chat, exceptMessageId?: string): string {
+    return `${this.conversationBrief(chat, exceptMessageId)}\nThe user is about to send their next message with a picture.`;
   }
 
   // ---- the material a picture is planned from ----
@@ -541,7 +761,10 @@ export class ReplyService {
           role: "chat",
           description: m.text.trim() || undefined,
           prompt: m.generation?.prompt,
-          owner: this.authorName(m),
+          // Only a card that still names an author says who shared it (a card of
+          // an older chat); a neutral one is simply a picture that was shown
+          // here, and the people in it are named by `shows` below.
+          ...(m.userId || m.characterId ? { owner: this.authorName(m) } : {}),
           age: fromEnd === 0 ? "the last message" : `${fromEnd} messages ago`,
           origin: m.generation?.prompt ? "generated" : "uploaded",
         },

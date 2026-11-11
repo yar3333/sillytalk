@@ -296,3 +296,42 @@ describe("avatar (an image id in the row)", () => {
     expect(svc.clearAvatar("alice")).toBe(false);
   });
 });
+
+// The character's own pictures: the folder a [IMAGE_BY_PROMPT] draw of the
+// character writes into, so the new picture joins the starter set that gives the
+// character its face in the next picture too.
+describe("reservedPictureId (a name for a new picture of the character)", () => {
+  it("names a picture of the character's folder and creates the folder, not the file", () => {
+    characters.save({ id: "alice", name: "Alice", description: "" });
+    fs.rmSync(path.join(dir, "alice"), { recursive: true, force: true });
+
+    const id = characters.reservedPictureId("alice", "Alice at the harbour");
+    expect(id).toMatch(/^characters\/alice\/alice-at-the-harbour-[0-9a-f]{6}\.png$/);
+    // the folder must exist for the job that writes the picture into it
+    expect(fs.existsSync(path.join(dir, "alice"))).toBe(true);
+    // but only the NAME is reserved: a job writes to a temp file and renames it
+    // on success, so a failed draw leaves no half-picture behind
+    expect(fs.existsSync(path.join(root, id.split("/").join(path.sep)))).toBe(false);
+  });
+
+  it("gives every call its own name, so two jobs of one character cannot collide", () => {
+    characters.save({ id: "alice", name: "Alice", description: "" });
+    const first = characters.reservedPictureId("alice", "a red boat");
+    const second = characters.reservedPictureId("alice", "a red boat");
+    expect(first).not.toBe(second);
+  });
+
+  it("keeps the extension it is given and falls back when the hint has no words", () => {
+    characters.save({ id: "alice", name: "Alice", description: "" });
+    expect(characters.reservedPictureId("alice", "a cat", ".jpg")).toMatch(
+      /^characters\/alice\/a-cat-[0-9a-f]{6}\.jpg$/,
+    );
+    expect(characters.reservedPictureId("alice", "!!!")).toMatch(
+      /^characters\/alice\/image-[0-9a-f]{6}\.png$/,
+    );
+  });
+
+  it("refuses an id that cannot name a folder", () => {
+    expect(() => characters.reservedPictureId("a b", "a cat")).toThrow(/character ID/i);
+  });
+});

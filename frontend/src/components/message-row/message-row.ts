@@ -129,7 +129,7 @@ import { avatarLetter, imageHintFor, splitNarration as splitNarrationParts } fro
                       [src]="mediaUrl(img)"
                       (click)="onImageClick(img)"
                       [title]="imageHint(img)"
-                      [alt]="caption() || 'Picture shared by ' + senderName()"
+                      [alt]="caption() || 'Picture'"
                     />
                     <!-- The quick redraw. Everything else about the picture
                          (its prompt, its description, the file it points at)
@@ -206,9 +206,11 @@ export class MessageRow implements OnDestroy {
     return this.promptText().length > 0;
   }
   pendingLabel(): string {
-    return this.message().generation?.source === 'auto'
-      ? 'Planning and drawing the picture…'
-      : 'Generating the image…';
+    // A picture that is being asked for is first PLANNED (the model turns the
+    // words into a drawing prompt and a reference set), so the label says both
+    // halves. A redraw of a stored prompt needs no planning and says only what
+    // it is doing.
+    return this.promptText() ? 'Generating the image…' : 'Planning and drawing the picture…';
   }
 
   // The ✎ of the row: a text message goes into the bottom field's edit mode; a
@@ -294,26 +296,34 @@ export class MessageRow implements OnDestroy {
   imgStatus(img: string): 'pending' | 'failed' | 'cancelled' | null {
     return this.message().imageStatus?.[img] ?? null;
   }
-  // Clicking a ready image: add it as a generation reference AND open it in
-  // the lightbox (enlarged), so the action is visible and the user can see the
-  // image larger.
+  // Clicking a ready image opens it in the lightbox (enlarged). A click adds no
+  // reference any more: the reference set of a picture is what the model builds
+  // when the picture is asked for, not something the user stacks by clicking.
   onImageClick(img: string): void {
-    this.imageStore.addChatRef(img);
     this.imageStore.openLightbox(this.mediaUrl(img));
   }
   imageError(img: string): string {
     return this.message().imageErrors?.[img] ?? '';
   }
-  // The message author is stored on the message itself: user — the persona
+  // A text message's author is stored on the message itself: user — the persona
   // (msg.userId), assistant — the character (msg.characterId). Messages of old
   // authors keep their names and avatars even after the participants change.
+  //
+  // A picture card has NO author, and that is the point: it is not something a
+  // person said. The words a person wrote about a picture are their own message
+  // right before it; the card says what is on the picture and, in its row, who
+  // stands in it — so naming a speaker over it would only invite the model to
+  // answer the picture as if it were a line of dialogue.
   senderName(): string {
+    if (this.isCard()) return 'A picture';
     if (this.message().role === 'user') {
       return this.chatStore.userOf(this.message().userId)?.name || 'You';
     }
     return this.chatStore.characterNameOf(this.message().characterId);
   }
   avatarUrl(): string {
+    // The neutral sign of a picture card, not somebody's face.
+    if (this.isCard()) return '';
     if (this.message().role === 'user') {
       const a = this.chatStore.userOf(this.message().userId)?.avatar;
       return a ? this.api.mediaUrl(a) : '';
@@ -323,6 +333,7 @@ export class MessageRow implements OnDestroy {
     return a ? this.api.mediaUrl(a) : '';
   }
   letter(): string {
+    if (this.isCard()) return '🖼';
     return avatarLetter(this.senderName());
   }
   // The in-place "Regenerating…" state: only for the last assistant message

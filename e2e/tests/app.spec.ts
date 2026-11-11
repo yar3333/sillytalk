@@ -789,12 +789,13 @@ test('the ID of a chat: the creation date by default, renamed with its pictures 
   await page.goto('/');
   await expect(page.getByTestId('input')).toBeVisible();
 
-  // A drawn picture gives the rename a file and a row to move.
-  await page.getByTestId('gen-toggle').click();
-  await page.getByTestId('input').fill('a red circle');
-  await page.getByTestId('send').click();
+  // A drawn picture gives the rename a file and a row to move: the 🎨 dialog
+  // asks for one in words, the app plans and draws it in the background.
+  await page.getByTestId('ask-picture').click();
+  await page.getByTestId('picture-ask-text').fill('a red circle');
+  await page.getByTestId('picture-ask-ok').click();
   await expect(page.getByTestId('img-pending')).toBeVisible({ timeout: 15000 });
-  await expect(page.getByTestId('img-pending')).toBeHidden({ timeout: 20000 });
+  await expect(page.getByTestId('img-pending')).toBeHidden({ timeout: 25000 });
 
   // The open chat is named by its creation moment, not a UUID.
   const list0 = (await (await fetch(`${API}/chats`)).json()) as Array<{ id: string }>;

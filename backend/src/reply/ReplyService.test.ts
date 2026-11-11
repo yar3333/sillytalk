@@ -81,6 +81,10 @@ class StubConfigurationService extends ConfigurationService {
 class StubTextGeneration extends TextGenerationService {
   replyText = "Hello from the stub.";
   lastHistory: ChatMessage[] = [];
+  // The system prompt of the last call: what the model was TOLD (the picture
+  // markers and the numbered list of the character's own pictures live there),
+  // which the assertions about the picture protocol read.
+  lastSystem = "";
   modelGate: Promise<void> = Promise.resolve();
 
   plan: ImagePromptPlan | null = {
@@ -102,11 +106,28 @@ class StubTextGeneration extends TextGenerationService {
   planCalls = 0;
   planGate: Promise<void> = Promise.resolve();
 
+  // The planner of a picture somebody asked for in their own words (the 🎨
+  // dialog, a character's [IMAGE_BY_PROMPT]). It answers with the same plan
+  // ON PURPOSE, description included: the app must ignore that description and
+  // keep the requester's own words as the card's caption, and a stub that
+  // answered with an empty one could not prove it.
+  requestPlanCalls = 0;
+  requestPlanInput: {
+    request: string;
+    context?: string;
+    images: ImageBrief[];
+    cast: ImageCastMember[];
+    maxRefs: number;
+    style?: string;
+  } | null = null;
+  requestPlanGate: Promise<void> = Promise.resolve();
+
   constructor() {
     super(new StubConfigurationService());
   }
 
-  async chatCompletion(_model: Model, _system: string, history: ChatMessage[]): Promise<string> {
+  async chatCompletion(_model: Model, system: string, history: ChatMessage[]): Promise<string> {
+    this.lastSystem = system;
     this.lastHistory = history;
     await this.modelGate;
     return this.replyText;
@@ -133,6 +154,30 @@ class StubTextGeneration extends TextGenerationService {
       ...(input.language !== undefined ? { language: input.language } : {}),
     };
     await this.planGate;
+    return this.plan;
+  }
+
+  async composeImagePromptFromRequest(
+    _model: Model,
+    input: {
+      request: string;
+      context?: string;
+      images: ImageBrief[];
+      cast?: ImageCastMember[];
+      maxRefs?: number;
+      style?: string;
+    },
+  ): Promise<ImagePromptPlan | null> {
+    this.requestPlanCalls++;
+    this.requestPlanInput = {
+      request: input.request,
+      ...(input.context !== undefined ? { context: input.context } : {}),
+      images: input.images,
+      cast: input.cast ?? [],
+      maxRefs: input.maxRefs ?? 0,
+      ...(input.style !== undefined ? { style: input.style } : {}),
+    };
+    await this.requestPlanGate;
     return this.plan;
   }
 
@@ -275,17 +320,27 @@ beforeEach(() => {
   characters = new CharactersService(
     () => path.join(root, "characters"),
     () => path.join(root, "catalogs.db"),
+    imageMeta,
   );
   persons = new PersonsService(
     () => path.join(root, "users"),
     () => path.join(root, "catalogs.db"),
+    imageMeta,
   );
   characters.save({ id: "alice", name: "Alice", description: "A test character." });
   persons.save({ id: "me", name: "Me", description: "" });
   textGeneration = new StubTextGeneration();
   fake = makeFakeImageGeneration();
   imageGeneration = fake.imageGeneration;
-  reply = new ReplyService(characters, persons, chats, textGeneration, imageGeneration, configuration);
+  reply = new ReplyService(
+    characters,
+    persons,
+    chats,
+    textGeneration,
+    imageGeneration,
+    configuration,
+    imageMeta,
+  );
 });
 
 // The images-table row of a picture, for the assertions about what the picture
@@ -368,10 +423,10 @@ describe("appendAssistantReply", () => {
     expect(saved.messages[1].text).toBe("Hello from the stub.");
   });
 
-  it("a character reply carries no picture: only the user shares images", async () => {
+  it("a line without markers is words only — no card is invented for it", async () => {
     const chat = newChat();
-    // the user shared a picture right before the reply — the character still
-    // answers with words, it has nothing to attach or draw
+    // the user shared a picture right before the reply; the character answers
+    // with words and asks for nothing, so the reply carries no picture of its own
     chats.addImageMessage(chats.get(chat.id)!, chats.reservedImageId(chat.id, "a red boat"), {
       description: "a red boat",
     });
@@ -379,6 +434,120 @@ describe("appendAssistantReply", () => {
     expect(msg?.images).toEqual([]);
     expect(msg?.imageStatus).toBeUndefined();
     expect(msg?.generation).toBeUndefined();
+    expect(fake.started).toHaveLength(0);
+  });
+
+  describe("the picture markers of a character's line", () => {
+    // The character owns one picture — a file in its folder, which is what the
+    // prompt lists and what [IMAGE_BY_ID] counts.
+    function ownPicture(): string {
+      const file = path.join(root, "characters", "alice", "photo1.jpg");
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, "img");
+      return "characters/alice/photo1.jpg";
+    }
+
+    it("attaches one of its own pictures and keeps the marker out of the line", async () => {
+      const chat = newChat();
+      const own = ownPicture();
+      textGeneration.replyText = "Look — that is me at the door.\n[IMAGE_BY_ID 1]";
+      const msg = await reply.appendAssistantReply(chat, model(), "alice");
+      expect(msg?.text).toBe("Look — that is me at the door.");
+
+      const saved = chats.get(chat.id)!;
+      const card = saved.messages[saved.messages.length - 1];
+      expect(card.kind).toBe("image");
+      expect(card.images).toEqual([own]);
+      // the marker left the line before it was saved, so neither the reader nor
+      // the next model call ever sees a file name
+      expect(saved.messages.some((m) => m.text.includes("IMAGE_BY"))).toBe(false);
+      // and a card names nobody: not the character that shared it, not the persona
+      expect(card.userId).toBeUndefined();
+      expect(card.characterId).toBeUndefined();
+      // nothing was drawn, so no job and no status
+      expect(fake.started).toHaveLength(0);
+      expect(card.imageStatus).toBeUndefined();
+    });
+
+    it("puts the character's own pictures in front of the model, numbered", async () => {
+      ownPicture();
+      imageMeta.set("characters/alice/photo1.jpg", { description: "alice at the door" });
+      const chat = newChat();
+      await reply.appendAssistantReply(chat, model(), "alice");
+      // The model is shown the list [IMAGE_BY_ID] counts, with what each picture
+      // says it shows — that is what lets it choose between two of its own faces
+      // instead of guessing, and what makes the number the marker writes mean
+      // the picture the character actually has.
+      expect(textGeneration.lastSystem).toContain("1. characters/alice/photo1.jpg — alice at the door");
+      expect(textGeneration.lastSystem).toContain("[IMAGE_BY_ID");
+    });
+
+    it("draws a new picture into the character's own folder", async () => {
+      const chat = newChat();
+      textGeneration.replyText = "I painted it this morning.\n[IMAGE_BY_PROMPT рыжая лиса в снегу]";
+      const msg = await reply.appendAssistantReply(chat, model(), "alice");
+      expect(msg?.text).toBe("I painted it this morning.");
+
+      const saved = chats.get(chat.id)!;
+      const card = saved.messages[saved.messages.length - 1];
+      expect(card.kind).toBe("image");
+      // The picture OF the character belongs to the character: it joins the
+      // starter set, so the next scene is drawn from this face.
+      expect(card.images[0]).toMatch(/^characters\/alice\//);
+      expect(card.imageStatus).toEqual({ [card.images[0]]: "pending" });
+      expect(card.text).toBe("рыжая лиса в снегу");
+      // A model wrote this request, not the user, which is what the picture
+      // browser reads when it decides whether to show the prompt for editing.
+      expect(card.generation).toMatchObject({ source: "auto" });
+      // the words were handed to the planner as they were written
+      expect(textGeneration.requestPlanInput?.request).toBe("рыжая лиса в снегу");
+
+      await flushJobs();
+      const after = chats.get(chat.id)!.messages[saved.messages.length - 1];
+      expect(after.images[0]).toMatch(/^characters\/alice\/a-red-boat-at-dusk-[0-9a-f]{6}\.png$/);
+      expect(fake.started).toHaveLength(1);
+      expect(fake.started[0].id).toBe(after.images[0]);
+    });
+
+    it("a line that is only a marker says it with the picture alone", async () => {
+      const chat = newChat();
+      textGeneration.replyText = "[IMAGE_BY_PROMPT a cat on the windowsill]";
+      const msg = await reply.appendAssistantReply(chat, model(), "alice");
+      expect(msg).toBeNull();
+      const saved = chats.get(chat.id)!;
+      // no empty speech bubble in front of the picture
+      expect(saved.messages).toHaveLength(2);
+      expect(saved.messages[0].text).toBe("Hi");
+      expect(saved.messages[1].kind).toBe("image");
+      await flushJobs();
+    });
+
+    it("drops a marker that names a picture the character does not own", async () => {
+      const chat = newChat();
+      const theirs = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=", { nameHint: "the-user-photo" });
+      textGeneration.replyText = `Yours is nicer.\n[IMAGE_BY_ID ${theirs}]`;
+      const msg = await reply.appendAssistantReply(chat, model(), "alice");
+      expect(msg?.text).toBe("Yours is nicer.");
+      const saved = chats.get(chat.id)!;
+      // The user's picture is not the character's to share, so no card appeared;
+      // an invented id never becomes a card that cannot load either. And the
+      // half-executed instruction is not shown to the reader or repeated back to
+      // the model on the next turn.
+      expect(saved.messages).toHaveLength(2);
+      expect(saved.messages[1].images).toEqual([]);
+      expect(saved.messages.every((m) => !m.text.includes("IMAGE_BY_ID"))).toBe(true);
+    });
+
+    it("carries at most two pictures out of one line", async () => {
+      const chat = newChat();
+      ownPicture();
+      textGeneration.replyText =
+        "One, two.\n[IMAGE_BY_ID 1]\n[IMAGE_BY_PROMPT a fox]\n[IMAGE_BY_PROMPT another fox]";
+      await reply.appendAssistantReply(chat, model(), "alice");
+      const saved = chats.get(chat.id)!;
+      expect(saved.messages.filter((m) => m.kind === "image")).toHaveLength(2);
+      await flushJobs();
+    });
   });
 
   it("returns null and saves nothing when the character stays silent", async () => {
@@ -520,16 +689,45 @@ describe("attachUserImages", () => {
     expect(stored.map((m) => m.kind)).toEqual(["text", "text", "image", "image"]);
     expect(stored[1].text).toBe("look at these");
     expect(stored[1].images).toEqual([]);
-    // every picture is a card of its own, under the active persona, with a
-    // file inside the chat folder addressed by its id
+    // Every picture is a card of its own, naming nobody, and its file belongs to
+    // the PERSON who shares it: the same photo attached in another chat is the
+    // same picture with the same description, and the user finds it again in
+    // their own folder rather than in one conversation's.
     const [cardA, cardB] = stored.slice(2);
-    expect(cardA.userId).toBe("me");
-    expect(cardA.images).toHaveLength(1);
+    expect(cardA.userId).toBeUndefined();
+    expect(cardA.images[0]).toMatch(/^users\/me\/photo-[0-9a-f]{6}\.png$/);
     expect(cardB.images[0]).not.toBe(cardA.images[0]);
     for (const card of [cardA, cardB]) {
       expect(card.generation?.source).toBe("upload");
       expect(fs.existsSync(PathHelper.resolveImageId(card.images[0])!)).toBe(true);
     }
+  });
+
+  it("a chat with no persona has nobody's folder to write into, so the chat's own takes the file", () => {
+    const chat = chats.create(["alice"], "");
+    chat.messages.push({ id: "u1", role: "user", kind: "text", text: "Hi", images: [], timestamp: 1 });
+    chats.save(chat);
+    const result = reply.attachUserImages(chat.id, "", ["data:image/png;base64,aGVsbG8="]);
+    const card = result!.chat.messages[result!.chat.messages.length - 1];
+    expect(card.images[0]).toMatch(new RegExp(`^chats/${chat.id}/img-[0-9a-f]{6}\\.png$`));
+  });
+
+  it("a picture the user already owns is used by its existing id, not uploaded again", () => {
+    const chat = newChat();
+    const mine = persons.storePicture("me", "data:image/png;base64,aGVsbG8=", "my portrait");
+    const result = reply.attachUserImages(chat.id, "again", ["data:image/png;base64,aGVsbG8="]);
+    const card = result!.chat.messages[result!.chat.messages.length - 1];
+    // The bytes are the picture, so one photo does not become two records — and
+    // the caption the user wrote for it earlier is what the card reads.
+    expect(card.images).toEqual([mine]);
+  });
+
+  it("an id instead of a file is kept as it stands: a picture the app already has", () => {
+    const chat = newChat();
+    const photo = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=", { nameHint: "a harbour" });
+    const result = reply.attachUserImages(chat.id, "this one", [photo]);
+    const card = result!.chat.messages[result!.chat.messages.length - 1];
+    expect(card.images).toEqual([photo]);
   });
 
   it("a bare attachment makes a card and no empty caption message", () => {
@@ -558,58 +756,107 @@ describe("attachUserImages", () => {
   });
 });
 
-describe("manualImage", () => {
-  it("appends a pending card whose file name comes from the prompt and starts the job", async () => {
+describe("requestPicture (a picture the user asked for in their own words)", () => {
+  it("saves the pending card at once, with the request as its caption", async () => {
     const chat = newChat();
-    const result = await reply.manualImage(chat, "a red fox in the snow", []);
+    const g = gate();
+    textGeneration.requestPlanGate = g.promise; // the planning call "thinks"
+    const result = reply.requestPicture(chat.id, "рыжая лиса в снегу у калитки")!;
+    g.release();
     expect(result).not.toBeNull();
-    const { chat: saved, message } = result!;
+    const { chat: saved, message } = result;
     expect(message.kind).toBe("image");
-    expect(message.images).toHaveLength(1);
     const id = message.images[0];
-    // a readable, english, 2–5 word name — not a random id
-    expect(id).toMatch(/\/a-red-fox-in-the-[0-9a-f]{6}\.png$/);
+    // The card says what the person asked for, in their own language: the
+    // request IS the description, and the English drawing prompt is a separate
+    // field the plan has not even written yet.
+    expect(message.text).toBe("рыжая лиса в снегу у калитки");
     expect(message.imageStatus).toEqual({ [id]: "pending" });
-    expect(message.generation).toMatchObject({ prompt: "a red fox in the snow", source: "manual", model: "m1" });
-    expect(jobShapes(fake.started)).toEqual([{ id, prompt: "a red fox in the snow", refs: [] }]);
+    expect(message.generation).toMatchObject({ source: "manual", model: "m1" });
+    expect(message.userId).toBeUndefined();
+    // The user's own request is a picture OF THE CONVERSATION, so its file lives
+    // in the chat's folder, not in anybody's.
+    expect(id).toMatch(new RegExp(`^chats/${chat.id}/a-picture-[0-9a-f]{6}\\.png$`));
     expect(chats.get(chat.id)!.messages).toHaveLength(2);
     expect(saved.id).toBe(chat.id);
     // nothing was written to the reserved name yet — the card is the placeholder
     expect(fs.existsSync(PathHelper.resolveImageId(id)!)).toBe(false);
+    await flushJobs();
+  });
+
+  it("turns the request into a prompt and a reference set, and keeps the request as the caption", async () => {
+    const chat = newChat();
+    const { message } = reply.requestPicture(chat.id, "Алиса у калитки в снегу")!;
+    await flushJobs();
+    // What the planner was asked with: the request as it was written, the
+    // dialogue around it, and the cast — so "Алиса" can be matched to the
+    // picture of her face instead of a name the generator has never heard.
+    expect(textGeneration.requestPlanCalls).toBe(1);
+    expect(textGeneration.requestPlanInput?.request).toBe("Алиса у калитки в снегу");
+    expect(textGeneration.requestPlanInput?.context).toContain("Hi");
+    expect(textGeneration.requestPlanInput?.cast.map((c) => c.ref)).toEqual(["char:alice", "user:me"]);
+    expect(textGeneration.requestPlanInput?.maxRefs).toBe(2);
+
+    const saved = chats.get(chat.id)!.messages.find((m) => m.id === message.id)!;
+    const id = saved.images[0];
+    // the placeholder became the readable name the plan chose
+    expect(id).toMatch(new RegExp(`^chats/${chat.id}/a-red-boat-at-dusk-[0-9a-f]{6}\\.png$`));
+    // The caption is STILL the user's sentence, not the description the plan
+    // offered (the stub answers with one, on purpose).
+    expect(saved.text).toBe("Алиса у калитки в снегу");
+    expect(rowOf(id)).toMatchObject({
+      description: "Алиса у калитки в снегу",
+      prompt: "a red boat on a calm lake, the sky orange, low evening light",
+      source: "manual",
+    });
+    expect(jobShapes(fake.started)).toEqual([
+      { id, prompt: "a red boat on a calm lake, the sky orange, low evening light", refs: [] },
+    ]);
+  });
+
+  it("appends the chat's style and the reference binding to the drawn prompt", async () => {
+    const chat = chats.create(["alice"], "me");
+    chat.messages.push({ id: "u1", role: "user", userId: "me", kind: "text", text: "Hi", images: [], timestamp: 1 });
+    chat.stylePrompt = "watercolour";
+    chats.save(chat);
+    characters.save({ id: "alice", name: "Alice", description: "a tall woman with short red hair" });
+    const photo = path.join(root, "characters", "alice", "photo1.jpg");
+    fs.mkdirSync(path.dirname(photo), { recursive: true });
+    fs.writeFileSync(photo, "img");
+    textGeneration.plan = {
+      name: "alice at the gate",
+      description: "",
+      prompt: "the red-haired woman at a wooden gate",
+      refs: [],
+      cast: ["char:alice"],
+      subjects: [{ ref: "char:alice", noun: "the red-haired woman" }],
+    };
+    const { message } = reply.requestPicture(chat.id, "Алиса у калитки")!;
+    await flushJobs();
+    const saved = chats.get(chat.id)!.messages.find((m) => m.id === message.id)!;
+    const job = fake.started[0];
+    // the face goes in as a reference, and the prompt says so in the same breath
+    expect(job.refs).toEqual(["characters/alice/photo1.jpg"]);
+    expect(job.prompt).toContain("the first reference image shows the red-haired woman");
+    expect(job.prompt).toContain("Style: watercolour");
+    // the people on the picture are recorded, which is what offers this card as
+    // Alice's anchor for the next one
+    expect(saved.depicts).toEqual(["char:alice"]);
   });
 
   it("the job is given a guard that notices the chat's deletion", async () => {
-    // the guard replaces the old "does the chat's folder exist" check: the chat
-    // lives in the database now and its folder only once it owns a file — so
-    // the folder said the wrong thing for exactly the chats that start with a
-    // generated picture
     const chat = newChat();
-    await reply.manualImage(chat, "a red fox in the snow", []);
+    reply.requestPicture(chat.id, "a red fox in the snow");
+    await flushJobs(); // the job starts when the plan is in, not before
     const job = fake.started[0];
     expect(job.gone()).toBe(false);
     chats.delete(chat.id);
     expect(job.gone()).toBe(true);
   });
 
-  it("carries the reference ids into the job and into the picture row", async () => {
-    const chat = newChat();
-    const ref = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=", { nameHint: "a harbour" });
-    await reply.manualImage(chat, "the same harbour at night", [ref]);
-    const job = fake.started[0];
-    expect(job.refs).toEqual([ref]);
-    // the picture itself is still ahead (the job writes it), but its story is
-    // already next to the name it will appear under
-    expect(rowOf(job.id)).toMatchObject({
-      prompt: "the same harbour at night",
-      refs: [ref],
-      source: "manual",
-    });
-    expect(fs.existsSync(PathHelper.resolveImageId(job.id)!)).toBe(false);
-  });
-
   it("clears the pending status when the job finishes ok", async () => {
     const chat = newChat();
-    const { message } = (await reply.manualImage(chat, "a red fox", []))!;
+    const { message } = reply.requestPicture(chat.id, "a red fox")!;
     await flushJobs();
     const savedMsg = chats.get(chat.id)!.messages.find((m) => m.id === message.id)!;
     expect(savedMsg.imageStatus).toBeUndefined();
@@ -618,45 +865,82 @@ describe("manualImage", () => {
   it("marks the card failed with the error when the job fails", async () => {
     fake.setOutcome({ status: "failed", error: "GPU exploded", hadOld: false });
     const chat = newChat();
-    const { message } = (await reply.manualImage(chat, "a red fox", []))!;
-    const id = message.images[0];
+    const { message } = reply.requestPicture(chat.id, "a red fox")!;
     await flushJobs();
     const savedMsg = chats.get(chat.id)!.messages.find((m) => m.id === message.id)!;
+    const id = savedMsg.images[0];
     expect(savedMsg.imageStatus).toEqual({ [id]: "failed" });
     expect(savedMsg.imageErrors).toEqual({ [id]: "GPU exploded" });
   });
 
-  it("keeps the card ready when a run is cancelled and an older image existed", async () => {
-    fake.setOutcome({ status: "cancelled", hadOld: true });
+  it("marks the card broken when the model cannot plan it", async () => {
+    textGeneration.plan = null;
     const chat = newChat();
-    const { message } = (await reply.manualImage(chat, "a red fox", []))!;
+    const { message } = reply.requestPicture(chat.id, "something")!;
     await flushJobs();
     const savedMsg = chats.get(chat.id)!.messages.find((m) => m.id === message.id)!;
-    expect(savedMsg.imageStatus).toBeUndefined();
+    const placeholder = savedMsg.images[0];
+    expect(savedMsg.imageStatus).toEqual({ [placeholder]: "failed" });
+    expect(savedMsg.imageErrors?.[placeholder]).toBe("The model did not describe a picture to draw");
+    expect(fake.started).toHaveLength(0);
   });
 
-  it("does not clobber a message deleted while the translation ran", async () => {
+  it("leaves a card the user cancelled while the model was thinking", async () => {
     const chat = newChat();
     const g = gate();
-    fake.setPromptGate(g.promise);
-    const p = reply.manualImage(chat, "a red fox", []);
-    await tick(); // the translation is parked on the gate
-    chats.deleteMessage(chats.get(chat.id)!, "u1", true);
-    g.release();
-    const result = await p;
-    expect(result).not.toBeNull();
-    expect(chats.get(chat.id)!.messages.map((m) => m.id)).toEqual([result!.message.id]);
-  });
-
-  it("returns null when the chat is deleted while the translation ran", async () => {
-    const chat = newChat();
-    const g = gate();
-    fake.setPromptGate(g.promise);
-    const p = reply.manualImage(chat, "a red fox", []);
+    textGeneration.requestPlanGate = g.promise;
+    const { message } = reply.requestPicture(chat.id, "a red fox")!;
+    const placeholder = message.images[0];
     await tick();
-    chats.delete(chat.id);
+    reply.cancelImage(chats.get(chat.id)!, message, placeholder);
     g.release();
-    await expect(p).resolves.toBeNull();
+    await flushJobs();
+    const saved = chats.get(chat.id)!.messages.find((m) => m.id === message.id)!;
+    expect(saved.imageStatus).toEqual({ [placeholder]: "cancelled" });
+    // the placeholder is still the card's picture: no job ran, no file appeared
+    expect(saved.images).toEqual([placeholder]);
+    expect(fake.started).toHaveLength(0);
+  });
+
+  it("returns null on an empty request and on a chat that is gone", () => {
+    const chat = newChat();
+    expect(reply.requestPicture(chat.id, "   ")).toBeNull();
+    expect(reply.requestPicture("nope", "a fox")).toBeNull();
+  });
+});
+
+describe("addPictureFile (the 🖼 disk pick)", () => {
+  it("saves the file into the chat's folder and answers with the ready card", () => {
+    const chat = newChat();
+    const result = reply.addPictureFile(chat.id, "data:image/png;base64,aGVsbG8=")!;
+    const card = result.chat.messages[result.chat.messages.length - 1];
+    expect(card.kind).toBe("image");
+    expect(card.images[0]).toMatch(new RegExp(`^chats/${chat.id}/img-[0-9a-f]{6}\\.png$`));
+    // nothing is being drawn, so there is no status — the picture is there
+    expect(card.imageStatus).toBeUndefined();
+    expect(card.generation).toMatchObject({ source: "upload" });
+    expect(fs.existsSync(PathHelper.resolveImageId(card.images[0])!)).toBe(true);
+    // A file the user hands the app is a picture of the conversation, not of a
+    // person: nothing was filed under the persona the way a 📎 attachment is.
+    const personDir = path.join(root, "users", "me");
+    expect(fs.existsSync(personDir) ? fs.readdirSync(personDir) : []).toEqual([]);
+  });
+
+  it("reuses the picture whose bytes are already in the data folders", () => {
+    const chat = newChat();
+    const mine = persons.storePicture("me", "data:image/png;base64,aGVsbG8=", "my portrait");
+    const again = reply.addPictureFile(chat.id, "data:image/png;base64,aGVsbG8=")!;
+    const card = again.chat.messages[again.chat.messages.length - 1];
+    // The bytes are the picture: the card points at the file the persona already
+    // owns instead of writing a second copy into the chat's folder.
+    expect(card.images).toEqual([mine]);
+    expect(fs.existsSync(path.join(root, "chats", chat.id))).toBe(false);
+  });
+
+  it("returns null when the payload is not a picture", () => {
+    const chat = newChat();
+    expect(reply.addPictureFile(chat.id, "not a data url")).toBeNull();
+    expect(reply.addPictureFile("nope", "data:image/png;base64,aGVsbG8=")).toBeNull();
   });
 });
 
@@ -739,17 +1023,21 @@ describe("requestUserTurnImage (the picture of the user's turn)", () => {
 
     expect(textGeneration.planInput?.scene).toContain("Characters: Alice");
     expect(textGeneration.planInput?.scene).toContain("Me: Hi");
-    expect(textGeneration.planInput?.scene).toContain("[shares a picture: a harbour at dusk]");
+    // A picture card has no author, so the brief of the dialogue says only that a
+    // picture was shown and what it shows. Who is IN it reaches the planner
+    // through the catalogue below (by name, with their look), which is the form
+    // it answers with; who shared a picture is not something a drawing needs.
+    expect(textGeneration.planInput?.scene).toContain("[a picture is shown here: a harbour at dusk]");
     // the only card in the text is the one that exists — the empty placeholder
     // the app just made is not part of the dialogue
-    expect(textGeneration.planInput?.scene.match(/\[shares a picture/g)).toHaveLength(1);
+    expect(textGeneration.planInput?.scene.match(/\[a picture is shown here/g)).toHaveLength(1);
     expect(textGeneration.planInput?.images).toHaveLength(1);
     expect(textGeneration.planInput?.images[0]).toMatchObject({
       id: photo,
       description: "a harbour at dusk",
-      owner: "Me",
       origin: "uploaded",
     });
+    expect(textGeneration.planInput?.images[0]?.owner).toBeUndefined();
     // the reference number became the picture's id
     expect(fake.started[0].refs).toEqual([photo]);
     // and the app said what that reference is for, so the generator keeps the

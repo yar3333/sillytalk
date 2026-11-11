@@ -8,13 +8,12 @@ import { PathHelper } from "../shared/PathHelper";
 import { ImageGenerationService } from "./ImageGenerationService";
 import { comfyUiModelNames } from "./comfyui/ComfyUiWorkflows";
 
-// The /image routes: the availability flag (it decides whether the "🎨" prompt
-// box and the "📷" turn button are shown on the frontend), the one-shot manual
-// generation (the card with the "pending" image is saved right away; the file
-// appears when the job finishes — the domain part, including the
-// English-prompt translation, is in ReplyService.manualImage) and the helpers
-// of the picture-editor dialog: the three LLM calls ("From the chat",
-// "Make it English", "Describe the picture").
+// The /image routes: the availability flag (it decides whether the picture
+// buttons of the input bar are shown) and the helpers of the picture-editor
+// dialog: the three LLM calls ("From the chat", "Make it English", "Describe the
+// picture") and the caption of an attached card. Drawing itself lives with the
+// chat it happens in — /chats/:id/picture-request, /auto-image, /picture-file —
+// because a picture of this app is always a message of one conversation.
 export function createImageRouter(
   imageGeneration: ImageGenerationService,
   reply: ReplyService,
@@ -35,34 +34,13 @@ export function createImageRouter(
     });
   });
 
-  router.post("/", async (req, res) => {
-    try {
-      const { chatId, prompt, refs } = req.body ?? {};
-      const chat = chats.get(chatId);
-      if (!chat) {
-        res.status(404).json({ error: "Chat not found" });
-        return;
-      }
-      if (!prompt) {
-        res.status(400).json({ error: "Prompt is required" });
-        return;
-      }
-      if (!imageGeneration.hasAvailableGenerator()) {
-        res.status(400).json({ error: "Image generation is not configured" });
-        return;
-      }
-      const refList = Array.isArray(refs) ? (refs as unknown[]).filter((x): x is string => typeof x === "string") : [];
-      const result = await reply.manualImage(chat, String(prompt), refList);
-      if (!result) {
-        // The chat was deleted while the prompt was translating.
-        res.status(404).json({ error: "Chat not found" });
-        return;
-      }
-      res.json({ chat: result.chat, message: result.message });
-    } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
-    }
-  });
+  // There is no "draw this exact prompt" endpoint any more. A picture of this
+  // app is always a PICTURE WITH A STORY: it is asked for in words
+  // (POST /api/chats/:id/picture-request), planned by the model into a drawing
+  // prompt plus a reference set, and only then handed to a generator — which is
+  // what keeps a named person the same face from picture to picture. The one
+  // place a literal prompt is still written by hand is the picture editor of a
+  // card, and it redraws through /chats/:id/messages/:id/regenerate-image.
 
   // ---- the picture-editor dialog ----
   //

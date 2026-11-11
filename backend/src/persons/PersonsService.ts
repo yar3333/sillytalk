@@ -1,10 +1,10 @@
 import fs from "fs";
 import path from "path";
-import { randomUUID } from "crypto";
 import { DatabaseSync } from "node:sqlite";
 import { Person } from "./Person";
 import { PathHelper } from "../shared/PathHelper";
 import { DataUrl } from "../shared/DataUrl";
+import { PictureName } from "../shared/PictureName";
 import { ImageMetaService } from "../images/ImageMetaService";
 import { createToken } from "../di";
 
@@ -253,6 +253,20 @@ export class PersonsService {
     this.db().prepare("UPDATE persons SET avatar = ? WHERE avatar = ?").run(toId, fromId);
   }
 
+  // ---- the persona's own pictures ----
+
+  // Stores a picture the user brought into the conversation (a 📎 attachment) in
+  // the persona's folder and returns its id. The bytes belong to the person who
+  // shared them, not to one chat's folder, so the same photo attached twice —
+  // here or in another chat — stays ONE picture with ONE row. A byte-identical
+  // picture that already lives anywhere in the data folders gives its id back
+  // instead of being written again. Throws on a bad persona id or a payload that
+  // is not an image data URL.
+  storePicture(id: string, dataUrl: string, nameHint = "photo"): string {
+    if (!this.isValidId(id)) throw new Error(`Invalid persona ID: ${String(id)}`);
+    return this.writePicture(id, DataUrl.image(dataUrl), nameHint);
+  }
+
   // Places the bytes of a picked file: a byte-identical picture already in the
   // data folders gives its id back; otherwise a new file lands in the persona's
   // folder with a row carrying its facts. The lookup is by CONTENT, not by a row
@@ -263,11 +277,23 @@ export class PersonsService {
     id: string,
     picked: { buffer: Buffer; ext: string; hash: string },
   ): string {
+    return this.writePicture(id, picked, "avatar");
+  }
+
+  // The one write of a picture into the persona's folder (see storePicture and
+  // storePickedPicture above): the file is named from `nameHint` so a picture
+  // the user attached reads by what it shows, while an avatar is recognisable as
+  // one in a file listing.
+  private writePicture(
+    id: string,
+    picked: { buffer: Buffer; ext: string; hash: string },
+    nameHint: string,
+  ): string {
     const duplicate = this.imageMeta?.findPictureByContent(picked.buffer.length, picked.hash);
     if (duplicate) return duplicate;
     const dir = PathHelper.personDir(id, this.personsRoot());
     fs.mkdirSync(dir, { recursive: true });
-    const file = path.join(dir, `avatar-${randomUUID().slice(0, 6)}${picked.ext}`);
+    const file = path.join(dir, PictureName.fileName(nameHint, "photo", picked.ext));
     fs.writeFileSync(file, picked.buffer);
     const newId = PathHelper.imageIdOf(file);
     this.imageMeta?.set(newId, {

@@ -231,7 +231,6 @@ describe("renaming a persona", () => {
     const chat = chats.create(["alice"], "carol");
     chats.addUserMessage(chat, "this is me");
     chats.addImageMessage(chats.get(chat.id)!, avatar, {
-      userId: "carol",
       description: "carol at the door",
       depicts: ["user:carol"],
     });
@@ -245,9 +244,9 @@ describe("renaming a persona", () => {
     expect(card.images).toEqual(["users/karin/avatar.jpg"]);
     expect(card.text).toBe("carol at the door");
     expect(card.depicts).toEqual(["user:karin"]);
-    // the card's own author: a line keeps the persona it was said under, and
-    // that persona is the one that was renamed
-    expect(card.userId).toBe("karin");
+    // The card names nobody, and there is nothing left to rewrite: it is the
+    // PICTURE that belongs to the persona (its id is a path under users/<id>/)
+    // and the cast note that says whose face is on it — both follow the rename.
     expect(persons.get("karin")).toMatchObject({ name: "Carol" });
     expect(persons.get("carol")).toBeNull();
   });

@@ -76,6 +76,8 @@ container.register(
       c.resolve(DI_TEXT_GENERATION_SERVICE),
       c.resolve(DI_IMAGE_GENERATION_SERVICE),
       c.resolve(DI_CONFIGURATION_SERVICE),
+      // what the pictures a character owns show, so it can choose between them
+      c.resolve(DI_IMAGE_META_SERVICE),
     ),
 );
 // The picture browser sits above the table and the chat store: renaming a file

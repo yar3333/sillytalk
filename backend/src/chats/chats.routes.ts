@@ -282,6 +282,53 @@ export function createChatsRouter(
     res.json({ chat: fresh });
   });
 
+  // ---- a picture the user asked for ----
+
+  // The 🎨 dialog: the user wrote, in their own words and in any language, what
+  // the picture should show. The card is saved right away with that sentence as
+  // its caption and the "pending" status, and the answer comes back at once —
+  // the model turns the words into a drawing prompt and a reference set and the
+  // generator draws it, all behind the placeholder the client polls.
+  //
+  // The words may name the characters and personas of this chat: that is not a
+  // problem to clean up but the information the planner needs to pick whose face
+  // to draw from (the request is a description, the drawing prompt is the
+  // model's job).
+  router.post("/:id/picture-request", (req, res) => {
+    const request = typeof req.body?.text === "string" ? req.body.text : "";
+    if (!request.trim()) {
+      res.status(400).json({ error: "Describe the picture you want" });
+      return;
+    }
+    if (!imageGeneration.hasAvailableGenerator()) {
+      res.status(400).json({ error: "Image generation is not configured" });
+      return;
+    }
+    const result = reply.requestPicture(req.params.id, request);
+    if (!result) {
+      res.status(404).json({ error: "Chat not found" });
+      return;
+    }
+    res.json({ chat: result.chat, message: result.message });
+  });
+
+  // The 🖼 button: a file from disk as a picture of THIS conversation (a 📎
+  // attachment instead belongs to the person who shares it, so that one goes to
+  // their own folder). The card is ready at once — nothing is generated.
+  router.post("/:id/picture-file", (req, res) => {
+    const data = req.body?.data;
+    if (typeof data !== "string" || !data.startsWith("data:image/")) {
+      res.status(400).json({ error: "Expected a picture data URL (data field)" });
+      return;
+    }
+    const result = reply.addPictureFile(req.params.id, data);
+    if (!result) {
+      res.status(404).json({ error: "Chat not found" });
+      return;
+    }
+    res.json({ chat: result.chat, message: result.message });
+  });
+
   // ---- one message ----
 
   // Edits the text of a message: the line of a text message, the description

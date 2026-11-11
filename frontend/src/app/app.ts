@@ -9,6 +9,7 @@ import { CharacterDialog } from '../components/character-dialog/character-dialog
 import { UserDialog } from '../components/user-dialog/user-dialog';
 import { ModelDialog } from '../components/model-dialog/model-dialog';
 import { PictureDialog } from '../components/picture-dialog/picture-dialog';
+import { PictureRequestDialog } from '../components/picture-request-dialog/picture-request-dialog';
 import { PictureLibraryComponent } from '../components/picture-library/picture-library';
 import { ImageLightbox } from '../components/image-lightbox/image-lightbox';
 import { ConfigStore } from '../services/config-store';
@@ -29,6 +30,7 @@ import { PictureLibraryStore } from '../services/picture-library-store';
     UserDialog,
     ModelDialog,
     PictureDialog,
+    PictureRequestDialog,
     PictureLibraryComponent,
     ImageLightbox,
   ],
@@ -138,6 +140,20 @@ import { PictureLibraryStore } from '../services/picture-library-store';
             }
           }
         }
+      }
+
+      <!-- The 🎨 dialog: a picture the user asks for in their own words. It
+           closes as soon as the pending card is in the chat. -->
+      @if (imageStore.pictureRequest()) {
+        <div class="modal-backdrop">
+          <div class="modal modal-md">
+            <div class="modal-head">
+              <span>A picture</span>
+              <button class="icon-btn" (click)="imageStore.closePictureRequest()" title="Close">✕</button>
+            </div>
+            <app-picture-request-dialog />
+          </div>
+        </div>
       }
 
       <!-- The picture editor: opened by the ✎ of an image card — its prompt,

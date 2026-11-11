@@ -6,9 +6,10 @@ import { UiStore } from './ui-store';
 
 // The current chat and the chat list: messages, sending, the 📎 attachments,
 // message editing, chat management, the "New chat" dialog.
-// The image-GENERATION domain (mode, references, draw, cancel/regenerate, the
-// background-job polling) lives in ImageStore; the catalog — ConfigStore, the
-// error banner — UiStore. The store graph stays acyclic:
+// The picture domain (asking for a picture, the picture of the turn, the
+// cancel/regenerate of message images, the background-job polling) lives in
+// ImageStore; the catalog — ConfigStore, the error banner — UiStore. The store
+// graph stays acyclic:
 // ImageStore -> ChatStore -> ConfigStore -> UiStore (ChatStore never reads
 // ImageStore — InputPanel orchestrates the "what to send" decision).
 // DOM concerns stay in the components: scroll to the bottom — an effect in
@@ -41,7 +42,7 @@ export class ChatStore {
   // ---- input ----
   // The 📎 attachments of the message being composed (data URLs / file names).
   // Part of the message composition (send/edit), so it stays here, not in
-  // ImageStore (which owns the generation references, genRefs).
+  // ImageStore (which owns the picture buttons and the background jobs).
   readonly pendingImages = signal<string[]>([]);
   // the id of the message loaded into the bottom field for editing (null — normal input)
   readonly editTargetId = signal<string | null>(null);
@@ -547,12 +548,6 @@ export class ChatStore {
     const arr = this.pendingImages();
     arr.splice(index, 1);
     this.pendingImages.set([...arr]);
-  }
-
-  // Drops the 📎 attachments. Used by the gen-mode path (a draw ignores the
-  // attachments, but they are cleared on send, as a normal send does).
-  clearPendingImages(): void {
-    this.pendingImages.set([]);
   }
 
   // ---- editing a message in the bottom input field ----

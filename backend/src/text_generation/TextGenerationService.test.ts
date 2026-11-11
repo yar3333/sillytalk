@@ -146,12 +146,42 @@ describe("systemPromptFor", () => {
     expect(out).not.toContain("talking to");
   });
 
-  it("offers no image protocol: a character cannot attach or draw pictures", () => {
-    const base = { name: "Alice", description: "" };
-    const out = textGenerationService.systemPromptFor(base);
+  it("offers the picture markers and no claim that the character is text-only", () => {
+    const out = textGenerationService.systemPromptFor(
+      { name: "Alice", description: "" },
+      null,
+      [],
+      [{ id: "characters/alice/avatar.jpg" }],
+    );
+    expect(out).toContain("[IMAGE_BY_ID");
+    expect(out).toContain("[IMAGE_BY_PROMPT");
+    expect(out).toContain("LAST line");
+    // The old wording is what the markers replace: the app does carry a picture
+    // out of the line, so the character must not be told it cannot.
+    expect(out).not.toContain("text only");
     expect(out).not.toContain("[IMG:");
     expect(out).not.toContain("[PHOTO:");
-    expect(out).toContain("text only");
+  });
+
+  it("lists the character's own pictures with numbers, and the attach marker only with them", () => {
+    const out = textGenerationService.systemPromptFor({ name: "Alice", description: "" }, null, [], [
+      { id: "characters/alice/avatar.jpg", description: "alice at the window" },
+      { id: "characters/alice/studio.png" },
+    ]);
+    expect(out).toContain("1. characters/alice/avatar.jpg — alice at the window");
+    // a picture nobody described is still listed — the number is what matters
+    expect(out).toContain("2. characters/alice/studio.png");
+    // Without a single own picture there is nothing an [IMAGE_BY_ID] could name,
+    // so the marker is not offered at all (it would only invite an invented id).
+    expect(textGenerationService.systemPromptFor({ name: "Alice", description: "" })).not.toContain(
+      "[IMAGE_BY_ID",
+    );
+  });
+
+  it("asks for the request of a drawn picture in the character's own language", () => {
+    const out = textGenerationService.systemPromptFor({ name: "Alice", description: "" });
+    expect(out).toContain("in the language you speak in");
+    expect(out).toContain("do not write a drawing prompt yourself");
   });
 
   it("group chat: lists the other characters and allows [SILENT]", () => {
@@ -164,6 +194,64 @@ describe("systemPromptFor", () => {
 
   it("without other characters the [SILENT] tag is not mentioned", () => {
     expect(textGenerationService.systemPromptFor({ name: "Alice", description: "" })).not.toContain("[SILENT]");
+  });
+});
+
+describe("parsePictureMarkers", () => {
+  const own = ["characters/alice/avatar.jpg", "characters/alice/studio.png"];
+
+  it("takes the number of the list the prompt showed the model", () => {
+    const r = textGenerationService.parsePictureMarkers("Look — this is me.\n[IMAGE_BY_ID 2]", own);
+    expect(r.text).toBe("Look — this is me.");
+    expect(r.attachIds).toEqual(["characters/alice/studio.png"]);
+    expect(r.requests).toEqual([]);
+  });
+
+  it("accepts a copied id and a bare file name, and drops one that names nothing", () => {
+    expect(
+      textGenerationService.parsePictureMarkers("[IMAGE_BY_ID characters/alice/avatar.jpg]", own).attachIds,
+    ).toEqual(["characters/alice/avatar.jpg"]);
+    expect(textGenerationService.parsePictureMarkers("[IMAGE_BY_ID AVATAR.JPG]", own).attachIds).toEqual([
+      "characters/alice/avatar.jpg",
+    ]);
+    // A picture of the USER's or an invented one is not the character's to share:
+    // the marker is stripped either way, so the reader never sees a half-executed
+    // instruction and the chat never gets a card that cannot load.
+    expect(textGenerationService.parsePictureMarkers("Hi [IMAGE_BY_ID users/carol/me.png]", own)).toEqual({
+      text: "Hi",
+      attachIds: [],
+      requests: [],
+    });
+    expect(textGenerationService.parsePictureMarkers("[IMAGE_BY_ID 9]", own).attachIds).toEqual([]);
+  });
+
+  it("keeps the draw request exactly as it was written", () => {
+    const r = textGenerationService.parsePictureMarkers(
+      "Посмотри, что у меня!\n[IMAGE_BY_PROMPT рыжая лиса в снегу у калитки]",
+      own,
+    );
+    expect(r.text).toBe("Посмотри, что у меня!");
+    expect(r.attachIds).toEqual([]);
+    // passed through untranslated: it is the picture's description first of all
+    expect(r.requests).toEqual(["рыжая лиса в снегу у калитки"]);
+  });
+
+  it("a line that is only a marker leaves no empty text behind", () => {
+    expect(textGenerationService.parsePictureMarkers("[IMAGE_BY_PROMPT a red fox]", own).text).toBe("");
+  });
+
+  it("leaves a line without markers alone", () => {
+    expect(textGenerationService.parsePictureMarkers("Just words.\nSecond line.", own)).toEqual({
+      text: "Just words.\nSecond line.",
+      attachIds: [],
+      requests: [],
+    });
+  });
+
+  it("is case-insensitive and tolerant of the whitespace a model adds", () => {
+    const r = textGenerationService.parsePictureMarkers("Here.\n[ image_by_prompt  a cat ]", own);
+    expect(r.requests).toEqual(["a cat"]);
+    expect(r.text).toBe("Here.");
   });
 });
 
@@ -810,5 +898,122 @@ describe("composeImagePrompt", () => {
     await expect(
       textGenerationService.composeImagePrompt(model, { scene: "…", images: [{ id: "a.png" }] }),
     ).resolves.toBeNull();
+  });
+});
+
+// The planner of a picture somebody asked for in their own words (the 🎨 dialog
+// and a character's [IMAGE_BY_PROMPT]). The request is not a prompt: it is the
+// picture's description, written by a person in whatever language they speak,
+// and it may name the people of the chat.
+describe("composeImagePromptFromRequest", () => {
+  const originalFetch = global.fetch;
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  function asked(body: string) {
+    return JSON.parse(body) as { messages: Array<{ role: string; content: string }> };
+  }
+
+  it("hands the request over as the thing to fulfil, not as a prompt", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(jsonRes({ choices: [{ message: { content: '{"prompt": "a red fox", "refs": []}' } }] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await textGenerationService.composeImagePromptFromRequest(model, {
+      request: "рыжая лиса у калитки её дома",
+      context: "Characters: Alice.\nThe conversation so far:\nAlice: come and see.",
+      images: [{ id: "characters/alice/photo1.jpg", role: "look", ofWho: "char:alice", shows: "Alice" }],
+      cast: [{ ref: "char:alice", name: "Alice", look: "a tall woman with short red hair", anchors: [1] }],
+    });
+    const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
+    const body = asked(init.body);
+    expect(body.messages[1].content).toContain("The picture to make, as it was asked for:\nрыжая лиса у калитки её дома");
+    // the dialogue comes along, so "her house" can be resolved
+    expect(body.messages[1].content).toContain("Alice: come and see.");
+    expect(body.messages[1].content).toContain("char:alice — Alice: a tall woman with short red hair (shown on picture 1)");
+  });
+
+  it("asks for a prompt and no description: the request itself is the caption", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(jsonRes({ choices: [{ message: { content: '{"prompt": "a fox", "refs": []}' } }] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const plan = await textGenerationService.composeImagePromptFromRequest(model, {
+      request: "a fox",
+      images: [],
+    });
+    const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
+    const system = asked(init.body).messages[0].content;
+    expect(system).not.toMatch(/"description"/);
+    expect(system).toContain("NEVER write a person's name in the prompt");
+    // Nothing to invent here: the subject is given, so the model is told to keep
+    // it rather than decorate the scene with people the request never mentioned.
+    expect(system).toContain("never a person, an event or an object the request does not imply");
+    expect(plan?.description ?? "").toBe("");
+  });
+
+  it("puts a lone person's look reference first", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(jsonRes({ choices: [{ message: { content: '{"prompt": "a woman at the window", "refs": [2]}' } }] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await textGenerationService.composeImagePromptFromRequest(model, {
+      request: "Алиса у окна",
+      images: [
+        { id: "chats/c/harbour.png", description: "the harbour" },
+        { id: "characters/alice/photo1.jpg", role: "look", ofWho: "char:alice", shows: "Alice" },
+      ],
+      cast: [{ ref: "char:alice", name: "Alice", anchors: [2] }],
+      maxRefs: 2,
+    });
+    const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
+    const system = asked(init.body).messages[0].content;
+    expect(system).toMatch(/about ONE person[\s\S]*look reference goes first/i);
+    expect(system).toContain("at most 2 numbers");
+  });
+
+  it("reads the plan and keeps the cast layer", async () => {
+    const fetchMock = jest.fn().mockResolvedValue(
+      jsonRes({
+        choices: [
+          {
+            message: {
+              content:
+                '```json\n{"name": "alice at the gate", "prompt": "the red-haired woman at a wooden gate", "refs": [1], "cast": ["char:alice"], "subjects": [{"id": "char:alice", "noun": "the red-haired woman"}]}\n```',
+            },
+          },
+        ],
+      }),
+    );
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const plan = await textGenerationService.composeImagePromptFromRequest(model, {
+      request: "Алиса у калитки",
+      images: [{ id: "characters/alice/photo1.jpg" }],
+      cast: [{ ref: "char:alice", name: "Alice", anchors: [1] }],
+    });
+    expect(plan?.name).toBe("alice at the gate");
+    expect(plan?.prompt).toBe("the red-haired woman at a wooden gate");
+    expect(plan?.refs).toEqual([1]);
+    expect(plan?.cast).toEqual(["char:alice"]);
+    expect(plan?.subjects).toEqual([{ ref: "char:alice", noun: "the red-haired woman" }]);
+  });
+
+  it("says so when there is nothing to draw from, and answers null on prose", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(jsonRes({ choices: [{ message: { content: "I would need a description." } }] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await expect(
+      textGenerationService.composeImagePromptFromRequest(model, { request: "что-нибудь", images: [] }),
+    ).resolves.toBeNull();
+    const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
+    expect(asked(init.body).messages[1].content).toContain("no pictures to draw from");
   });
 });

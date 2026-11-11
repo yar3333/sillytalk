@@ -606,14 +606,24 @@ export class ApiService {
     });
   }
 
-  postImage(
-    chatId: string,
-    prompt: string,
-    refs: string[],
-  ): Promise<{ chat: Chat; message: ChatMessage }> {
-    return this.req<{ chat: Chat; message: ChatMessage }>('/image', {
+  // A picture the user asked for in their own words: the sentence becomes the
+  // caption of a new "pending" card at once, and the model turns it into a
+  // drawing prompt plus a reference set before the generator draws it — all in
+  // the background, so the answer already carries the placeholder.
+  requestPicture(chatId: string, text: string): Promise<{ chat: Chat; message: ChatMessage }> {
+    return this.req<{ chat: Chat; message: ChatMessage }>(`/chats/${chatId}/picture-request`, {
       method: 'POST',
-      body: JSON.stringify({ chatId, prompt, refs }),
+      body: JSON.stringify({ text }),
+    });
+  }
+
+  // A file from the disk as a picture of THIS conversation: the server saves it
+  // into the chat's folder — or reuses the picture of the data folder whose
+  // bytes are identical — and answers with the ready card.
+  addPictureFile(chatId: string, data: string): Promise<{ chat: Chat; message: ChatMessage }> {
+    return this.req<{ chat: Chat; message: ChatMessage }>(`/chats/${chatId}/picture-file`, {
+      method: 'POST',
+      body: JSON.stringify({ data }),
     });
   }
 

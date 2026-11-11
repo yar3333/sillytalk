@@ -125,16 +125,51 @@ async function openApp(page: Page): Promise<void> {
   await expect(page.getByTestId('input')).toBeVisible();
 }
 
+// The 🎨 button: it opens the dialog where the user describes the picture they
+// want in their own words and presses OK. OK does not wait for the drawing — the
+// server answers with the card and the picture arrives behind it — so this helper
+// only fires the request; the test reads the card.
+async function askForPicture(page: Page, request: string): Promise<void> {
+  await page.getByTestId('ask-picture').click();
+  await expect(page.getByTestId('picture-ask-dialog')).toBeVisible();
+  await page.getByTestId('picture-ask-text').fill(request);
+  await page.getByTestId('picture-ask-ok').click();
+  await expect(page.getByTestId('picture-ask-dialog')).toBeHidden();
+}
+
+// The 🖼 button: a picture file of the user's disk joins the conversation.
+async function addPictureFile(page: Page, file: string): Promise<void> {
+  await page.setInputFiles('[data-testid=chat-picture] input', file);
+}
+
 const assistantMsgs = (page: Page) => page.locator('.msg:not(.user):not(.error)');
 const allMsgs = (page: Page) => page.locator('[data-testid=message]');
 // A picture card (the message kind that carries an image) and its ready image.
 const cards = (page: Page) => page.getByTestId('image-card');
 const cardImages = (page: Page) => page.locator('[data-testid=image-card] img');
+// The MESSAGE ROW of a card. The card itself (`image-card`) is only its body: the
+// sender line and the hover buttons (✎, 🗑) belong to the row around it, so a
+// test that wants those has to start here, not from `cards()`.
+const cardRows = (page: Page) =>
+  page.getByTestId('message').filter({ has: page.getByTestId('image-card') });
 
 // ------------------------------------------------------------------ setup
+// When this is set, the mock answers a reply whose user message says "MARKER"
+// with these words — which is how a test makes a character END ITS LINE with a
+// picture marker ([IMAGE_BY_ID …] / [IMAGE_BY_PROMPT …]).
+let markerReply: string | null = null;
+// The system prompt of the last ordinary reply the mock was asked for: a test
+// reads it to see what the character was told about her own pictures.
+let lastReplySystem = '';
+
 test.beforeAll(async () => {
   issues = [];
-  llm = await startMockLlm(300);
+  llm = await startMockLlm(300, {
+    customReplies: ({ system, text }) => {
+      lastReplySystem = system;
+      return markerReply !== null && text.includes('MARKER') ? markerReply : null;
+    },
+  });
   comfy = await startMockComfy();
   // The scratch folder of the attachment tests (UX 09 writes its picture here).
   fs.mkdirSync(ASSETS, { recursive: true });
@@ -152,19 +187,23 @@ test.afterAll(async () => {
   comfy = null;
 });
 
-// What the mock answers to the picture-planning call of the user's turn (null
-// = the model does not produce a readable plan).
+// What the mock answers to a picture-planning call (null = the model does not
+// produce a readable plan). `cast` is who the picture shows and `subjects` the
+// noun phrase the prompt uses for each of them.
 async function setPlan(plan: {
   name?: string;
   description?: string;
   prompt?: string;
   refs?: number[];
+  cast?: string[];
+  subjects?: Array<{ id: string; noun: string }>;
 } | null): Promise<void> {
   if (llm) await llm.setImagePlan(plan);
 }
 
 test.beforeEach(async () => {
   issues = [];
+  markerReply = null;
   await setDelay(300);
   await setPlan({
     name: 'red circle on paper',
@@ -445,62 +484,135 @@ test('UX 09: attachments — preview, remove, send as a picture card', async ({ 
   await page.screenshot({ path: `${SHOTS}/ux-09c-picture-only.png` });
 });
 
-test('UX 10: gen mode — draw, pending, ready; cancel -> broken; fail', async ({ page }) => {
+test('UX 10: asking for a picture — the dialog, pending, ready; cancel -> broken; fail', async ({
+  page,
+}) => {
   await openApp(page);
-  await expect(page.getByTestId('gen-toggle')).toBeVisible();
-  await page.getByTestId('gen-toggle').click();
-  await expect(page.locator('.gen-bar')).toBeVisible();
-  await page.screenshot({ path: `${SHOTS}/ux-10a-gen-mode.png` });
+  // The 🎨 of the input bar is a request for a picture, not a literal prompt: it
+  // opens the dialog where the user says in their own words what the picture
+  // should show. The 🖼 beside it takes a file from disk and needs no generator.
+  await expect(page.getByTestId('ask-picture')).toBeVisible();
+  await expect(page.getByTestId('chat-picture')).toBeVisible();
+  await page.getByTestId('ask-picture').click();
+  await expect(page.getByTestId('picture-ask-dialog')).toBeVisible();
+  // The hint names the people of the conversation, because naming them here is
+  // what keeps a face the same from one picture to the next.
+  await expect(page.getByTestId('picture-ask-dialog')).toContainText('Alice');
+  await page.screenshot({ path: `${SHOTS}/ux-10a-ask-dialog.png` });
+  await page.getByTestId('picture-ask-cancel').click();
+  await expect(page.getByTestId('picture-ask-dialog')).toBeHidden();
+  expect(await cards(page).count()).toBe(0);
 
-  // Draw: a placeholder card appears right away…
-  await page.getByTestId('input').fill('a red circle');
+  // Ask: a placeholder card appears right away…
+  const request = 'красный круг на листе бумаги';
   const t0 = Date.now();
-  await page.getByTestId('send').click();
+  await askForPicture(page, request);
   await expect(page.getByTestId('img-pending')).toBeVisible({ timeout: 15000 });
-  step('10 pending placeholder after Draw', Date.now() - t0);
+  // …and it says what the app is doing: the words go to the planner first.
+  await expect(page.getByTestId('img-pending')).toContainText('Planning and drawing');
+  step('10 pending placeholder after Ask', Date.now() - t0);
   await page.screenshot({ path: `${SHOTS}/ux-10b-pending.png` });
-  // …the chat is NOT blocked while the image generates in the background.
+  // …the chat is NOT blocked while the picture generates in the background.
   await expect(page.getByTestId('send')).toHaveText('➤');
-  await expect(page.getByTestId('img-pending')).toBeHidden({ timeout: 20000 });
+  await expect(page.getByTestId('img-pending')).toBeHidden({ timeout: 25000 });
   await expect(cardImages(page).first()).toBeVisible();
-  // The card says what the picture was drawn from.
-  await expect(page.getByTestId('card-prompt')).toContainText('red circle');
-  step('10 image ready total', Date.now() - t0);
+  // The card keeps BOTH halves of the picture: the caption is the user's own
+  // sentence, kept exactly as it was written (it is the description of the
+  // picture, not a prompt), while the drawing prompt is the English plan the
+  // model built from it.
+  const card = cardRows(page).last();
+  await expect(card.getByTestId('card-caption')).toHaveText(request);
+  await expect(card.getByTestId('card-prompt')).toContainText('a red circle on a white background');
+  // The neutral card of the request says who the user asked, not who drew it.
+  await expect(card.locator('[data-testid=msg-sender]')).toHaveText('A picture');
+  // What the generator saw was the plan, never the user's sentence.
+  const sent = comfy?.prompts() ?? [];
+  expect(sent[sent.length - 1] ?? '').toContain('red circle');
+  step('10 picture ready total', Date.now() - t0);
   await page.screenshot({ path: `${SHOTS}/ux-10c-ready.png` });
 
-  // Slow draw, then cancel -> the "cancelled" placeholder (not an error) with Regenerate.
-  await page.getByTestId('gen-toggle').click();
-  await page.getByTestId('input').fill('slow scene');
-  await page.getByTestId('send').click();
+  // A slow draw, then cancel -> the "cancelled" placeholder (not an error) with
+  // Regenerate. The mock generator decides by the PROMPT it is given, so it is
+  // the plan that has to say "slow".
+  await setPlan({ name: 'slow', description: 'A slow scene', prompt: 'a slow scene', refs: [] });
+  await askForPicture(page, 'whatever the user asks for');
   await expect(page.getByTestId('img-pending')).toBeVisible({ timeout: 15000 });
   await page.getByTestId('img-cancel').click();
   await expect(page.getByTestId('img-cancelled')).toBeVisible({ timeout: 10000 });
   await page.screenshot({ path: `${SHOTS}/ux-10d-cancelled.png` });
-  await expect(page.getByTestId('img-regen')).toBeVisible();
+  await expect(cards(page).last().getByTestId('img-regen')).toBeVisible();
 
   // Regenerate the cancelled one -> pending -> ready.
-  await page.getByTestId('img-regen').click();
+  await cards(page).last().getByTestId('img-regen').click();
   await expect(page.getByTestId('img-pending')).toBeVisible({ timeout: 10000 });
-  await expect(page.getByTestId('img-pending')).toBeHidden({ timeout: 20000 });
+  await expect(page.getByTestId('img-pending')).toBeHidden({ timeout: 25000 });
 
   // A failing generator -> the broken placeholder carries the error text.
-  await page.getByTestId('gen-toggle').click();
-  await page.getByTestId('input').fill('fail please');
-  await page.getByTestId('send').click();
-  await expect(page.getByTestId('img-broken').last()).toBeVisible({ timeout: 20000 });
+  await setPlan({
+    name: 'broken',
+    description: 'A failing scene',
+    prompt: 'a scene the mock generator fails on',
+    refs: [],
+  });
+  await askForPicture(page, 'one more picture');
+  await expect(cards(page).last().getByTestId('img-broken')).toBeVisible({ timeout: 25000 });
+  await expect(cards(page).last().getByTestId('img-error-text')).toBeVisible();
   await page.screenshot({ path: `${SHOTS}/ux-10e-failed.png` });
+});
+
+// The 🖼 button: a picture the user already has on disk. It needs no generator
+// and no model — the file is the message — and it goes to the CHAT folder unless
+// the very same bytes are already a picture of the data folder somewhere.
+test('UX 10a: a picture from disk joins the chat as its own neutral card', async ({ page }) => {
+  await setDelay(100);
+  // A generator is configured, and still this button works with none of it: it
+  // is a file, not a drawing.
+  await openApp(page);
+  const file = path.join(ASSETS, 'from-disk.png');
+  fs.mkdirSync(ASSETS, { recursive: true });
+  fs.writeFileSync(file, makePng(80, 60, 30, 150, 90));
+
+  await addPictureFile(page, file);
+  const card = cardRows(page).last();
+  await expect(card).toBeVisible({ timeout: 15000 });
+  // The app names the file itself (a data URL carries no name of the disk file),
+  // so what identifies it is its home: the CHAT's folder, under a readable slug
+  // with the uniqueness suffix.
+  await expect(card.locator('img')).toHaveAttribute('src', /path=chats%2F[^%]*%2Fimg-[0-9a-f]{6}\.png/);
+  // It is a picture of the conversation, so it belongs to the chat folder; and
+  // being a file, it claims no generation — no prompt, no redraw.
+  const chatId = ((await api('/chats')) as Array<{ id: string }>)[0].id;
+  const stored = (await api(`/chats/${chatId}`)) as {
+    messages: Array<{
+      kind: string;
+      images: string[];
+      userId?: string;
+      characterId?: string;
+      generation?: { source?: string; prompt?: string };
+    }>;
+  };
+  const image = stored.messages.find((m) => m.kind === 'image')!;
+  expect(image.images[0].startsWith(`chats/${chatId}/`)).toBe(true);
+  // A picture message has no author — not the user, not a character: nobody drew
+  // it, the user just brought the file here. The row says only how it got there.
+  expect(image.userId).toBeUndefined();
+  expect(image.characterId).toBeUndefined();
+  expect(image.generation?.source).toBe('upload');
+  expect(image.generation?.prompt).toBeUndefined();
+  await expect(card.getByTestId('card-prompt')).toHaveCount(0);
+  await page.screenshot({ path: `${SHOTS}/ux-10a2-from-disk.png` });
 });
 
 test('UX 10b: the picture editor — the prompt, the description, the file kind', async ({ page }) => {
   await openApp(page);
-  // Draw a picture to edit.
-  await page.getByTestId('gen-toggle').click();
-  await page.getByTestId('input').fill('a red circle');
-  await page.getByTestId('send').click();
+  // Ask for a picture to edit: the card the editor opens.
+  await askForPicture(page, 'a red circle');
   await expect(page.getByTestId('img-pending')).toBeVisible({ timeout: 15000 });
-  await expect(cardImages(page).first()).toBeVisible({ timeout: 20000 });
-  const card = page.locator('.msg.user').filter({ has: page.getByTestId('image-card') }).last();
-  await expect(card.getByTestId('card-prompt')).toContainText('a red circle');
+  await expect(cardImages(page).first()).toBeVisible({ timeout: 25000 });
+  const card = cardRows(page).last();
+  // The card's prompt is the plan the model wrote from the request, not the
+  // request itself (which is the caption).
+  await expect(card.getByTestId('card-prompt')).toContainText('a red circle on a white background');
 
   // The ✎ of a card opens the picture editor (not the bottom edit field).
   await card.hover();
@@ -508,16 +620,28 @@ test('UX 10b: the picture editor — the prompt, the description, the file kind'
   const dialog = page.getByTestId('picture-dialog');
   await expect(dialog).toBeVisible();
   await expect(page.getByTestId('picture-kind-generated')).toBeChecked();
-  await expect(page.getByTestId('picture-prompt')).toHaveValue('a red circle');
+  // The prompt the editor opens with is the English plan the model wrote from the
+  // request — the request itself is the caption, a different field of the row.
+  // This is the one place a literal prompt is edited by hand.
+  await expect(page.getByTestId('picture-prompt')).toHaveValue('a red circle on a white background');
   await page.screenshot({ path: `${SHOTS}/ux-10b-editor.png` });
 
-  // "From the chat": the model writes the prompt — and the description the
-  // card never had.
+  // "From the chat": the model writes the prompt. The description is LEFT ALONE —
+  // the card already carries the user's own sentence as its caption, and a plan
+  // must not overwrite what the user wrote. The helper fills a description only
+  // when the card has none, which is what the second half of this step does.
   await page.getByTestId('picture-prompt-from-chat').click();
   await expect(page.getByTestId('picture-prompt')).toHaveValue('a red circle on a white background', {
     timeout: 20000,
   });
-  await expect(page.getByTestId('picture-description')).toHaveValue('A red circle drawn on a white paper sheet');
+  await expect(page.getByTestId('picture-description')).toHaveValue('a red circle');
+
+  await page.getByTestId('picture-description').fill('');
+  await page.getByTestId('picture-prompt-from-chat').click();
+  await expect(page.getByTestId('picture-description')).toHaveValue(
+    'A red circle drawn on a white paper sheet',
+    { timeout: 20000 },
+  );
 
   // "Make it English" rewrites a typed prompt for the generator.
   await page.getByTestId('picture-prompt').fill('круг');
@@ -753,7 +877,7 @@ test('UX 15: mobile — layout, message actions without hover, menus', async ({ 
   await page.screenshot({ path: `${SHOTS}/ux-15g-mobile-settings.png` });
 });
 
-test('UX 16: clicking a card picture opens the lightbox and makes it a reference', async ({
+test('UX 16: a card picture opens the lightbox; its reference set is its own', async ({
   page,
 }) => {
   await setDelay(200);
@@ -761,19 +885,37 @@ test('UX 16: clicking a card picture opens the lightbox and makes it a reference
   await page.getByTestId('input').fill('Hello Alice');
   await page.getByTestId('send').click();
   await expect(assistantMsgs(page).first()).toBeVisible({ timeout: 15000 });
-  await page.getByTestId('auto-image').click();
+  await askForPicture(page, 'a red circle');
   await expect(cardImages(page).first()).toBeVisible({ timeout: 30000 });
-  // Click the picture: it opens the lightbox (enlarged) AND adds a generation
-  // reference — the action is visible, not silent.
+  // Clicking the picture only enlarges it. A picture is a message of the
+  // conversation, not an ingredient of the next draw — the references of a
+  // picture are the ones its own prompt names, chosen by the planner.
   await cardImages(page).first().click();
   await expect(page.getByTestId('lightbox')).toBeVisible({ timeout: 5000 });
   await page.screenshot({ path: `${SHOTS}/ux-16-lightbox.png` });
-  // The reference is really there: opening the gen mode shows the chip.
   await page.getByTestId('lightbox-close').click();
   await expect(page.getByTestId('lightbox')).toBeHidden();
-  await page.getByTestId('gen-toggle').click();
-  await expect(page.locator('.gen-bar .chip')).toBeVisible();
+
+  // A second picture whose plan names the first one: the card says how many
+  // references it was drawn from, and the editor shows WHICH pictures those are.
+  await setPlan({
+    name: 'the circle again',
+    description: 'The same red circle, kept from the first picture',
+    prompt: 'the same red circle, the first reference image shows it',
+    refs: [1],
+  });
+  await askForPicture(page, 'the same circle again');
+  await expect(cardImages(page).last()).toBeVisible({ timeout: 30000 });
+  const card = cardRows(page).last();
+  await expect(card.getByTestId('card-refs')).toContainText('references: 1');
+  await card.hover();
+  await card.locator('.msg-edit.edit').click();
+  const dialog = page.getByTestId('picture-dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator('.refs .ref-thumb')).toHaveCount(1);
   await page.screenshot({ path: `${SHOTS}/ux-16-ref-chip.png` });
+  await page.getByTestId('picture-cancel').click();
+  await expect(dialog).toBeHidden();
 });
 
 // A person in a picture is a FACE the generator has never heard of: the app has
@@ -973,14 +1115,22 @@ test('UX 20: the picture browser edits the picture, not a message', async ({ pag
   // makes the row and the line under the ID field say so — the number is counted
   // from the other rows on every read, so the browser shows it as soon as the
   // catalog is read again.
-  const drawn = (await api('/image', 'POST', { chatId, prompt: 'a blue square' })) as {
-    message: { images?: string[] };
-  };
-  const secondId = drawn.message.images?.[0];
-  expect(secondId).toBeTruthy();
+  //
+  // The second picture is asked for in words — the same route the 🎨 dialog
+  // takes. Its card begins as a placeholder and its id becomes the file the plan
+  // named, so the id is read once the picture is really on disk.
+  const asked = (await api(`/chats/${chatId}/picture-request`, 'POST', {
+    text: 'a blue square',
+  })) as { message: { id: string } };
+  expect(asked.message.id).toBeTruthy();
+  let secondId = '';
   await expect(async () => {
     const list = (await api('/pictures')) as { pictures: Array<{ id: string; exists: boolean }> };
-    expect(list.pictures.some((p) => p.id === secondId && p.exists)).toBe(true);
+    const ofThisChat = list.pictures.filter(
+      (p) => p.exists && p.id.startsWith(`chats/${chatId}/`) && p.id !== newId,
+    );
+    expect(ofThisChat.length).toBeGreaterThan(0);
+    secondId = ofThisChat[0].id;
   }).toPass({ timeout: 30000 });
   await api('/pictures', 'PATCH', { id: secondId, refs: [newId] });
 
@@ -995,17 +1145,18 @@ test('UX 20: the picture browser edits the picture, not a message', async ({ pag
   await circleRow.click();
   await expect(page.getByTestId('picture-used-by')).toContainText('by 1 other');
 
-  // The sort pick: "By ID" orders the list by the path — both pictures live in
-  // this chat's files/, so the a-blue-square name sorts before the renamed one.
-  // The filter narrows the list to this chat first: the shared test data of the
-  // suite holds pictures of earlier runs, and the order is read among these two.
+  // The sort pick: "By ID" orders the list by the path. The filter narrows it to
+  // this chat first: the shared test data of the suite holds pictures of earlier
+  // runs, and the order is read among these two. The names themselves are not
+  // asserted — a drawn picture is named by the plan, so only the RULE is the
+  // thing under test: the two ids in alphabetical order.
   await page.getByTestId('picture-filter').fill(chatId);
   await expect(page.getByTestId('picture-row')).toHaveCount(2);
   await page.getByTestId('picture-sort').selectOption('id');
   const order = await page.getByTestId('picture-row').evaluateAll((rows) =>
     rows.map((r) => r.getAttribute('title')),
   );
-  expect(order).toEqual([secondId, newId]);
+  expect(order).toEqual([secondId, newId].sort());
   await page.screenshot({ path: `${SHOTS}/ux-20d-sorted-by-id.png` });
   await page.getByTestId('picture-sort').selectOption('newest');
   await page.getByTestId('picture-filter').fill('');
@@ -1026,11 +1177,9 @@ test('UX 20: the picture browser edits the picture, not a message', async ({ pag
 test('UX 20e: a picture renamed or dropped outside the app is followed by the table', async ({ page }) => {
   await setDelay(50);
   await openApp(page);
-  await page.getByTestId('gen-toggle').click();
-  await page.getByTestId('input').fill('a red circle');
-  await page.getByTestId('send').click();
+  await askForPicture(page, 'a red circle');
   await expect(page.getByTestId('img-pending')).toBeVisible({ timeout: 15000 });
-  await expect(page.getByTestId('img-pending')).toBeHidden({ timeout: 20000 });
+  await expect(page.getByTestId('img-pending')).toBeHidden({ timeout: 25000 });
   const chatId = ((await api('/chats')) as Array<{ id: string }>)[0].id;
   const card = ((await api(`/chats/${chatId}`)) as { messages: Array<{ kind: string; images: string[] }> })
     .messages.find((m) => m.kind === 'image')!;
@@ -1087,6 +1236,102 @@ test('UX 20e: a picture renamed or dropped outside the app is followed by the ta
     body: JSON.stringify({ id: movedId }),
   });
   expect(refused.status).toBe(400);
+});
+
+// A character shares a picture the way it says anything else: at the END OF ITS
+// LINE, with a marker the app reads and removes. [IMAGE_BY_ID …] shows a picture
+// the character already owns — by the number the app listed for her, or by its
+// path; [IMAGE_BY_PROMPT …] asks for a NEW one in her own words, which the app
+// plans, draws and files IN THE CHARACTER'S FOLDER, so the face that picture
+// establishes is hers in the next one too. Either way the marker never reaches
+// the reader and the card that appears has no author.
+test('UX 21: a character shares a picture of its own — by id and by request', async ({ page }) => {
+  await setDelay(100);
+  await openApp(page);
+
+  // ---- [IMAGE_BY_ID] with a path: a picture of her folder ----
+  markerReply = 'That was the harbour in the morning. [IMAGE_BY_ID characters/alice/photo1.png]';
+  await page.getByTestId('input').fill('MARKER');
+  await page.getByTestId('send').click();
+  const line = assistantMsgs(page).last();
+  await expect(line).toContainText('That was the harbour in the morning', { timeout: 15000 });
+  // The card of the picture she showed.
+  const shown = cardRows(page).last();
+  await expect(shown).toBeVisible({ timeout: 15000 });
+  await expect(shown.locator('img')).toHaveAttribute('src', /photo1\.png/);
+  // A picture message is neutral: it is not signed as hers — what it shows is
+  // said by its caption and by the row of the picture, not by an author.
+  await expect(shown.locator('[data-testid=msg-sender]')).toHaveText('A picture');
+  // The marker is not words a reader ever sees, in the line nor anywhere.
+  await expect(page.getByTestId('message').filter({ hasText: 'IMAGE_BY_ID' })).toHaveCount(0);
+  await page.screenshot({ path: `${SHOTS}/ux-21a-character-by-id.png` });
+
+  // What made that possible: the system prompt showed her her OWN pictures with
+  // a number each, which is what she is allowed to name.
+  expect(lastReplySystem).toContain('[IMAGE_BY_ID');
+  expect(lastReplySystem).toContain('characters/alice/photo1.png');
+
+  // ---- [IMAGE_BY_ID] with the NUMBER of the list (the avatar is the first) ----
+  markerReply = 'Here I am. [IMAGE_BY_ID 1]';
+  await page.getByTestId('input').fill('MARKER the second');
+  await page.getByTestId('send').click();
+  await expect(cards(page)).toHaveCount(2, { timeout: 20000 });
+  await expect(cards(page).last().locator('img')).toHaveAttribute('src', /avatar/);
+  await page.screenshot({ path: `${SHOTS}/ux-21b-character-by-number.png` });
+
+  // ---- [IMAGE_BY_PROMPT]: a NEW picture, in her own words, into her folder ----
+  await setPlan({
+    name: 'alice at the harbour',
+    description: 'A woman standing at a harbour at sunset',
+    prompt: 'a woman standing at a harbour at sunset, looking at the boats',
+    refs: [],
+    cast: ['char:alice'],
+    subjects: [{ id: 'char:alice', noun: 'the woman in the green coat' }],
+  });
+  const askedFor = 'Alice at the harbour at sunset, the red boat behind her';
+  markerReply = `One moment, I will show you. [IMAGE_BY_PROMPT ${askedFor}]`;
+  const jobsBefore = (comfy?.prompts() ?? []).length;
+  await page.getByTestId('input').fill('MARKER the third');
+  await page.getByTestId('send').click();
+
+  // The line arrives with its words, the card under it is pending: the plan and
+  // the drawing are in the background, exactly as for the user's own 🎨.
+  const drawn = assistantMsgs(page).last();
+  await expect(drawn).toContainText('One moment, I will show you', { timeout: 15000 });
+  await expect(page.getByTestId('message').filter({ hasText: 'IMAGE_BY_PROMPT' })).toHaveCount(0);
+  await expect(cards(page).last().getByTestId('img-pending')).toBeVisible({ timeout: 15000 });
+
+  // The planner was told what she asked for, in her words, together with the
+  // cast of the conversation — so it can match a name to a face.
+  await expect(cardImages(page).last()).toBeVisible({ timeout: 30000 });
+  const asked = llm?.lastRequestPlanRequest();
+  expect(asked?.text ?? '').toContain(askedFor);
+  expect(asked?.text ?? '').toContain('char:alice');
+
+  // The card keeps her sentence as its caption; the picture went into HER folder,
+  // so it is one of her starter pictures from now on.
+  const newCard = cards(page).last();
+  await expect(newCard.getByTestId('card-caption')).toHaveText(askedFor);
+  const chatId = ((await api('/chats')) as Array<{ id: string }>)[0].id;
+  const stored = (await api(`/chats/${chatId}`)) as {
+    messages: Array<{ kind: string; images: string[]; generation?: { source?: string } }>;
+  };
+  const imageCards = stored.messages.filter((m) => m.kind === 'image');
+  const last = imageCards[imageCards.length - 1];
+  expect(last.images[0].startsWith('characters/alice/')).toBe(true);
+  // The row says the app drew it on its own (the planner of her words), while the
+  // picture she merely SHOWED has no drawing behind it at all.
+  expect(last.generation?.source).toBe('auto');
+  expect(imageCards[0].generation?.prompt).toBeUndefined();
+  await page.screenshot({ path: `${SHOTS}/ux-21c-character-by-request.png` });
+
+  // What the generator got: her own picture as the reference, the sentence that
+  // binds it to her, and not one word that could be her name.
+  const sent = (comfy?.prompts() ?? []).slice(jobsBefore);
+  expect(sent).toHaveLength(1);
+  expect(sent[0]).toContain('the first reference image shows the woman in the green coat');
+  expect(sent[0].toLowerCase()).not.toContain('alice');
+  expect((comfy?.uploads() ?? []).length).toBeGreaterThan(0);
 });
 
 // The collected issues are attached to every test run as a JSON artifact.

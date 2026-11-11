@@ -2,6 +2,8 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { PersonsService } from "./PersonsService";
+import { ImageMetaService } from "../images/ImageMetaService";
+import { PathHelper } from "../shared/PathHelper";
 
 let root: string;
 let dir: string; // the users folder (the home of the picture folders)
@@ -9,6 +11,9 @@ let persons: PersonsService;
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "sillytalk-persons-"));
+  // The picture ids are paths relative to the DATA folder, so the data root has
+  // to be the temp folder (otherwise an id of a test would escape it).
+  process.env.SILLYTALK_DATA_DIR = root;
   dir = path.join(root, "users");
   persons = new PersonsService(() => dir, () => path.join(root, "catalogs.db"));
 });
@@ -160,5 +165,55 @@ describe("clone", () => {
   it("returns null for a missing or invalid source", () => {
     expect(persons.clone("nope")).toBeNull();
     expect(persons.clone("a b")).toBeNull();
+  });
+});
+
+// The persona's own pictures: where a 📎 attachment the user shares is kept.
+describe("storePicture (the person's own pictures)", () => {
+  let meta: ImageMetaService;
+  let svc: PersonsService;
+  const PNG = "data:image/png;base64,aGVsbG8=";
+
+  beforeEach(() => {
+    // with the table, because the de-dup that makes one photo one picture is its
+    // whole point and it has nowhere to look without it
+    meta = new ImageMetaService(() => root);
+    svc = new PersonsService(() => dir, () => path.join(root, "catalogs.db"), meta);
+    svc.save({ id: "me", name: "You", description: "" });
+  });
+  afterEach(() => {
+    svc.close();
+    meta.close();
+  });
+
+  it("writes into the persona's folder under a readable name and returns its id", () => {
+    const id = svc.storePicture("me", PNG, "a red boat");
+    expect(id).toMatch(/^users\/me\/a-red-boat-[0-9a-f]{6}\.png$/);
+    expect(fs.existsSync(path.join(root, "users", "me", id.slice("users/me/".length)))).toBe(true);
+    // the row carries the facts of the file, so the next dedup sees this picture
+    expect(meta.get(id)?.fileHash).toBeTruthy();
+  });
+
+  it("the same bytes twice stay one picture", () => {
+    const first = svc.storePicture("me", PNG, "my portrait");
+    const again = svc.storePicture("me", PNG, "my portrait again");
+    expect(again).toBe(first);
+    expect(fs.readdirSync(path.join(dir, "me"))).toHaveLength(1);
+  });
+
+  it("a byte-identical picture of another folder is reused, not copied", () => {
+    const elsewhere = "chats/room/a-boat-1a2b3c.png";
+    const abs = PathHelper.resolveImageId(elsewhere)!;
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, Buffer.from("aGVsbG8=", "base64"));
+    expect(svc.storePicture("me", PNG)).toBe(elsewhere);
+    // nothing was written into the persona's folder (it exists since the card
+    // was saved, but it holds no picture of this bytes)
+    expect(fs.readdirSync(path.join(dir, "me"))).toEqual([]);
+  });
+
+  it("throws on a persona that cannot have a folder and on a payload that is not a picture", () => {
+    expect(() => svc.storePicture("a b", PNG)).toThrow(/persona ID/i);
+    expect(() => svc.storePicture("me", "not a data URL")).toThrow();
   });
 });

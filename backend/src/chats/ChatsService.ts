@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { createHash, randomUUID } from "crypto";
+import { createHash } from "crypto";
 import { DatabaseSync } from "node:sqlite";
 import { Chat } from "./Chat";
 import { ChatMessage, ImageGenerationData, isImageMessage } from "./ChatMessage";
@@ -9,6 +9,7 @@ import { PathHelper } from "../shared/PathHelper";
 import { HttpHelper } from "../shared/HttpHelper";
 import { ImageMeta, IMAGE_GENERATION_KEYS } from "../shared/ImageMeta";
 import { FileFacts } from "../shared/FileFacts";
+import { PictureName } from "../shared/PictureName";
 import { ImageMetaService } from "../images/ImageMetaService";
 import { createToken } from "../di";
 
@@ -536,11 +537,15 @@ export class ChatsService {
   // id; the file itself may not exist yet (a background generation reserves its
   // id in advance and the status says so) — a row of the table can exist before
   // the file does.
+  //
+  // A card has NO author on purpose. It is not somebody's line of the dialogue:
+  // the text a person wrote about a picture is its own message right before it,
+  // and the card says what is on the picture (its row) and who stands in it
+  // (`depicts`) — which is the only authorship a generator can act on.
   addImageMessage(
     chat: Chat,
     image: string,
     opts: {
-      userId?: string;
       description?: string;
       generation?: ImageGenerationData;
       depicts?: string[];
@@ -552,7 +557,6 @@ export class ChatsService {
       id: PathHelper.newId(),
       role: "user" as const,
       kind: "image",
-      userId: opts.userId ?? chat.userId,
       text: "",
       images: [image],
       imageStatus: opts.status ? { [image]: opts.status } : undefined,
@@ -799,7 +803,7 @@ export class ChatsService {
     const hash = createHash("sha256").update(buffer).digest("hex");
     const existing = this.findExistingByHash(buffer.length, hash);
     if (existing) return existing;
-    const filename = `${ChatsService.slugify(opts.nameHint ?? "img", "img")}-${randomUUID().slice(0, 6)}${ext}`;
+    const filename = PictureName.fileName(opts.nameHint ?? "img", "img", ext);
     const dir = PathHelper.chatDir(chatId, this.chatsRoot());
     fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, filename);
@@ -828,103 +832,23 @@ export class ChatsService {
   // message first). `nameHint` is the human-readable English name (2–5 words).
   reservedImageId(chatId: string, nameHint: string, extension = ".png"): string {
     const dir = PathHelper.chatDir(chatId, this.chatsRoot());
-    const filename = `${ChatsService.slugify(nameHint, "image")}-${randomUUID().slice(0, 6)}${extension}`;
+    const filename = PictureName.fileName(nameHint, "image", extension);
     return PathHelper.imageIdOf(path.join(dir, filename));
   }
 
-  // Copies a file from anywhere in the data folders into the chat folder,
-  // returns its id (null when the source is missing). The row of the source in
-  // the images table is copied too, so an imported picture keeps its
-  // description.
-  importImage(chatId: string, sourcePath: string): string | null {
-    if (!fs.existsSync(sourcePath)) return null;
-    const dir = PathHelper.chatDir(chatId, this.chatsRoot());
-    fs.mkdirSync(dir, { recursive: true });
-    const base = ChatsService.slugify(path.basename(sourcePath, path.extname(sourcePath)), "photo");
-    const target = path.join(dir, `${base}-${randomUUID().slice(0, 6)}${path.extname(sourcePath)}`);
-    fs.copyFileSync(sourcePath, target);
-    const id = PathHelper.imageIdOf(target);
-    this.imageMeta.copy(PathHelper.imageIdOf(sourcePath), id);
-    // The bytes are the source's, the FILE is this copy's: its size, its own
-    // modification time and the hash of what was written (the copy carries the
-    // source's hash already, but the mtime is new).
-    this.imageMeta.set(id, FileFacts.of(target) ?? {});
-    return id;
-  }
-
-  // Copies a character photo into the chat folder (the 🎨 reference picker),
-  // returns the image id.
-  importCharacterPhoto(chatId: string, photoPath: string): string | null {
-    return this.importImage(chatId, photoPath);
-  }
-
-  // Normalizes an incoming image list into image ids: a data URL is saved as a
-  // new file and an id is kept when its file is there. Anything else — a path
-  // outside the data folders, a missing file, garbage — is dropped.
-  normalizeImages(chatId: string, images: unknown[]): string[] {
+  // Normalizes an incoming list of pictures into image ids: an id whose file is
+  // there is kept, anything else — a path outside the data folders, a missing
+  // file, garbage — is dropped. The bytes of a new picture (a data URL) are NOT
+  // written here: what folder an upload belongs to is the caller's decision (see
+  // ReplyService.attachUserImages), this only says which of the ids are real.
+  existingImageIds(images: unknown[]): string[] {
     const saved: string[] = [];
     for (const img of images) {
       if (typeof img !== "string" || !img) continue;
-      if (img.startsWith("data:")) {
-        saved.push(this.saveImage(chatId, img));
-        continue;
-      }
       const abs = PathHelper.resolveImageId(img);
       if (abs && fs.existsSync(abs)) saved.push(PathHelper.imageIdOf(abs));
     }
     return saved;
-  }
-
-  // A file-name-safe English slug of 2–5 words: the leading words of the prompt
-  // or name with everything that is not a letter or a digit dropped,
-  // transliterated out of Cyrillic (a Russian prompt reaches the slug through
-  // the translated prompt, but a hand-named file may not) and joined with "-".
-  // Empty input falls back to `fallback`.
-  static slugify(text: string, fallback = "image"): string {
-    const cyrillic: Record<string, string> = {
-      а: "a",
-      б: "b",
-      в: "v",
-      г: "g",
-      д: "d",
-      е: "e",
-      ё: "e",
-      ж: "zh",
-      з: "z",
-      и: "i",
-      й: "y",
-      к: "k",
-      л: "l",
-      м: "m",
-      н: "n",
-      о: "o",
-      п: "p",
-      р: "r",
-      с: "s",
-      т: "t",
-      у: "u",
-      ф: "f",
-      х: "h",
-      ц: "c",
-      ч: "ch",
-      ш: "sh",
-      щ: "sch",
-      ъ: "",
-      ы: "y",
-      ь: "",
-      э: "e",
-      ю: "yu",
-      я: "ya",
-    };
-    const latin = [...text.toLowerCase()].map((ch) => (ch in cyrillic ? cyrillic[ch] : ch)).join("");
-    const slug = latin
-      .split(/[^a-z0-9]+/)
-      .filter((w) => w.length > 0)
-      .slice(0, 5)
-      .join("-")
-      .slice(0, 48)
-      .replace(/^-+|-+$/g, "");
-    return slug || (fallback && fallback !== text ? ChatsService.slugify(fallback, "image") : "") || "image";
   }
 
   // ---- the picture data: the one global images table ----

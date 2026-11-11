@@ -80,10 +80,13 @@ type MessageParam = { role: string; content: string | ContentPart[] };
 // configuration service, the image files through the shared data layout (an
 // image is named by its path relative to the data folder).
 //
-// A character never asks for an image: the [IMG]/[PHOTO] tag protocol is gone,
-// and the system prompt no longer offers one. Pictures are the user's own —
-// attached, drawn on request, or planned by composeImagePrompt for the user's
-// turn.
+// A picture enters the conversation in two directions. The user attaches one,
+// asks for one in their own words, or lets the app pick one for their turn
+// (composeImagePrompt / composeImagePromptFromRequest). A character can do one
+// thing only: end its line with a picture marker — [IMAGE_BY_ID] to attach a
+// picture of its own, [IMAGE_BY_PROMPT] to have a new one drawn — which the app
+// (ReplyService) carries out and strips, so the character never sends a file and
+// never writes a drawing prompt.
 export class TextGenerationService {
   constructor(private readonly configuration: ConfigurationService) {}
 
@@ -161,12 +164,16 @@ export class TextGenerationService {
   // — the other characters in the chat: in a group chat the prompt explains the
   // reply order and allows staying silent with the [SILENT] tag.
   //
-  // The prompt offers no image protocol: a character cannot attach or generate
-  // a picture — those are the user's messages only.
+  // ownPictures — the pictures the character owns (its folder, plus the avatar)
+  // as the numbered list the [IMAGE_BY_ID] marker refers to, each with what is
+  // on it. Without a single one the prompt offers only the draw-a-new-picture
+  // marker, because an attach marker with nothing to point at is an invitation
+  // to invent a file name.
   systemPromptFor(
     character: { name: string; description: string },
     person?: { name: string; description: string } | null,
     fellowCharacters: Array<{ name: string; description: string }> = [],
+    ownPictures: Array<{ id: string; description?: string }> = [],
   ): string {
     let prompt = `You are ${character.name}. ${character.description}\nStay in character; never break role.`;
     prompt += "\nKeep replies short: 2–5 sentences, one short paragraph. No long monologues.";
@@ -191,9 +198,103 @@ export class TextGenerationService {
         "\nIf it is not your turn, no one addressed you and you have nothing to add to the conversation — " +
         "output exactly [SILENT] instead of a reply and nothing else. In all other cases reply as usual.";
     }
-    prompt +=
-      "\nYou cannot send or create images — text only. When the user shares a picture, describe or react to it in words instead.";
+    prompt += TextGenerationService.pictureProtocol(ownPictures);
     return prompt;
+  }
+
+  // The picture markers a character may end its line with, and the rules that
+  // keep them honest.
+  //
+  // A marker is a machine-readable tail, not part of the speech: the app reads
+  // it, carries out what it asks (attach an existing picture of the character's
+  // own set, or draw a new one) and strips it, so the reader never sees it.
+  // Both markers are listed as the LAST thing in the prompt, next to the list of
+  // the pictures they refer to, because that is the part a model still obeys
+  // after a long history — and the one part where obeying literally matters: a
+  // half-written tag or an invented file name becomes a picture that cannot be
+  // shown.
+  private static pictureProtocol(ownPictures: Array<{ id: string; description?: string }>): string {
+    const lines = [
+      "\nYou can share a picture with your line. To do it, write ONE marker as the LAST line, after your words:",
+    ];
+    if (ownPictures.length > 0) {
+      lines.push(
+        "[IMAGE_BY_ID <number>] — attach one of your OWN pictures from the list at the end of this prompt, by its number.",
+      );
+    }
+    lines.push(
+      "[IMAGE_BY_PROMPT <what the picture shows>] — have the app draw a new picture. " +
+        "Write the request in the language you speak in and describe the picture as a still image: " +
+        "where you are, what you are doing, what is around you. The app turns it into a drawing prompt " +
+        "and picks the reference pictures of your own face itself — do not write a drawing prompt yourself.",
+    );
+    lines.push(
+      "Rules: at most one picture per line; use a picture only when showing it is what you would really do " +
+      "right now (what you are looking at, the thing in your hand, the room you are in); attach only your own " +
+      "pictures, never one the user shared; your words must say what the picture shows, so the two agree; " +
+      "the marker is invisible to the reader, so never mention it and never write it in the middle of a " +
+      "sentence. When you have nothing to show, write no marker.",
+    );
+    if (ownPictures.length > 0) {
+      lines.push("\nYour own pictures (write the number in [IMAGE_BY_ID ...]):");
+      ownPictures.forEach((p, i) => {
+        const shows = p.description?.trim();
+        lines.push(`${i + 1}. ${p.id}${shows ? ` — ${shows}` : ""}`);
+      });
+    }
+    return lines.join("\n");
+  }
+
+  // The picture markers of a character's line, read out of it (the counterpart
+  // of pictureProtocol, which is where the model is told about them).
+  //
+  // A token of [IMAGE_BY_ID] is resolved against the list the prompt showed the
+  // model: a number picks the entry the way the model saw it, and a full id or a
+  // bare file name is accepted too, because that is what a model writes when it
+  // copies instead of counting. A token that names no picture of that character
+  // is dropped — an invented file name must not become a card that can never
+  // load — and the marker is stripped either way, so the reader never sees a
+  // half-executed instruction.
+  //
+  // The request of [IMAGE_BY_PROMPT] is passed through as it was written, in
+  // whatever language: it is the description of the picture and the raw material
+  // of the drawing prompt, and the app translates it, not the model.
+  parsePictureMarkers(
+    text: string,
+    ownPictureIds: string[],
+  ): { text: string; attachIds: string[]; requests: string[] } {
+    const requests: string[] = [];
+    let spoken = text.replace(/\[\s*IMAGE_BY_PROMPT\b([^\]]*)\]\s*/gi, (_tag, body: string) => {
+      const request = body.trim();
+      if (request) requests.push(request);
+      return "";
+    });
+    const attachIds: string[] = [];
+    spoken = spoken.replace(/\[\s*IMAGE_BY_ID\b([^\]]*)\]\s*/gi, (_tag, body: string) => {
+      const id = TextGenerationService.resolvePictureToken(body.trim(), ownPictureIds);
+      if (id && !attachIds.includes(id)) attachIds.push(id);
+      return "";
+    });
+    // A marker was a line of its own: what is left must not keep the blank one.
+    return { text: spoken.replace(/\n{3,}/g, "\n\n").trim(), attachIds, requests };
+  }
+
+  // One [IMAGE_BY_ID] token as a picture id of the character, or null: a
+  // 1-based number of the list, the exact id, or the file name of one of them
+  // (case-insensitive, because a model capitalises what it copies).
+  private static resolvePictureToken(token: string, ownPictureIds: string[]): string | null {
+    if (!token) return null;
+    if (/^\d+$/.test(token)) {
+      const n = parseInt(token, 10);
+      return n >= 1 && n <= ownPictureIds.length ? ownPictureIds[n - 1] : null;
+    }
+    const exact = ownPictureIds.find((id) => id === token);
+    if (exact) return exact;
+    const wanted = token.replace(/^.*\//, "").toLowerCase();
+    if (!wanted) return null;
+    return (
+      ownPictureIds.find((id) => id.replace(/^.*\//, "").toLowerCase() === wanted) ?? null
+    );
   }
 
   // The character decided to stay silent: the reply is only the [SILENT] tag
@@ -396,34 +497,8 @@ export class TextGenerationService {
     const castRefs = new Set((input.cast ?? []).map((c) => c.ref));
     const maxRefs = input.maxRefs ?? 2;
     const language = input.language?.trim() || "English";
-    const list =
-      input.images.length === 0
-        ? "There are no pictures to draw from, so the picture must come from the text alone."
-        : input.images
-            .map((img, i) => {
-              const bits = [
-                img.role === "look"
-                  ? `a look reference${img.shows ? ` of ${img.shows}` : ""}`
-                  : img.description
-                    ? `shows: ${img.description}`
-                    : "no description",
-                img.prompt ? `generated from prompt: ${img.prompt}` : img.origin === "uploaded" ? "uploaded by the user" : "",
-                img.owner ? `shared by ${img.owner}` : "",
-                img.age ?? "",
-              ].filter(Boolean);
-              return `#${i + 1} — ${bits.join("; ")}`;
-            })
-            .join("\n");
-    const people =
-      (input.cast ?? []).length === 0
-        ? "Nobody is known by name in this conversation."
-        : (input.cast ?? [])
-            .map(
-              (c) =>
-                `${c.ref} — ${c.name}${c.look ? `: ${c.look}` : ""}` +
-                (c.anchors.length > 0 ? ` (shown on picture ${c.anchors.join(", ")})` : " (no picture of them)"),
-            )
-            .join("\n");
+    const list = TextGenerationService.renderPictures(input.images);
+    const people = TextGenerationService.renderCast(input.cast ?? []);
 
     const answer = await this.requestCompletion(
       model,
@@ -467,12 +542,145 @@ export class TextGenerationService {
 
     const plan = TextGenerationService.parseJsonPlan(answer);
     if (!plan) return null;
+    return TextGenerationService.readPlan(plan, castRefs, input.images.length);
+  }
+
+  // ---- planning the picture somebody asked for in their own words ----
+
+  // Turns a hand-written request for one picture into what the generator needs:
+  // the request may be in any language and may name the people of this roleplay
+  // chat, and it is a description of a still image ("Alice at the window in the
+  // morning"), not a drawing prompt. The planner therefore does two jobs the
+  // plain translation does not: it writes the prompt the generator reads best,
+  // and it says WHICH pictures to draw from, because a request naming a person
+  // is exactly the case where the generator needs a face to copy rather than a
+  // name it has never heard (see the no-names rule).
+  //
+  // Unlike the picture of the user's turn, the subject here is given — the model
+  // is not asked to invent what to show, only how. And it answers with no
+  // description: the card's caption is the request itself, the user's own words,
+  // which is why the JSON schema below has no description field.
+  async composeImagePromptFromRequest(
+    model: Model,
+    input: {
+      // What the picture should show, as it was written (any language, may name
+      // the characters and personas of the chat).
+      request: string;
+      // The dialogue around the request — who is here and what just happened —
+      // so a request like "show them the harbour" lands on the right scene.
+      context?: string;
+      images: ImageBrief[];
+      cast?: ImageCastMember[];
+      maxRefs?: number;
+      style?: string;
+      signal?: AbortSignal;
+      sampling?: ChatSampling;
+    },
+  ): Promise<ImagePromptPlan | null> {
+    const castRefs = new Set((input.cast ?? []).map((c) => c.ref));
+    const maxRefs = input.maxRefs ?? 2;
+    const answer = await this.requestCompletion(
+      model,
+      [
+        {
+          role: "system",
+          content:
+            "You turn a hand-written request for one picture into what an image generator needs.\n" +
+            "The request is written by hand and may be in any language; it describes the picture " +
+            "in words and may name people of a roleplay chat. The generator has NEVER heard those " +
+            "names: it understands only a visual description and the reference images it is given.\n" +
+            "Answer with ONE JSON object and nothing else:\n" +
+            '{"name": "2-5 english words naming the picture", ' +
+            '"prompt": "the image generation prompt, in english, 1-3 sentences: subjects, action, setting, lighting, style", ' +
+            '"refs": [numbers of the pictures below to draw from], ' +
+            '"cast": [the ids of the people who appear in the picture], ' +
+            '"subjects": [{"id": "the cast id", "noun": "the 2-4 word english phrase the prompt uses for them"}]}\n' +
+            "Rules:\n" +
+            "- keep everything the request asks for; add only what a picture needs (framing, light, " +
+            "style) and never a person, an event or an object the request does not imply;\n" +
+            "- the name, the prompt and the subject phrases are in english;\n" +
+            "- the prompt describes a single concrete scene, not a story;\n" +
+            "- NEVER write a person's name in the prompt. Call a person by how they look " +
+            '(the "look" line of their cast entry: "the red-haired woman in a green coat") or by their ' +
+            'reference picture ("the woman from the first reference image");\n' +
+            "- for every person you show, put their cast id in cast and give the exact noun phrase you used;\n" +
+            `- refs: at most ${maxRefs} numbers from the list below. Use a look reference for every person ` +
+            "you show, and a conversation picture when the new one must keep its place or its style;\n" +
+            "- when the request is about ONE person (their own photo, what they are doing right now), " +
+            "that person's look reference goes first." +
+            (input.style ? `\n- the pictures of this chat share one style: ${input.style}` : ""),
+        },
+        {
+          role: "user",
+          content:
+            `The picture to make, as it was asked for:\n${input.request}\n\n` +
+            (input.context ? `${input.context}\n\n` : "") +
+            `People in this conversation:\n${TextGenerationService.renderCast(input.cast ?? [])}\n\n` +
+            `Pictures to draw from:\n${TextGenerationService.renderPictures(input.images)}`,
+        },
+      ],
+      input.signal,
+      input.sampling,
+    );
+
+    const plan = TextGenerationService.parseJsonPlan(answer);
+    if (!plan) return null;
+    return TextGenerationService.readPlan(plan, castRefs, input.images.length);
+  }
+
+  // The numbered picture list of a planning prompt — what each offered reference
+  // is worth and where it came from. Both planners show the same catalogue, so
+  // there is one place that decides what a model is told about a picture.
+  private static renderPictures(images: ImageBrief[]): string {
+    if (images.length === 0) {
+      return "There are no pictures to draw from, so the picture must come from the text alone.";
+    }
+    return images
+      .map((img, i) => {
+        const bits = [
+          img.role === "look"
+            ? `a look reference${img.shows ? ` of ${img.shows}` : ""}`
+            : img.description
+              ? `shows: ${img.description}`
+              : "no description",
+          img.prompt ? `generated from prompt: ${img.prompt}` : img.origin === "uploaded" ? "uploaded by the user" : "",
+          img.owner ? `shared by ${img.owner}` : "",
+          img.age ?? "",
+        ].filter(Boolean);
+        return `#${i + 1} — ${bits.join("; ")}`;
+      })
+      .join("\n");
+  }
+
+  // The cast of a planning prompt: who is in the story, what they look like, and
+  // which of the pictures below already shows them (the anchor the generator can
+  // copy a face from).
+  private static renderCast(cast: ImageCastMember[]): string {
+    if (cast.length === 0) return "Nobody is known by name in this conversation.";
+    return cast
+      .map(
+        (c) =>
+          `${c.ref} — ${c.name}${c.look ? `: ${c.look}` : ""}` +
+          (c.anchors.length > 0 ? ` (shown on picture ${c.anchors.join(", ")})` : " (no picture of them)"),
+      )
+      .join("\n");
+  }
+
+  // The plan the model wrote, checked against what actually exists: a reference
+  // number outside the list, a cast id it invented or a person without the noun
+  // phrase that binds them to a reference are dropped rather than followed,
+  // because each of them would tie a real picture to nothing.
+  private static readPlan(
+    plan: Record<string, unknown>,
+    castRefs: Set<string>,
+    imageCount: number,
+  ): ImagePromptPlan | null {
     const prompt = typeof plan.prompt === "string" ? plan.prompt.trim() : "";
     if (!prompt) return null;
     const refs = Array.isArray(plan.refs)
       ? plan.refs
           .map((n) => (typeof n === "number" ? n : parseInt(String(n), 10)))
-          .filter((n) => Number.isFinite(n) && n >= 1 && n <= input.images.length)
+          .filter((n) => Number.isFinite(n) && n >= 1 && n <= imageCount)
       : [];
     // Ids the model invented cannot point at anything — a person the planner
     // made up is not in the cast, so the app ignores them rather than binding a

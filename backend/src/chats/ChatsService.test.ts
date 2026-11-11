@@ -446,7 +446,7 @@ describe("the message primitives", () => {
     expect(chats.get(chat.id)!.messages.map((m) => m.text)).toEqual(["first", "second"]);
   });
 
-  it("addImageMessage appends an image card and writes the picture's row", () => {
+  it("addImageMessage appends a neutral card and writes the picture's row", () => {
     const chat = chats.create(["a"], "me");
     const image = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=", { nameHint: "a red boat" });
     const card = chats.addImageMessage(chat, image, {
@@ -454,7 +454,12 @@ describe("the message primitives", () => {
       generation: { prompt: "a red boat at dusk", refs: [], source: "manual" },
     });
     expect(card.kind).toBe("image");
-    expect(card.userId).toBe("me");
+    // A picture has no author: it is not something a person said. It carries
+    // neither the persona of the chat nor a character, whatever the chat's
+    // active persona is — the human words about it are their own message.
+    expect(card.userId).toBeUndefined();
+    expect(card.characterId).toBeUndefined();
+    expect(card.role).toBe("user");
     expect(card.text).toBe("a red boat on a calm lake");
     expect(card.images).toEqual([image]);
     expect(chats.get(chat.id)!.messages).toEqual([card]);
@@ -716,14 +721,6 @@ describe("saveImage / reservedImageId", () => {
     // the reservation is unique — two placeholders never collide
     expect(chats.reservedImageId(chat.id, "A red boat at dusk, finally")).not.toBe(id);
   });
-
-  it("slugify keeps 2–5 english words and transliterates cyrillic", () => {
-    expect(ChatsService.slugify("A red fox sitting on a snowy fence", "image")).toBe("a-red-fox-sitting-on");
-    expect(ChatsService.slugify("рыжая лиса в снегу", "image")).toBe("ryzhaya-lisa-v-snegu");
-    expect(ChatsService.slugify("!!! ??? —", "image")).toBe("image");
-    expect(ChatsService.slugify("", "image")).toBe("image");
-    expect(ChatsService.slugify("supercalifragilisticexpialidociously", "image").length).toBeLessThanOrEqual(48);
-  });
 });
 
 describe("replaceMessageImage", () => {
@@ -766,54 +763,23 @@ describe("replaceMessageImage", () => {
   });
 });
 
-describe("importImage / importCharacterPhoto", () => {
-  it("copies the file into the chat files/ under a readable name and returns its id", () => {
-    const chat = chats.create(["a"], "me");
-    const photo = path.join(root, "outside", "Alisa portrait.png");
-    fs.mkdirSync(path.dirname(photo), { recursive: true });
-    fs.writeFileSync(photo, "img");
-    const id = chats.importCharacterPhoto(chat.id, photo);
-    expect(id).toMatch(new RegExp(`^${chat.id}/alisa-portrait-[0-9a-f]{6}\\.png$`));
-    expect(fs.readFileSync(path.join(root, id!))).toEqual(Buffer.from("img"));
-  });
-
-  it("an imported picture keeps the metadata of its source", () => {
-    const chat = chats.create(["a"], "me");
-    const photo = PathHelper.resolveImageId("outside/harbour.png")!;
-    fs.mkdirSync(path.dirname(photo), { recursive: true });
-    fs.writeFileSync(photo, "img");
-    imageMeta.set("outside/harbour.png", { description: "a harbour at dusk", prompt: "a harbour" });
-    const id = chats.importImage(chat.id, photo)!;
-    const card = chats.addImageMessage(chat, id);
-    // the card of an imported picture describes it right away
-    expect(chats.get(chat.id)!.messages.find((m) => m.id === card.id)!.text).toBe("a harbour at dusk");
-    // the copy has its own row; the source keeps its one
-    expect(imageMeta.get("outside/harbour.png")?.description).toBe("a harbour at dusk");
-  });
-
-  it("returns null when the photo does not exist", () => {
-    const chat = chats.create(["a"], "me");
-    expect(chats.importCharacterPhoto(chat.id, path.join(root, "nope.png"))).toBeNull();
-  });
-});
-
-describe("normalizeImages", () => {
-  it("saves data URLs and keeps the ids of pictures that are really there", () => {
+describe("existingImageIds", () => {
+  it("keeps the ids of pictures that are really there and drops the rest", () => {
     const chat = chats.create(["a"], "me");
     const id = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=");
-    const result = chats.normalizeImages(chat.id, ["data:image/png;base64,aGVsbG8=", id, 42, null, ""]);
-    expect(result).toHaveLength(2);
-    expect(result[0]).toMatch(/\/img-[0-9a-f]{6}\.png$/);
-    expect(result[1]).toBe(id);
+    // A data URL is NOT written here: which folder an upload belongs to is the
+    // caller's decision (ReplyService.attachUserImages), so an item that is not
+    // an existing picture id is simply not one.
+    expect(chats.existingImageIds([id, "data:image/png;base64,aGVsbG8=", 42, null, ""])).toEqual([id]);
   });
 
   it("drops a picture whose file is missing and anything outside the data folders", () => {
     const chat = chats.create(["a"], "me");
-    expect(chats.normalizeImages(chat.id, [`${chat.id}/missing.png`])).toEqual([]);
+    expect(chats.existingImageIds([`${chat.id}/missing.png`])).toEqual([]);
     // these files exist — they simply are not the app's pictures
-    expect(chats.normalizeImages(chat.id, ["/etc/passwd", "../../etc/passwd", path.join(os.tmpdir(), "x.png")])).toEqual(
-      [],
-    );
+    expect(
+      chats.existingImageIds(["/etc/passwd", "../../etc/passwd", path.join(os.tmpdir(), "x.png")]),
+    ).toEqual([]);
   });
 });
 
