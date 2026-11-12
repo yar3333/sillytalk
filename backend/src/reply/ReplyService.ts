@@ -495,7 +495,10 @@ export class ReplyService {
       // Cancelled or deleted while the model was thinking — leave it as the user
       // left it.
       if (!this.pictureIsPending(chatId, messageId, placeholder)) return;
-      const done = this.finishPlan(chat, plan, material);
+      const done = await this.finishPlan(chat, plan, material);
+      // The English pass of the plan is another model call — the card can be
+      // cancelled while it runs.
+      if (!this.pictureIsPending(chatId, messageId, placeholder)) return;
       const source: ImageGenerationData["source"] = target.folder === "character" ? "auto" : "manual";
       const id = this.reservePictureId(target, done.name);
       // The rename carries the row along — the request that is its caption
@@ -584,7 +587,10 @@ export class ReplyService {
       // Cancelled or deleted while the model was thinking — leave it as the
       // user left it.
       if (!this.pictureIsPending(chatId, messageId, placeholder)) return;
-      const done = this.finishPlan(chat, plan, material);
+      const done = await this.finishPlan(chat, plan, material);
+      // The English pass of the plan is another model call — the card can be
+      // cancelled while it runs.
+      if (!this.pictureIsPending(chatId, messageId, placeholder)) return;
       const id = this.chats.reservedImageId(chatId, done.name);
       if (!this.chats.replaceMessageImageId(chatId, messageId, placeholder, id)) return;
       this.chats.setMessageImageStatus(chatId, messageId, id, "pending");
@@ -624,26 +630,53 @@ export class ReplyService {
   // pictures are described, not shown — so any model can make one.
   // The card being filled right now is left out: it is the app's own
   // placeholder, not something that happened in the dialogue.
+  //
+  // Only the TAIL of the dialogue is shown: a plan is about the picture of the
+  // next moment, and the call has to stay inside the model's context — an
+  // overflow is a provider error, which reaches the user as a broken card in
+  // place of his picture. The picture catalogue has the same shape of limit
+  // (chatPictureBriefs).
+  private static readonly BRIEF_MESSAGES = 24;
+  private static readonly BRIEF_CHARS = 8000;
+  private static readonly BRIEF_LINE_CHARS = 1200;
+
   private conversationBrief(chat: Chat, exceptMessageId?: string): string {
     const persona = this.persons.get(chat.userId);
-    const lines = chat.messages
-      .filter((m) => !m.error && m.id !== exceptMessageId)
-      .map((m) => {
-        const words = m.text.trim();
-        const shown = m.images
-          .map((id) => m.pictures?.[id]?.description?.trim() || "a picture with no description")
-          .map((shows) => `[a picture shows: ${shows}]`);
-        // A neutral card has no words of its own and names nobody; a line with
-        // pictures is its author showing them, which is why the author stands.
-        if (isImageMessage(m)) return shown.join(" ") || "[a picture with no description]";
-        return [`${this.authorName(m)}: ${words || "(shows a picture)"}`, ...shown].join(" ");
-      });
+    const personaLook = this.visualLine(persona?.description ?? "");
+    const said = chat.messages.filter((m) => !m.error && m.id !== exceptMessageId);
+    const lines = said.slice(-ReplyService.BRIEF_MESSAGES).map((m) => {
+      const words = m.text.trim();
+      const shown = m.images
+        .map((id) => m.pictures?.[id]?.description?.trim() || "a picture with no description")
+        .map((shows) => `[a picture shows: ${shows}]`);
+      const line = isImageMessage(m)
+        ? shown.join(" ") || "[a picture with no description]"
+        : [`${this.authorName(m)}: ${words || "(shows a picture)"}`, ...shown].join(" ");
+      // One pasted novel must not crowd out the rest of the dialogue.
+      return line.length > ReplyService.BRIEF_LINE_CHARS
+        ? `${line.slice(0, ReplyService.BRIEF_LINE_CHARS)}…`
+        : line;
+    });
+    // Then the oldest lines go, until the brief fits its character budget. The
+    // newest line is always kept: a plan with no dialogue at all is worse than
+    // a long one.
+    let size = lines.reduce((total, line) => total + line.length + 1, 0);
+    let start = 0;
+    while (start < lines.length - 1 && size > ReplyService.BRIEF_CHARS) {
+      size -= lines[start].length + 1;
+      start++;
+    }
+    const tail = lines.slice(start);
+    const omitted = said.length - tail.length;
     return [
       `Characters: ${chat.characterIds.map((id) => this.characters.get(id)?.name ?? id).join(", ") || "nobody"}.`,
-      `The user: ${persona?.name ?? "the user"}${persona?.description?.trim() ? ` — ${persona.description.trim()}` : ""}.`,
+      `The user: ${persona?.name ?? "the user"}${personaLook ? ` — ${personaLook}` : ""}.`,
       "The conversation so far:",
-      lines.length > 0 ? lines.join("\n") : "(it has just started)",
-    ].join("\n");
+      omitted > 0 ? `(${omitted} earlier messages are not shown)` : "",
+      tail.length > 0 ? tail.join("\n") : "(it has just started)",
+    ]
+      .filter(Boolean)
+      .join("\n");
   }
 
   // The same brief with the question of the picture of the user's turn under it:
@@ -837,37 +870,52 @@ export class ReplyService {
   // for, because that is the half a text model gets wrong: it names people the
   // generator has never heard of and picks no face to copy.
   //
-  // Three deterministic steps:
+  // Four deterministic steps:
   //   1. every person the plan shows gets a picture of their own as a reference
-  //      — a familiar face before anything else;
+  //      — a familiar face before anything else — and every person gets their
+  //      FIRST one before anybody gets a second: the reference budget is
+  //      usually smaller than the cast of a group chat, and a second view of
+  //      one person would cost another person their face;
   //   2. then whatever else the plan asked to keep (a place, a style);
-  //   3. clamped to what the generator can actually take.
+  //   3. clamped to what the generator can actually take;
+  //   4. forced into English: the plan is asked for an English prompt, but a
+  //      request written in the user's language (the 🎨 dialog takes any) pulls
+  //      a model into that language, and the generators read English only.
   // The prompt then gets every name replaced by the plan's own visual phrase
   // (a disobedient model still cannot send a name to the generator) and the
   // binding sentence that ties each reference to its role by its ORDER — the
   // order the driver uploads and loads them in.
-  private finishPlan(
+  private async finishPlan(
     chat: Chat,
     plan: ImagePromptPlan,
     material: { images: ImageBrief[]; cast: ImageCastMember[] },
-  ): { name: string; description: string; prompt: string; refs: string[]; depicts: string[] } {
+  ): Promise<{ name: string; description: string; prompt: string; refs: string[]; depicts: string[] }> {
     const maxRefs = this.imageGeneration.maxReferenceCount();
     const refs: string[] = [];
     const addRef = (number: number | undefined): void => {
       const id = number !== undefined ? material.images[number - 1]?.id : undefined;
       if (id && !refs.includes(id)) refs.push(id);
     };
-    for (const ref of plan.cast) {
-      for (const anchor of material.cast.find((c) => c.ref === ref)?.anchors ?? []) addRef(anchor);
+    // The people in the order the plan named them; a person the plan invented
+    // has no entry and contributes nothing.
+    const shown = plan.cast
+      .map((ref) => material.cast.find((c) => c.ref === ref))
+      .filter((member): member is ImageCastMember => member !== undefined);
+    const anchorsDeepest = shown.reduce((max, member) => Math.max(max, member.anchors.length), 0);
+    for (let index = 0; index < anchorsDeepest; index++) {
+      for (const member of shown) addRef(member.anchors[index]);
     }
     for (const n of plan.refs) addRef(n);
     const chosen = refs.slice(0, Math.max(0, maxRefs));
-    const prompt = this.withChatStyle(
-      chat,
-      [this.describePeople(plan, material), this.refBinding(chosen, this.ownerOfAnchors(material), plan)]
-        .filter(Boolean)
-        .join(" ")
-        .trim(),
+    const prompt = await this.imageGeneration.ensureEnglishPrompt(
+      this.resolveChatModel(),
+      this.withChatStyle(
+        chat,
+        [this.describePeople(plan, material), this.refBinding(chosen, this.ownerOfAnchors(material), plan)]
+          .filter(Boolean)
+          .join(" ")
+          .trim(),
+      ),
     );
     return { name: plan.name, description: plan.description, prompt, refs: chosen, depicts: [...plan.cast] };
   }
@@ -1157,7 +1205,7 @@ export class ReplyService {
       sampling: chat.sampling,
     });
     if (!plan) return null;
-    const done = this.finishPlan(chat, plan, material);
+    const done = await this.finishPlan(chat, plan, material);
     return { prompt: done.prompt, description: done.description, refs: done.refs };
   }
 

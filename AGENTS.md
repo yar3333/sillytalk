@@ -798,10 +798,10 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   `ImageGenerationService.maxReferenceCount()` is the highest count ANY available generator takes —
   which is what the picture planner is asked for and what assembles the final list. Before a job
   starts the service cuts the references to `driver.maxRefs`, so a model with fewer templates uses
-  the pictures it can take instead of failing the job (the cast anchors come first, so a cut drops
-  scenery before it drops a face, and the ordinals of the binding sentence stay true for what
-  survives); the driver keeps its own refusal as the safety net for a workflow file swapped under a
-  queued job.
+  the pictures it can take instead of failing the job (the cast anchors come first and one per
+  person before anybody's second, so a cut drops scenery before it drops a face, and the ordinals
+  of the binding sentence stay true for what survives); the driver keeps its own refusal as the
+  safety net for a workflow file swapped under a queued job.
   The driver (`drivers/ComfyUiDriver.ts`):
   `POST /workflow/convert` turns the UI template into the API format (the
   `comfyui-workflow-to-api-converter-endpoint` custom node — a 404 here is reported as the node
@@ -995,10 +995,14 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   in the CHAT's folder, `generation.source: 'auto'`) — the rest runs in the background
   (`runUserTurnImage`) and the client
   polls, so typing and sending are never blocked. The background half asks the model
-  (`composeImagePrompt`) for a plan: the input is the whole dialogue as TEXT (who is in it, the
+  (`composeImagePrompt`) for a plan: the input is the TAIL of the dialogue as TEXT (who is in it, the
   labeled lines, the **cast** — see the next bullet — and a numbered catalogue of the pictures the
   chat already has, with what each shows, how it got there and how long ago — never who owns it,
-  which the id already says and a drawing has no use for), and its
+  which the id already says and a drawing has no use for). The tail is a budget on purpose
+  (`ReplyService.conversationBrief`): the newest 24 messages, the whole brief within 8000
+  characters, a single message clipped at 1200, the oldest lines dropped with a
+  `(N earlier messages are not shown)` line — a plan is about the NEXT moment, and a brief that
+  overflows the model's context is a provider error, i.e. a broken card. The card's
   own placeholder is left out of both; the output is strict JSON
   `{"name","description","prompt","refs","cast","subjects"}` extracted from whatever wrapping the
   model chose (`parseJsonPlan`), with `refs` clamped to the catalogue and `cast`/`subjects` to the
@@ -1022,10 +1026,14 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
     phrase it used for each (`subjects`). The anchors are what really carries a face; the look line
     is all the generator gets of a person who has no picture anywhere.
   - **What reaches the generator:** `finishPlan` assembles the references itself — the cast anchors
-    first (a face beats a place), then the pictures the model picked, deduped and cut to
+    first (a face beats a place), ONE PER PERSON before anybody gets a second (the budget is
+    usually smaller than the cast of a group chat, so a second view of one face must not cost
+    another person theirs), then the pictures the model picked, deduped and cut to
     `ImageGenerationService.maxReferenceCount()` — appends the binding sentence `Reference images:
     the first reference image shows the woman in the green coat — draw them with exactly the same
-    face, hair and outfit; …` and rewrites any name the model still wrote into that noun phrase
+    face, hair and outfit; …`, forces the prompt through `ensureEnglishPrompt` (a plan is asked for
+    English, but a request written in the user's language pulls a model into that language) and
+    rewrites any name the model still wrote into that noun phrase
     (`describePeople`). The generator therefore sees **no proper names** and always knows what each
     of its input pictures is for; the reference order is what makes "the first reference image" true
     (`ComfyUiDriver` keeps it — `PARAM_STRING_INPUT_IMAGE_FILENAME_1`/`_2`).
@@ -1214,7 +1222,10 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
 - **Generation prompts are always English, the words the user writes are not.** A picture is asked
   for in the user's own language (the 🎨 dialog, a `[IMAGE_BY_PROMPT]` marker) and that sentence is
   kept verbatim as the picture's `description`; the ENGLISH prompt is a separate field the planner
-  writes (`composeImagePromptFromRequest` asks for English outright, so it needs no translation).
+  writes (`composeImagePromptFromRequest` asks for English outright). The "asked for English" is a
+  rule of the prompt, not a guarantee of the answer — a request in the user's language pulls a model
+  into that language — so a planned prompt goes through the same `ensureEnglishPrompt` pass as a
+  hand-written one (`ReplyService.finishPlan`), which translates only text that carries Cyrillic.
   A prompt that is edited by hand afterwards — in the picture's editor (✎), and therefore any stored
   non-English prompt a regeneration re-runs — is translated via the chat's model
   (`translatePrompt` in `TextGenerationService`, called by

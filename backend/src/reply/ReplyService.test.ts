@@ -246,6 +246,10 @@ function makeFakeImageGeneration() {
   // one-reference generator.
   let maxRefs = 2;
   let promptGate: Promise<void> = Promise.resolve();
+  // The English pass of a planned prompt: what the service asked to translate
+  // and, when a test says so, what came back instead.
+  const englishPrompts: string[] = [];
+  let englishAnswer: ((prompt: string) => string) | null = null;
 
   const fake = {
     hasAvailableGenerator: (): boolean => available,
@@ -277,7 +281,8 @@ function makeFakeImageGeneration() {
     },
     ensureEnglishPrompt: async (_model: Model | null, prompt: string): Promise<string> => {
       await promptGate;
-      return prompt;
+      englishPrompts.push(prompt);
+      return englishAnswer ? englishAnswer(prompt) : prompt;
     },
   };
 
@@ -285,6 +290,10 @@ function makeFakeImageGeneration() {
     imageGeneration: fake as unknown as ImageGenerationService,
     started,
     cancelled,
+    englishPrompts,
+    setEnglish: (answer: ((prompt: string) => string) | null) => {
+      englishAnswer = answer;
+    },
     setOutcome: (o: ImageJobResult) => {
       outcome = o;
     },
@@ -878,6 +887,38 @@ describe("requestPicture (a picture the user asked for in their own words)", () 
     expect(saved.pictures?.[saved.images[0]]?.depicts).toEqual(["char:alice"]);
   });
 
+  it("shows the planner only the tail of a long dialogue", async () => {
+    // A plan is about the next moment, and the call has to stay inside the
+    // model's context: an overflow is a provider error, which the user sees as
+    // a broken card instead of his picture.
+    const chat = chats.create(["alice"], "me");
+    for (let i = 1; i <= 40; i++) {
+      chat.messages.push({ id: `m${i}`, role: "user", userId: "me", kind: "text", text: `line-${i}`, images: [], timestamp: i });
+    }
+    chats.save(chat);
+    reply.requestPicture(chat.id, "a red fox");
+    await flushJobs();
+
+    const context = textGeneration.requestPlanInput?.context ?? "";
+    // the newest message is the one the picture has to follow
+    expect(context).toContain("line-40");
+    // the oldest ones are gone, and the brief says so instead of pretending
+    expect(context).not.toContain("line-16\n");
+    expect(context).toContain("(16 earlier messages are not shown)");
+  });
+
+  it("clips one enormous message instead of letting it eat the call", async () => {
+    const chat = chats.create(["alice"], "me");
+    chat.messages.push({ id: "m1", role: "user", userId: "me", kind: "text", text: "x".repeat(5000), images: [], timestamp: 1 });
+    chats.save(chat);
+    reply.requestPicture(chat.id, "a red fox");
+    await flushJobs();
+
+    const context = textGeneration.requestPlanInput?.context ?? "";
+    expect(context).toContain("…");
+    expect(context.length).toBeLessThan(2000);
+  });
+
   it("the job is given a guard that notices the chat's deletion", async () => {
     const chat = newChat();
     reply.requestPicture(chat.id, "a red fox in the snow");
@@ -1210,6 +1251,71 @@ describe("requestUserTurnImage (the picture of the user's turn)", () => {
 
     // a familiar face beats a familiar place
     expect(fake.started[0].refs).toEqual([PathHelper.imageIdOf(photo)]);
+  });
+
+  it("gives every person of a group a face before anyone a second one", async () => {
+    // Two people, two reference slots, and every person owns two photos. The
+    // budget has to buy two faces, not two views of one face.
+    characters.save({ id: "bob", name: "Bob", description: "A broad man with a black beard." });
+    for (const file of [
+      path.join(PathHelper.characterDir("alice"), "photo1.jpg"),
+      path.join(PathHelper.characterDir("alice"), "photo2.jpg"),
+      path.join(PathHelper.characterDir("bob"), "photo1.jpg"),
+      path.join(PathHelper.characterDir("bob"), "photo2.jpg"),
+    ]) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, "img");
+    }
+    const chat = chats.create(["alice", "bob"], "me");
+    chat.messages.push({ id: "u1", role: "user", userId: "me", kind: "text", text: "Hi", images: [], timestamp: 1 });
+    chats.save(chat);
+    textGeneration.plan = {
+      name: "two people on a pier",
+      description: "two people on a pier at dusk",
+      prompt: "the red-haired woman and the bearded man on a pier",
+      refs: [],
+      cast: ["char:alice", "char:bob"],
+      subjects: [
+        { ref: "char:alice", noun: "the red-haired woman" },
+        { ref: "char:bob", noun: "the bearded man" },
+      ],
+    };
+    reply.requestUserTurnImage(chat.id);
+    await flushJobs();
+
+    const refs = fake.started[0].refs;
+    expect(refs).toHaveLength(2);
+    expect(refs.some((id) => id.startsWith("characters/alice/"))).toBe(true);
+    expect(refs.some((id) => id.startsWith("characters/bob/"))).toBe(true);
+    // and the binding sentence names both, in the order the generator loads them
+    expect(fake.started[0].prompt).toContain("the first reference image shows the red-haired woman");
+    expect(fake.started[0].prompt).toContain("the second reference image shows the bearded man");
+  });
+
+  it("forces a plan that answered in the request's language into English", async () => {
+    // The planner is ASKED for an English prompt, but the request is often
+    // Russian (the 🎨 dialog takes any language) and models follow the language
+    // they were spoken to in. The generators read English only.
+    textGeneration.plan = {
+      name: "a fox at the gate",
+      description: "",
+      prompt: "рыжая лиса у калитки",
+      refs: [],
+      cast: [],
+      subjects: [],
+    };
+    fake.setEnglish(() => "a red fox at the gate");
+    const chat = newChat();
+    reply.requestUserTurnImage(chat.id);
+    await flushJobs();
+
+    // what was handed to the translator is the prompt the plan wrote — the
+    // binding sentence and the chat style are added around it, not translated
+    expect(fake.englishPrompts[0]).toBe("рыжая лиса у калитки");
+    expect(fake.started[0].prompt).toBe("a red fox at the gate");
+    // the row of the picture remembers what the generator was really given
+    const card = chats.get(chat.id)!.messages[1];
+    expect(rowOf(card.images[0]).prompt).toBe("a red fox at the gate");
   });
 
   it("draws every picture of a chat in the style the chat asked for", async () => {
