@@ -250,29 +250,25 @@ export async function startMockLlm(
 }
 
 // ------------------------------------------------------------------ the generator
-// A stand-in for a ComfyUI server, carrying the endpoints the app drives:
+// A stand-in for a ComfyUI server running the comfyui-sillytalk plugin, carrying
+// the routes the app drives:
 //
-//   GET  /system_stats    — the availability probe
-//   POST /workflow/convert — the converter custom node: the UI-format template
-//                            of a model becomes the API workflow (the mock
-//                            answers its own tiny workflow, with the PARAM_*
-//                            placeholders of the variant it was handed)
-//   POST /upload/image    — a reference into the server's input/ folder
-//   POST /prompt          — the job goes into the queue, the prompt id back
-//   GET  /history/{id}    — what the app polls until the job is done
-//   GET  /view            — the finished picture
-//   POST /queue, /interrupt — the app asks to drop a cancelled job
+//   GET  /system_stats            — is the server there
+//   GET  /sillytalk/models        — the availability probe and the model pick
+//   GET  /sillytalk/health        — the plugin's own account of its cards
+//   POST /sillytalk/generate      — the job: prompt, size, reference pictures
+//   GET  /sillytalk/jobs/{id}     — what the app polls until the job is terminal
+//   GET  /sillytalk/jobs/{id}/image — the finished picture, as bytes
+//   DELETE /sillytalk/jobs/{id}   — the app asks to drop a cancelled job
 //
-// What a job does follows the prompt text the app substituted into the
-// workflow: "fail" — the server fails it, "slow" — it takes 5 s, anything else
-// is drawn after a short pause.
+// What a job does follows the prompt text the app sent: "fail" — the server
+// fails it, "slow" — it takes 5 s, anything else is drawn after a short pause.
 // One imageGenerators entry of the config — the same shape the app reads from
 // /api/config (the suites PUT it there before each test).
 export interface MockComfyGenerator {
   kind: 'comfyui';
   url: string;
   model: string;
-  device: string;
   width: number;
   height: number;
   enabled: boolean;
@@ -283,45 +279,19 @@ export interface MockComfy {
   // the imageGenerators entry that points at this server
   generator: MockComfyGenerator;
   // What the app actually sent: the prompt of every submitted job and the name
-  // of every uploaded reference. A test reads them to check the prompt the
-  // generator really saw and which pictures went with it.
+  // of every reference picture that came with one. A test reads them to check
+  // the prompt the generator really saw and which pictures went with it.
   prompts(): string[];
   uploads(): string[];
   close(): void;
 }
 
-// The workflow the mock converter answers with. The placeholder of a reference
-// is only in it when the template asked for references, so an unsubstituted
-// PARAM_* in a submitted job means the app forgot one.
-function mockApiWorkflow(variant: 'text' | 'oneImage' | 'twoImages'): Record<string, unknown> {
-  const nodes: Record<string, unknown> = {
-    "1": { class_type: 'UNETLoaderMultiGPU', inputs: { unet_name: 'mock.safetensors', device: 'PARAM_DEVICE' } },
-    "5": { class_type: 'CLIPTextEncode', inputs: { text: 'PARAM_PROMPT' } },
-    "9": {
-      class_type: 'EmptySD3LatentImage',
-      inputs: { width: 'PARAM_INT_OUTPUT_IMAGE_WIDTH', height: 'PARAM_INT_OUTPUT_IMAGE_HEIGHT' },
-    },
-    "10": { class_type: 'KSampler', inputs: { seed: 'PARAM_SEED', steps: 4, model: ['1', 0] } },
-    "13": { class_type: 'SaveImage', inputs: { filename_prefix: 'PARAM_STRING_OUTPUT_IMAGE_FILENAME' } },
-  };
-  if (variant !== 'text') {
-    nodes['20'] = {
-      class_type: 'LoadImage',
-      inputs: { image: variant === 'oneImage' ? 'PARAM_STRING_INPUT_IMAGE_FILENAME' : 'PARAM_STRING_INPUT_IMAGE_FILENAME_1' },
-    };
-  }
-  if (variant === 'twoImages') {
-    nodes['21'] = { class_type: 'LoadImage', inputs: { image: 'PARAM_STRING_INPUT_IMAGE_FILENAME_2' } };
-  }
-  return nodes;
-}
-
 interface MockComfyJob {
   id: string;
   prompt: string;
-  prefix: string;
   finishesAt: number;
   fails: boolean;
+  cancelled: boolean;
 }
 
 export async function startMockComfy(
@@ -329,12 +299,16 @@ export async function startMockComfy(
   size: { width: number; height: number } = { width: 96, height: 96 },
 ): Promise<MockComfy> {
   const jobs: MockComfyJob[] = [];
-  // What the app sent: the substituted prompt of every job and the name of
-  // every uploaded reference picture.
+  // What the app sent: the prompt of every job and the name of every uploaded
+  // reference picture.
   const promptLog: string[] = [];
   const uploadLog: string[] = [];
   const picture = makePng(96, 96, 210, 60, 60);
   let nextId = 1;
+
+  // The text fields of a multipart request, and the names of its file parts.
+  const fieldOf = (raw: Buffer, name: string): string =>
+    new RegExp(`name="${name}"\r\n\r\n([^\r]*)`).exec(raw.toString('utf-8'))?.[1] ?? '';
 
   const server = http.createServer((req, res) => {
     const chunks: Buffer[] = [];
@@ -350,79 +324,71 @@ export async function startMockComfy(
       try {
         if (route === 'GET /system_stats') return send(200, { mock: true });
 
-        if (route === 'POST /workflow/convert') {
-          const ui = raw.toString('utf-8');
-          const variant = ui.includes('PARAM_STRING_INPUT_IMAGE_FILENAME_1')
-            ? 'twoImages'
-            : ui.includes('PARAM_STRING_INPUT_IMAGE_FILENAME')
-              ? 'oneImage'
-              : 'text';
-          return send(200, mockApiWorkflow(variant));
+        if (route === 'GET /sillytalk/models') {
+          return send(200, { models: [{ code: model, label: 'Mock model', max_refs: 2, width: 96, height: 96 }] });
         }
 
-        if (route === 'POST /upload/image') {
-          const name = /filename="([^"]+)"/.exec(raw.toString('binary'))?.[1] ?? 'reference.png';
-          uploadLog.push(name);
-          return send(200, { name, subfolder: '', type: 'input' });
+        if (route === 'GET /sillytalk/health') {
+          return send(200, {
+            name: 'comfyui-sillytalk',
+            version: '1.0.0-mock',
+            comfyui_version: '0.44.2-mock',
+            workflow_dir: '/mock/workflows',
+            models: [model],
+            broken_workflows: [],
+            devices: [{ device: 'cuda:0', name: 'Mock Card', vram_total_mb: 24000, vram_free_mb: 23000 }],
+            resident_models: [],
+          });
         }
 
-        if (route === 'POST /prompt') {
-          const submitted = (
-            JSON.parse(raw.toString('utf-8')) as {
-              prompt: Record<string, { class_type?: string; inputs?: Record<string, unknown> }>;
-            }
-          ).prompt;
-          const text = String(
-            Object.values(submitted).find((n) => n?.class_type === 'CLIPTextEncode')?.inputs?.text ?? '',
-          );
-          const prefix = String(
-            Object.values(submitted).find((n) => n?.class_type === 'SaveImage')?.inputs?.filename_prefix ?? '',
-          );
+        if (route === 'POST /sillytalk/generate') {
+          const prompt = fieldOf(raw, 'prompt');
+          const sent = fieldOf(raw, 'model');
+          if (sent !== model) return send(400, { error: `no workflow named '${sent}' in this server's catalogue` });
+          for (const part of raw.toString('binary').matchAll(/filename="([^"]*)"/g)) uploadLog.push(part[1]);
           const id = `mock-${nextId++}`;
-          promptLog.push(text);
+          promptLog.push(prompt);
           jobs.push({
             id,
-            prompt: text,
-            prefix,
-            finishesAt: Date.now() + (/slow/i.test(text) ? 5000 : 400),
-            fails: /fail/i.test(text),
+            prompt,
+            finishesAt: Date.now() + (/slow/i.test(prompt) ? 5000 : 400),
+            fails: /fail/i.test(prompt),
+            cancelled: false,
           });
-          return send(200, { prompt_id: id, node_errors: {} });
+          return send(202, { job_id: id, model: sent, status: 'queued' });
         }
 
-        if (url.pathname.startsWith('/history/')) {
-          const id = decodeURIComponent(url.pathname.slice('/history/'.length));
+        if (req.method === 'DELETE' && /^\/sillytalk\/jobs\/[^/]+$/.test(url.pathname)) {
+          const id = decodeURIComponent(url.pathname.slice('/sillytalk/jobs/'.length));
           const job = jobs.find((j) => j.id === id);
-          if (!job) return send(200, {});
+          if (job) job.cancelled = true;
+          return send(200, { job_id: id, status: 'cancelled' });
+        }
+
+        const jobRoute = /^\/sillytalk\/jobs\/([^/]+)(\/image)?$/.exec(url.pathname);
+        if (jobRoute) {
+          const id = decodeURIComponent(jobRoute[1]);
+          const job = jobs.find((j) => j.id === id);
+          if (!job) return send(404, { error: 'no such job on this server' });
+          if (jobRoute[2]) {
+            if (job.fails || job.cancelled) return send(410, { error: 'the job has no picture to send' });
+            if (Date.now() < job.finishesAt) return send(409, { error: 'the job is still running' });
+            res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' });
+            res.end(picture);
+            return;
+          }
+          if (job.cancelled) return send(200, { job_id: id, status: 'cancelled' });
           if (job.fails) {
-            return send(200, {
-              [id]: {
-                status: {
-                  status_str: 'error',
-                  completed: false,
-                  messages: [['execution_error', { exception_message: 'the mock ComfyUI failed on purpose' }]],
-                },
-              },
-            });
+            return send(200, { job_id: id, status: 'failed', error: 'the mock ComfyUI failed on purpose' });
           }
-          if (Date.now() < job.finishesAt) {
-            return send(200, { [id]: { status: { status_str: 'running', completed: false, messages: [] } } });
-          }
+          if (Date.now() < job.finishesAt) return send(200, { job_id: id, status: 'running' });
           return send(200, {
-            [id]: {
-              status: { status_str: 'success', completed: true, messages: [] },
-              outputs: { '13': { images: [{ filename: `${job.prefix}_00001_.png`, subfolder: '', type: 'output' }] } },
-            },
+            job_id: id,
+            status: 'succeeded',
+            seconds: 0.4,
+            placements: [{ node: '1', class: 'UNETLoaderMultiGPU', device: 'cuda:0', mb: 12000 }],
           });
         }
-
-        if (route === 'GET /view') {
-          res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' });
-          res.end(picture);
-          return;
-        }
-
-        if (route === 'POST /queue' || route === 'POST /interrupt') return send(200, {});
 
         return send(404, { error: `the mock ComfyUI has no ${route} route` });
       } catch (err) {
@@ -440,13 +406,12 @@ export async function startMockComfy(
       kind: 'comfyui',
       url,
       model,
-      device: 'cuda:0',
       width: size.width,
       height: size.height,
       enabled: true,
     },
     // what the app sent this server: the prompt of every job (in the order the
-    // jobs arrived) and the name of every reference it uploaded for them
+    // jobs arrived) and the name of every reference it sent with them
     prompts() {
       return [...promptLog];
     },

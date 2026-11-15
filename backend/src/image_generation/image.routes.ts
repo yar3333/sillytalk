@@ -6,7 +6,6 @@ import { ReplyService } from "../reply/ReplyService";
 import { HttpHelper } from "../shared/HttpHelper";
 import { PathHelper } from "../shared/PathHelper";
 import { ImageGenerationService } from "./ImageGenerationService";
-import { comfyUiModelNames } from "./comfyui/ComfyUiWorkflows";
 
 // The /image routes: the availability flag (it decides whether the picture
 // buttons of the input bar are shown) and the helpers of the picture-editor
@@ -24,9 +23,10 @@ export function createImageRouter(
   router.get("/status", (_req, res) => {
     res.json({
       available: imageGeneration.hasAvailableGenerator(),
-      // The image models a ComfyUI generator can be pointed at: what the app
-      // ships a workflow for (the settings dialog offers exactly these).
-      comfyUiModels: comfyUiModelNames(),
+      // The image models a ComfyUI generator can be pointed at: what the
+      // configured servers' comfyui-sillytalk plugin offers (the settings dialog
+      // offers exactly these — the app ships no workflows of its own).
+      comfyUiModels: imageGeneration.comfyUiModels(),
       // The languages a picture's description can be written in — the Settings
       // dialog fills its pick from here, so the list of what the model can be
       // asked for lives in one place (configuration/PictureLanguage.ts).

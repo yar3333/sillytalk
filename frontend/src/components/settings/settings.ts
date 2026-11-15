@@ -99,15 +99,12 @@ import { UiStore } from '../../services/ui-store';
                     }
                   </select>
                 </label>
-                <label><span>GPU device</span> <input [value]="g.device" (input)="setGenStr(i, 'device', $event)" /></label>
-              </div>
-              <div class="row">
                 <label><span>width</span> <input type="number" [value]="g.width" (input)="setGenNum(i, 'width', $event)" /></label>
                 <label><span>height</span> <input type="number" [value]="g.height" (input)="setGenNum(i, 'height', $event)" /></label>
               </div>
               <div class="hint">
-                The workflow of {{ g.model }} runs on that server, so the server needs its models
-                and the "comfyui-workflow-to-api-converter-endpoint" node. The picture size follows
+                The server draws {{ g.model }} with its own plugin (comfyui-sillytalk), which also
+                picks the GPU from the memory free when the job arrives. The picture size follows
                 width × height here.
               </div>
             } @else {
@@ -191,8 +188,8 @@ export class Settings implements OnInit {
   generators(): ImageGenerator[] {
     return this.m()?.imageGenerators ?? [];
   }
-  // The models a ComfyUI generator can be pointed at — from the backend, which
-  // knows the workflows the app ships.
+  // The model codes a ComfyUI generator can be pointed at — from the backend,
+  // which asks every configured server what its plugin offers.
   comfyModels(): string[] {
     return this.configStore.comfyUiModels();
   }
@@ -239,9 +236,8 @@ export class Settings implements OnInit {
     const g: ComfyUiSettings = {
       kind: 'comfyui',
       url: 'http://127.0.0.1:8188',
-      // the first model the app can draw with; the pick offers the rest
-      model: models[0] ?? 'qwen-image-2.1',
-      device: 'cuda:0',
+      // the first model the servers offer; the pick lists the rest
+      model: models[0] ?? '',
       width: 1328,
       height: 1328,
       enabled: true,

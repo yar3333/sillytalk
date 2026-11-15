@@ -75,43 +75,28 @@ backend/               Express API; also serves the built frontend
                        interface (IImageGeneratorDriver.ts — key + queueKey; the
                        job model — ImageJob.ts / ImageJobResult.ts), the backends
                        (drivers/ComfyUiDriver.ts / drivers/SdApiDriver.ts), the
-                       ComfyUI domain folder (comfyui/ComfyUiWorkflows.ts — the
-                       loader of the models the app can draw with: the workflow
-                       of a model is a raw JSON FILE, read again for every job,
-                       so replacing one needs no rebuild — comfyUiModelNames()
-                       for the Settings pick, comfyUiWorkflowSet(model) +
-                       variantFor(refs) + comfyUiMaxRefs(set) for the driver,
-                       comfyUiWorkflowEntries() for the self-test (the whole
-                       catalogue with the source folder, the templates and the
-                       reason a file is unusable); COMFYUI_WORKFLOW_VARIANTS is
-                       the variants in the order of their reference count;
-                       the app's own files are comfyui/workflows/<model>.json
-                       — qwen-image-2.1.json and qwen-image-2512.json, the UI
-                       format as ComfyUI saves it — and the user's own
-                       <data root>/comfyui/<model>.json replaces one of them or
-                       adds a model; the build copies the folder into dist —
-                       backend "scripts/copy-workflows.cjs", because tsc only
-                       compiles TypeScript),
+                       ComfyUI domain folder — there is NO workflow file in this
+                       app any more: the ComfyUI server's own plugin
+                       (github.com/yar3333/comfyui-sillytalk) owns the graphs,
+                       publishes the model catalogue and picks the GPUs, so
+                       comfyui/ holds only
                        comfyui/ComfyUiServerInfo.ts (the loose types of what a
                        ComfyUI server REPORTS about itself — /system_stats and
                        /object_info — plus comboOptionsOf(), the two spellings of
                        a combo input; every field optional because these are the
                        server's fields and they moved between releases),
                        comfyui/ComfyUiSelfTestService.ts (the class behind
-                       `sillytalk test-comfyui`: five steps, cheapest first —
-                       /system_stats and its GPUs and free VRAM, the workflow
-                       catalogue, POST /workflow/convert per template,
-                       /object_info compared with what the workflows ask for
-                       (a node class it lacks — confirmed by the per-class
-                       endpoint, so a lazily loaded node is not a false alarm —
-                       and a model file name the server does not have, while a
-                       PARAM_* placeholder is never compared with a list of
-                       files), then one REAL job per template with the app's own
-                       driver, the picture checked by reading the size out of its
-                       own header; a line sink is the report, so the test reads
-                       the lines as the user does; it reads no config and writes
-                       nothing but its output folder, because the point is to
-                       test a server the user has not configured yet),
+                       `sillytalk test-comfyui`: four steps, cheapest first —
+                       /system_stats and its GPUs and free VRAM, GET
+                       /sillytalk/health (the plugin, its cards, the models
+                       resident on them and the workflows of its catalogue it
+                       could NOT load), GET /sillytalk/models, then one REAL
+                       picture per model and per reference count with the app's
+                       own driver, the file checked by reading the size out of
+                       its own header; a line sink is the report, so the test
+                       reads the lines as the user does; it reads no config and
+                       writes nothing but its output folder, because the point is
+                       to test a server the user has not configured yet),
                        the driver factory (DriverFactory.ts), and the top-level
                        service class (ImageGenerationService.ts —
                        ImageGenerationService: availability cache, the
@@ -135,9 +120,9 @@ backend/               Express API; also serves the built frontend
                        regenerate-image; what reaches a generator is always a
                        prompt the model wrote);
                        ImageGenerationService.test.ts —
-                       jest unit tests (an in-file mock ComfyUI server:
-                       the PARAM_* substitution, the workflow per reference
-                       count, the queue of one server, background image jobs)
+                       jest unit tests (an in-file mock of the plugin's routes:
+                       what a job carries, the reference count the server allows,
+                       the queue of one server, background image jobs)
     images/            the image-metadata domain: the top-level service classes
                        ImageMetaService.ts (the global images.db SQLite database
                        (node:sqlite) — ONE `images` table keyed by the image id
@@ -598,9 +583,6 @@ e2e/                   Playwright suite
                        id of the picture used as the avatar, or NULL); opened lazily,
                        close() is final; the old character.json / user.json files
                        are not read and not touched)
-  comfyui/           — the user's own ComfyUI workflows: <model>.json replaces the
-                       workflow the app ships for that name, or adds a model (the
-                       file name is the model name); empty by default
   comfyui-test/      — the pictures `sillytalk test-comfyui` drew, written by that
                        command only (--out moves them); no reader, safe to delete
 ```
@@ -716,11 +698,11 @@ or through the in-app **Settings** dialog. Paths may use `~` (resolved by `expan
       "enabled": true                   // generator toggle (default true)
     },
     {
-      "kind": "comfyui",                // a ComfyUI server
+      "kind": "comfyui",                // a ComfyUI server running the
+                                        // comfyui-sillytalk plugin
       "url": "http://127.0.0.1:8188",
-      "model": "qwen-image-2.1",        // ONE of comfyUiModelNames()
-      "device": "cuda:0",               // the GPU the workflow pins its loaders to
-      "width": 1328, "height": 1328,
+      "model": "qwen-image-2.1",        // a code of THAT server's catalogue
+      "width": 1328, "height": 1328,   // the app's size; the GPU is not here
       "enabled": true
     }
   ]
@@ -760,8 +742,10 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   generators were converted once by a throwaway script). At startup
   (`refreshAvailableGenerators` in `image_generation/ImageGenerationService.ts`) all generators are probed
   (in parallel): the SD API availability is checked via `GET {url}/sdapi/v1/sd-models`, a ComfyUI
-  generator is available when a readable workflow file defines its `model` (the app's own or the
-  user's) and `GET {url}/system_stats` answers. **Every enabled and available generator is used**: jobs of
+  generator is available when `GET {url}/sillytalk/models` answers AND that catalogue contains its
+  `model` — a server without the plugin is NOT a generator this app can use, and the reason naming
+  the custom node is logged (a server that answers in a browser but is missing from the app is
+  otherwise undiagnosable). **Every enabled and available generator is used**: jobs of
   different generators run in PARALLEL (a new job goes to the least-loaded QUEUE, and between the
   generators of that queue the pick rotates, so two models of one server both get their jobs),
   while the jobs of ONE server are queued (one run at a time — the GPU must not be hit
@@ -770,61 +754,47 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   `comfyui:<url>` for ComfyUI, so two generators of one server share one queue; for SD API it is
   its own `key`). `GET /api/image/status` returns `{ available, comfyUiModels, pictureLanguages }`
   for the UI —
-  `available` is true when at least one generator is available and `comfyUiModels` is
-  `comfyUiModelNames()`, the list the Settings dialog fills its model pick from (the frontend does
-  not mirror the model names); `pictureLanguages` is `PICTURE_LANGUAGES` (the codes and the names a
-  picture's description can be written in — see the language bullet below), mirrored for the same
+  `available` is true when at least one generator is available and `comfyUiModels` is the union of
+  the catalogues every configured server offered during that refresh (the service keeps it in a
+  static set, so a generator that named a model its server does not have still shows what COULD be
+  picked instead); the Settings dialog fills its model pick from it and the frontend does not mirror
+  model names; `pictureLanguages` is `PICTURE_LANGUAGES` (the codes and the names a picture's
+  description can be written in — see the language bullet below), mirrored for the same
   reason. Config changes via `PUT /api/config` recompute the available
   generators.
-- **A ComfyUI workflow is a JSON file, not compiled code** (`image_generation/comfyui/`, ported
-  from the PowerShell scripts that used to sit next to the app). The app ships
-  `comfyui/workflows/qwen-image-2.1.json` and `comfyui/workflows/qwen-image-2512.json`; a file
-  holds the UI-format graph under the keys `text` / `oneImage` / `twoImages` — the template per
-  number of reference images — and a model may ship fewer of them than the app's own three,
-  which is simply how many references it takes. `<data root>/comfyui/<model>.json` **replaces** the
-  shipped file of that name or **adds** a model, and the file name is the model name the generator
-  picks. The folder is created on startup and the files are re-read for every job and every
-  `/api/image/status`, so an edit takes effect on the next picture with no restart; the driver's
-  copy of the converted API workflow is cached against the **template text**, so an edited file is
-  converted again instead of being shadowed by the old copy. A file that is not readable JSON or
-  holds none of those keys makes its model unknown to the app (it drops out of the list and the
-  generator becomes unavailable) with the reason in the server log — and a broken override of a
-  shipped model does NOT fall back to the shipped graph, because the file the user wrote wins.
-  A model name is a file stem, so it cannot contain a path separator (`comfyUiWorkflowSet`
-  refuses it — a hand-written config must not point the loader at `../config.json`).
-  **How many references a generator takes is part of its driver** (`IImageGeneratorDriver.maxRefs`:
-  for ComfyUI `comfyUiMaxRefs(set)` — the highest template the file defines; for the SD API `1`,
+- **The ComfyUI server owns the workflow; the app owns the words.** The app holds no graph, no
+  `PARAM_*` placeholders, no converter endpoint and no GPU name: the
+  [`comfyui-sillytalk`](https://github.com/yar3333/comfyui-sillytalk) custom node on the server does
+  all of that, and the whole boundary is four requests (see `drivers/ComfyUiDriver.ts`):
+  `POST /sillytalk/generate` (multipart: `model`, `prompt`, `width`, `height`, and one `image` part
+  per reference, sent under its own file name) answers 202 with a `job_id`; `GET
+  /sillytalk/jobs/{id}` is polled every 2 s (10 min cap) until the job is `succeeded`, `failed` or
+  `cancelled` — a failed answer carries the server's own reason and becomes the error of the card;
+  `GET /sillytalk/jobs/{id}/image` returns the picture bytes, which the driver writes to the target
+  file; `DELETE /sillytalk/jobs/{id}` drops a job the user cancelled, so the GPU is free for the
+  next one. `GET /sillytalk/models` (the catalogue: `code`, `max_refs`, the model's own size) and
+  `GET /sillytalk/health` (versions, the plugin's cards and what is resident on them, the workflows
+  it could not load) are the read-only probes the self-test uses. A 404 on any `/sillytalk/…` route
+  is reported as the plugin being absent, with the name of the custom node to install.
+  **The driver is the only place that knows this dialect**: `baseUrl`, `model`, `offeredModels`,
+  `unavailableBecause`, `placements` (where the loaders of the last run landed, as the server said),
+  `systemStats()`, `pluginHealth()`, `pluginModels()`, `objectInfo()`, `hasNodeClass(name)`. A failed
+  connection reports the `cause` code (`ECONNREFUSED`, `ENOTFOUND`, a TLS mismatch) inside its
+  message, because that code is the whole diagnostic and `fetch` hides it otherwise.
+  **How many references a generator takes is the server's answer** (`max_refs` of the model, read
+  into `maxRefs` by the probe that decided the generator is usable; for the SD API it is `1`,
   because several `init_images` are a batch, not a reference set) and
   `ImageGenerationService.maxReferenceCount()` is the highest count ANY available generator takes —
   which is what the picture planner is asked for and what assembles the final list. Before a job
-  starts the service cuts the references to `driver.maxRefs`, so a model with fewer templates uses
+  starts the service cuts the references to `driver.maxRefs`, so a model with fewer slots uses
   the pictures it can take instead of failing the job (the cast anchors come first and one per
   person before anybody's second, so a cut drops scenery before it drops a face, and the ordinals
   of the binding sentence stay true for what survives); the driver keeps its own refusal as the
-  safety net for a workflow file swapped under a queued job.
-  The driver (`drivers/ComfyUiDriver.ts`):
-  `POST /workflow/convert` turns the UI template into the API format (the
-  `comfyui-workflow-to-api-converter-endpoint` custom node — a 404 here is reported as the node
-  not being installed); `POST /upload/image` (multipart field `image`) uploads the references
-  under a `safeName()`; the `PARAM_*` placeholders of the API workflow are then substituted by
-  whole-string match (`PARAM_PROMPT`, `PARAM_SEED` — a number in 0..2147483647, `PARAM_DEVICE`,
-  `PARAM_INT_OUTPUT_IMAGE_WIDTH`/`_HEIGHT`, `PARAM_STRING_OUTPUT_IMAGE_FILENAME`,
-  `PARAM_STRING_INPUT_IMAGE_FILENAME`/`_1`/`_2`); `POST /prompt` starts the job (its `node_errors`
-  are reported — "usually a custom node or a model file of the workflow is missing");
-  `GET /history/{prompt_id}` is polled every 2 s until the job is done (10 min cap, an error
-  carries the server's `status.messages`); `GET /view?filename&subfolder&type=output` downloads the
-  picture onto the target file. Cancelling a job aborts the local request AND tells the server to
-  drop it (`POST /queue {remove:[prompt_id]}` then `POST /interrupt {prompt_id}`, best-effort).
-  **The driver is the only place that knows this dialect**, so the read-only questions the self-test
-  asks are methods of it too: `baseUrl`, `systemStats(timeoutMs)`, `objectInfo()`,
-  `hasNodeClass(name)` and `convert(template, refCount, signal)` (the converted-workflow cache stays
-  its own — keyed by the template text, so a converted copy cannot shadow an edited file). A failed
-  connection reports the `cause` code (`ECONNREFUSED`, `ENOTFOUND`, a TLS mismatch) inside its
-  message, because that code is the whole diagnostic and `fetch` hides it otherwise.
-  `device` is the GPU the workflow's model loaders are pinned to — on a multi-GPU server a
-  generator per GPU; the ComfyUI server needs the models of the workflow installed (the
-  `picgen-install-comfyui` script of the `d:\MyDocs\AiPic\generators` folder the workflows were
-  ported from sets such a server up — it is not part of this app).
+  safety net for a caller that drove it past the probe.
+  Which GPU draws the picture is decided by the plugin from the memory free at the moment the job
+  arrives — the one moment that can know it; a device in a config file is a guess about a future the
+  next process on the box can undo. The app neither asks nor overrides, it only reports what came
+  back (the log line, and `placements` for the self-test).
 - **One model talks, another one looks (`Config.chatModel` / `Config.visionModel`).** The models are
   GLOBAL settings, not fields of a chat: the model that runs the replies is `chatModel` and the one
   that sees is `visionModel`, both written by the header chips (the model chip and the 👁) through
@@ -1036,7 +1006,8 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
     rewrites any name the model still wrote into that noun phrase
     (`describePeople`). The generator therefore sees **no proper names** and always knows what each
     of its input pictures is for; the reference order is what makes "the first reference image" true
-    (`ComfyUiDriver` keeps it — `PARAM_STRING_INPUT_IMAGE_FILENAME_1`/`_2`).
+    (the driver sends the parts in that order, under their own file names, and the plugin's workflow
+    feeds them to its loader nodes in it).
   - **What is remembered:** the people on a picture are stored in its row of the
     images table as `depicts: ["char:alice", "user:carol"]` (`ChatsService.setMessageDepicts` /
     `editImageCard`, read back into the line's `pictures` map by `applyImageMeta`, and
@@ -1072,9 +1043,8 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
 - **The media route serves pictures, not the data folder.** `GET /api/media` resolves the id with
   `PathHelper.resolvePictureId`, which accepts only a file inside one of the folders pictures live in
   (`chatsDir`, `charactersDir`, `personsDir`) and **not** the data root itself, so the route cannot be
-  pointed at `config.json` (it can hold a literal provider key), at `comfyui/*.json` (the user's own
-  workflow files) or at anything else that shares the data root with them — such an id gives `400
-  {"error":"Unknown image path"}`. The second rule is by name: `HttpHelper.sendImage` streams only a
+  pointed at `config.json` (it can hold a literal provider key) or at anything else that is not a
+  picture folder — such an id gives `400 {"error":"Unknown image path"}`. The second rule is by name: `HttpHelper.sendImage` streams only a
   name whose extension is a picture format (`HttpHelper.isImage` — png / jpg / jpeg / webp / gif / bmp
   / avif), which also covers the files that sit *inside* a picture folder (`chats/chats.db`, a
   `chat.json.migrated`, any leftover JSON) with `404`. This is the one file route the app serves
@@ -1400,37 +1370,32 @@ that needs the databases resolves them here — the one place allowed to.
   = the CLI. A new command therefore goes into `cli.ts`, never into `index.ts`.
 - **`test-comfyui <url>`** drives `image_generation/comfyui/ComfyUiSelfTestService.ts` and is the
   supported way to find out why a ComfyUI server draws nothing. Its invariants:
-  - **Nothing of the user's config is read or written.** The URL, the size and the GPU are arguments
-    (defaults 1024x1024 / `cuda:0`), so it can test a server the user has not configured yet — and
+  - **Nothing of the user's config is read or written.** The URL, the model codes and the size are
+    arguments, so it can test a server the user has not configured yet — and
     `ConfigurationService.loadConfig` is never called, because it WRITES a config file when there is
     none and a diagnostic does not create state. The only writes are the test pictures and the two
-    reference pictures, under `--out` / `<data root>/comfyui-test/`.
-  - **The five steps run cheapest first and each one is printed**: server → workflow files → converter
-    → nodes and model files → one real job per template. Everything before the GPU is free, so a
-    broken workflow file or a missing converter node is said before a minute of drawing is spent;
-    a missing converter stops the run (nothing can be drawn without it), a missing `/object_info`
-    does not (the run says what it skipped and draws anyway).
-  - **Node/model findings are warnings, the draw is the verdict.** A class the listing lacks is
-    confirmed through `GET /object_info/<name>` first (a lazily loaded node must not be called
-    missing) and a `PARAM_*` value is never compared with a list of the server's files (the value it
-    stands for exists only at run time) — a false alarm in a diagnostic costs more than the request
-    it saves.
+    reference pictures (made by the service itself, under `--out` / `<data root>/comfyui-test/`).
+    There is no `--device`: the plugin on the server picks the cards, and a diagnostic that pinned
+    one would test a thing the app never does.
+  - **The four steps run cheapest first and each one is printed**: server (`/system_stats`) → plugin
+    (`/sillytalk/health`) → catalogue (`/sillytalk/models`) → one REAL picture per model and per
+    reference count. Everything before the GPU is free, so a server without the plugin or a workflow
+    the plugin itself could not load is said before a minute of drawing is spent; a missing plugin
+    stops the run (nothing can be drawn without it).
+  - **The draw is the verdict.** The app no longer inspects node classes or model file names of a
+    graph — the plugin validates its own workflow before it queues it and puts what is missing into
+    the job's error, which the run prints. Re-deriving that here would be a second copy of the
+    knowledge the split was meant to remove.
   - **The drawn file is read back** (format + pixel size from its own header): a workflow that
-    ignores `PARAM_INT_OUTPUT_IMAGE_*` and a server that answers a download with an error page both
-    look like success until the file is opened.
+    ignores the size it was given and a server that answers a download with an error page both look
+    like success until the file is opened.
   - **A server that dies mid-run is one event, not N failures.** A ComfyUI whose GPU code aborts
     takes the whole process with it (core dumped), so the client sees `ECONNRESET` and then
     `ECONNREFUSED`; the run marks the server as lost, names the cause once (with the journalctl hint)
-    and reports the templates it never reached as SKIPPED — they are not evidence about those
-    workflows. The same reading ends a converter step that stops answering.
-  - **`/system_stats` is read twice.** A real 0.44/ROCm server answers it WITHOUT a device list before
-    its first job and draws on its GPU right after it, so an empty device list before the draws is
-    printed as a neutral note, never as a problem; after a job the same field is read again (that is
-    where the GPU and its free VRAM can be named), and a low free VRAM in the FIRST reading — the
-    state a new job would start from — is a warning.
-  - **Every failure line carries its own hint** (the converter custom node, a model file of the
-    workflow, an out-of-memory GPU, a job still queued, a server bound to 127.0.0.1 without
-    `--listen`). Exit codes: `0` clean, `1` something failed or needs a look, `2` a bad command line.
+    and reports the draws it never reached as SKIPPED — they are not evidence about those models.
+  - **Every failure line carries its own hint** (the plugin custom node, an out-of-memory card, a job
+    still queued, a server bound to 127.0.0.1 without `--listen`). Exit codes: `0` clean, `1`
+    something failed or needs a look, `2` a bad command line.
   - **Ctrl+C cancels through the service** (`cancel()` → the driver aborts and tells the server to
     drop the job); the second one ends the process. The SIGINT listener is removed when the command
     returns, so a long-lived process does not accumulate them.
@@ -1515,9 +1480,10 @@ that needs the databases resolves them here — the one place allowed to.
   `GET /api/image/status`'s `pictureLanguages`), the global picture-prompt model pick and the image
   generators (with a hint
   pointing at the header menus): "+ ComfyUI"
-  adds a `{ kind: 'comfyui' }` entry (URL + the model **pick** + the GPU device + width/height — the
-  pick is fed by `GET /api/image/status`'s `comfyUiModels` rather than a hardcoded frontend list, and
-  the hint under it names the converter node the server needs) and "+ SD API" the SD fields; the row
+  adds a `{ kind: 'comfyui' }` entry (URL + the model **pick** + width/height — the
+  pick is fed by `GET /api/image/status`'s `comfyUiModels`, the codes the configured servers offer,
+  rather than a hardcoded frontend list, and the hint under it names the plugin that decides the GPU)
+  and "+ SD API" the SD fields; the row
   header shows the kind (`ComfyUI — <model>` / `SD API`). The model pick marks the current option
   with `[selected]` on the `<option>` — `[value]` on the `<select>` would be set before the `@for`
   options exist and silently fail (the same gotcha as the reasoning pick in the model dialog).
@@ -1735,7 +1701,7 @@ that needs the databases resolves them here — the one place allowed to.
   - **A generation backend goes behind the driver interface**
     (`IImageGeneratorDriver.ts` + `drivers/ComfyUiDriver.ts` / `drivers/SdApiDriver.ts`, chosen by
     `DriverFactory` on the config entry's `kind`): the driver speaks the generator's own protocol
-    (ComfyUI's convert/upload/prompt/history/view over HTTP, the SD API's txt2img/img2img), fills
+    (ComfyUI's four `/sillytalk/…` routes over HTTP, the SD API's txt2img/img2img), fills
     `key` + `queueKey` and writes the picture to the `outPath` it is handed — the service above it
     knows neither protocols nor URLs. A new backend is a new driver + a new `kind`, not a branch in
     `ImageGenerationService`. There is no OS-specific code left in the app (the former `machine/`
@@ -1858,11 +1824,11 @@ that needs the databases resolves them here — the one place allowed to.
   `html, body` rules cover the rest. Keep the `:root` palette in the global stylesheet.
 - **TypeScript version pin.** Backend `typescript` is pinned to `^6.0.2` because `ts-jest`'s peer range
   rejects TS 7. Don't bump backend TS to 7 without resolving the peer conflict.
-- **Runtime assets next to the compiled code.** `tsc` compiles TypeScript and copies nothing, so the
-  ComfyUI workflow JSON files reach `dist` through `backend/scripts/copy-workflows.cjs`, which the
-  backend `build` script runs after `tsc` (and `scripts/package-npm.mjs` then packs with
-  `backend/dist`). A new folder of files the app reads at runtime needs a step like it, or a
-  production run finds the folder missing while tests — which read the source tree — stay green.
+- **Runtime assets next to the compiled code.** `tsc` compiles TypeScript and copies nothing. The app
+  itself has no runtime asset folder any more (the ComfyUI workflows moved into the server's plugin,
+  so `backend/scripts/copy-workflows.cjs` and the `prebuild` step went with them); a new folder of
+  files the app reads at runtime needs such a step, or a production run finds the folder missing
+  while tests — which read the source tree — stay green.
 
 ## E2E
 
@@ -1889,18 +1855,18 @@ that needs the databases resolves them here — the one place allowed to.
 - Uses **mocked model + image generation** — both suites share `e2e/helpers/mocks.ts`:
   a deterministic OpenAI-compatible LLM (the delay before answering is controllable at
   runtime via `MockLlm.setDelay`) and a **mock ComfyUI server** (`startMockComfy(model?, size?)` —
-  an in-process HTTP server speaking the part of the ComfyUI API the app drives:
-  `/system_stats`, `/workflow/convert` (it answers its own tiny workflow whose `PARAM_*` placeholders
-  follow the reference count of the template it was handed, so a placeholder the app forgot to
-  substitute stays visible), `/upload/image`, `/prompt`, `/history/{id}`, `/view`, `/queue`,
-  `/interrupt`; it returns `MockComfy` = `{ url, generator, prompts(), uploads(), close() }`, where
+  an in-process HTTP server speaking the part of the API the app drives: `/system_stats` and the
+  plugin's own routes `/sillytalk/models`, `/sillytalk/health`, `POST /sillytalk/generate`,
+  `GET /sillytalk/jobs/{id}`, `GET /sillytalk/jobs/{id}/image`, `DELETE /sillytalk/jobs/{id}`; it
+  returns `MockComfy` = `{ url, generator, prompts(), uploads(), close() }`, where
   `generator` is the `kind: 'comfyui'` `imageGenerators` entry pointing at it and `prompts()` /
-  `uploads()` are **what the app actually sent** — the substituted prompt of every submitted job and
-  the name of every uploaded reference (the assertions about the cast layer read them: UX 17 checks
-  that the prompt named the reference and never named the person). What a job does follows the prompt
-  text the app substituted into the workflow: "fail" → the server reports an execution error, "slow" →
-  5 s, anything else → a short pause and a real generated PNG from `/view` — so the failure, the
-  pending/spinner and the ready-picture paths are all covered without a real ComfyUI. `beforeAll` starts
+  `uploads()` are **what the app actually sent** — the prompt of every submitted job and the file
+  name of every reference part that came with one (the assertions about the cast layer read them: UX
+  17 checks that the prompt named the reference and never named the person). What a job does follows
+  the prompt text the app sent: "fail" → the job ends `failed` with the server's own reason, "slow" →
+  5 s, anything else → a short pause and a real PNG served from the job's image route — so the
+  failure, the pending/spinner and the ready-picture paths are all covered without a real ComfyUI.
+  `beforeAll` starts
   the mock LLM and the mock ComfyUI, `beforeEach` points the config's `llmModels`/`imageGenerators`
   at them, so the run is fast and does not depend on the user's real models. The mock LLM recognizes
   the calls by their system prompt: a chat reply answers

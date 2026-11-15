@@ -15,10 +15,10 @@ function reportOf(over: Partial<ComfyUiSelfTestReport> = {}): ComfyUiSelfTestRep
   return {
     ok: true,
     url: "http://127.0.0.1:8188",
-    outDir: "/tmp/comfyui-test",
-    seconds: 1,
-    verdict: "nothing to fix",
-    workflows: [{ model: "m", file: "/w/m.json", source: "app", set: { text: {} } }],
+    comfyui: "0.44.2",
+    plugin: "1.0.0",
+    summary: "2 of 2 test picture(s) drawn in 41s.",
+    models: [{ code: "qwen-image-2.1", max_refs: 2 }],
     items: [],
     problems: [],
     ...over,
@@ -77,8 +77,6 @@ describe("parseArgs", () => {
       "my-flux",
       "--size",
       "768x512",
-      "--device",
-      "cuda:1",
       "--prompt",
       "a blue house",
       "--out",
@@ -93,13 +91,17 @@ describe("parseArgs", () => {
         models: ["qwen-image-2.1", "my-flux"],
         width: 768,
         height: 512,
-        device: "cuda:1",
         prompt: "a blue house",
         outDir: "/tmp/pics",
         withRefs: false,
         draw: false,
       },
     });
+  });
+
+  it("has no --device — the plugin on the server chooses the GPUs", () => {
+    const parsed = parseArgs(["test-comfyui", "u", "--device", "cuda:1"]);
+    expect("error" in parsed && parsed.error).toMatch(/Unknown option/);
   });
 
   it("answers a bad option instead of guessing what it meant", () => {
@@ -152,7 +154,9 @@ describe("run", () => {
   });
 
   it("ends 1 when something failed, and does not advertise the server", async () => {
-    const stub = new StubSelfTest(reportOf({ ok: false, verdict: "2 templates failed", problems: ["a"] }));
+    const stub = new StubSelfTest(
+      reportOf({ ok: false, summary: "1 of 3 test picture(s) drawn in 12s, 2 failed.", problems: ["a"] }),
+    );
     const { code, lines } = await collect(["test-comfyui", "http://127.0.0.1:8188"], stub);
     expect(code).toBe(1);
     expect(lines.join("\n")).not.toMatch(/Settings →/);

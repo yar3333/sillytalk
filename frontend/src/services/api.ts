@@ -56,17 +56,18 @@ export interface SdApiSettings {
   enabled?: boolean; // generator toggle (default true) — a disabled one is never used
 }
 
-// A ComfyUI server. One entry runs ONE model — the workflows are shipped with
-// the app and the server has to have the models of the chosen one, so a server
-// serving two models is configured as two generators.
+// A ComfyUI server running the comfyui-sillytalk plugin. One entry runs ONE
+// model, and the model codes are the ones that server publishes — so a server
+// serving two models is configured as two generators, and a server without the
+// plugin is not a generator this app can use at all.
 export interface ComfyUiSettings {
   kind: 'comfyui';
   url: string;
-  // The model this generator runs, a name of the catalogue the backend answers
-  // in imageStatus() (the models the app has a workflow for).
+  // The model this generator asks the server for: a code of the catalogue the
+  // backend answers in imageStatus() (the codes the servers offer).
   model: string;
-  // The GPU the model loaders of the workflow are pinned to ("cuda:0").
-  device: string;
+  // The picture size. Which GPU draws it is the plugin's decision, made when
+  // the job arrives — the app neither asks for a card nor names one.
   width: number;
   height: number;
   enabled?: boolean; // generator toggle (default true) — a disabled one is never used
@@ -663,9 +664,8 @@ export class ApiService {
   }
 
   // Whether an image generator is available (any enabled one that answers), the
-  // image models a ComfyUI generator can be pointed at (the models the app
-  // ships a workflow for) and the languages a picture's description can be
-  // written in.
+  // image model codes the ComfyUI servers offer (each server publishes its own
+  // catalogue) and the languages a picture's description can be written in.
   imageStatus(): Promise<{
     available: boolean;
     comfyUiModels?: string[];

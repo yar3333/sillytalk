@@ -158,13 +158,12 @@ describe("the image generators of the config", () => {
   const gens = (imageGenerators: unknown[]) =>
     loadConfigWith(JSON.stringify({ listen: "127.0.0.1:3210", llmModels: {}, imageGenerators })).imageGenerators;
 
-  it("reads a ComfyUI generator and defaults its device and size", () => {
-    expect(gens([{ kind: "comfyui", url: "http://yserver:4240", model: " qwen-image-2.1 " }])).toEqual([
+  it("reads a ComfyUI generator and defaults its size", () => {
+    expect(gens([{ kind: "comfyui", url: "http://127.0.0.1:4240", model: " qwen-image-2.1 " }])).toEqual([
       {
         kind: "comfyui",
-        url: "http://yserver:4240",
+        url: "http://127.0.0.1:4240",
         model: "qwen-image-2.1",
-        device: "cuda:0",
         width: 1328,
         height: 1328,
         enabled: true,
@@ -172,11 +171,16 @@ describe("the image generators of the config", () => {
     ]);
   });
 
-  it("keeps the device, the size and the model a ComfyUI generator states", () => {
+  it("keeps the size and the model a ComfyUI generator states", () => {
     const [g] = gens([
-      { kind: "comfyui", url: "http://h:8188/", model: "qwen-image-2512", device: "cuda:3", width: 1664, height: 928, enabled: false },
+      { kind: "comfyui", url: "http://h:8188/", model: "qwen-image-2512", width: 1664, height: 928, enabled: false },
     ]);
-    expect(g).toMatchObject({ device: "cuda:3", width: 1664, height: 928, enabled: false });
+    expect(g).toMatchObject({ width: 1664, height: 928, enabled: false });
+  });
+
+  it("drops the device of a ComfyUI entry — the plugin on the server picks the cards", () => {
+    const [g] = gens([{ kind: "comfyui", url: "http://h:8188", model: "qwen-image-2.1", device: "cuda:3" }]);
+    expect(g).not.toHaveProperty("device");
   });
 
   it("reads an SD API generator with its defaults", () => {

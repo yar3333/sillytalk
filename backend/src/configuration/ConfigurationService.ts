@@ -231,10 +231,11 @@ export class ConfigurationService {
         result.push({
           kind: "comfyui",
           url: typeof g.url === "string" ? g.url : "",
-          // A model the app has no workflow for is kept as it is written — the
-          // driver reports it, and the generator simply is not available.
+          // A model code the server does not offer is kept as it is written —
+          // the driver reports which codes it does offer, and this generator
+          // simply is not available. (A `device` field of an older config is
+          // dropped: the plugin on the server picks the cards now.)
           model: typeof g.model === "string" ? g.model.trim() : "",
-          device: typeof g.device === "string" && g.device.trim() ? g.device.trim() : "cuda:0",
           width: typeof g.width === "number" ? g.width : 1328,
           height: typeof g.height === "number" ? g.height : 1328,
           enabled,

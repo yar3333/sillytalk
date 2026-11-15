@@ -7,7 +7,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "build": "tsc && node scripts/copy-workflows.cjs",
+    "build": "tsc",
     "start": "node dist/index.js",
     "cli": "node dist/cli.js",
     "dev": "ts-node-dev --respawn src/index.ts",

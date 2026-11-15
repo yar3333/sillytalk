@@ -85,12 +85,6 @@ describe("PathHelper.resolvePictureId (the HTTP rule: what the media route may s
   });
 });
 
-describe("PathHelper.comfyWorkflowsDir", () => {
-  it("is the comfyui folder of the data root", () => {
-    expect(PathHelper.comfyWorkflowsDir()).toBe(path.join(dataRoot, "comfyui"));
-  });
-});
-
 describe("PathHelper.listPictureIds (the catalog the picture editor offers)", () => {
   it("lists the pictures of the chats, the characters and the personas — and nothing else", () => {
     const write = (rel: string, content = "x"): void => {

@@ -38,9 +38,10 @@ Stack: **Node.js / Express 5 / TypeScript** (backend) + **Angular 22 / SCSS** (f
   file date).
 - Image generation by several backends (all the enabled and available ones are used; the jobs of one
   generator are queued, different generators run in parallel):
-  - **ComfyUI** — a generator is a ComfyUI URL plus one of the models the app ships workflows for
-    (`qwen-image-2.1`, `qwen-image-2512`), the GPU device and the picture size, so one ComfyUI
-    server running two models is two generators;
+  - **ComfyUI** — a generator is a ComfyUI URL plus one model code of that server's catalogue and the
+    picture size, so one ComfyUI server running two models is two generators. The server needs the
+    [`comfyui-sillytalk`](https://github.com/yar3333/comfyui-sillytalk) custom node: it owns the
+    workflows, publishes the model list and picks the GPU;
   - **SD API (Stable Diffusion WebUI)** — via the API (`/sdapi/v1/txt2img`, `/sdapi/v1/img2img`).
   Generation always runs in the background: the chat stays usable, a spinner with Cancel shows
   while it runs and a failed picture keeps a Regenerate button. A click on a picture enlarges it
@@ -120,24 +121,22 @@ npm run cli -- test-comfyui http://127.0.0.1:8188    # the same from this reposi
 
 `test-comfyui <url>` is the way to find out why a ComfyUI server draws nothing, without opening
 its console: it walks the same chain the app walks and prints every step — the server and its GPUs
-(`GET /system_stats`), the workflow files the app can draw with and why a file it holds is not one,
-the converter node (`POST /workflow/convert`) for every template, the node classes and model files
-the server actually has (`GET /object_info`) compared with what the workflows ask for, and then
-**one real picture per template** (text, 1 reference, 2 references), kept in
-`~/.config/sillytalk/comfyui-test/` so you can look at them. A failing step is reported with the
-reason and what to do about it (a missing custom node, a checkpoint the server does not have,
-a full GPU, a server bound to 127.0.0.1 only).
+(`GET /system_stats`), the plugin on it (`GET /sillytalk/health`: its version, the cards it can
+place models on, what is already resident, the workflows of its catalogue it could not load), the
+models it offers (`GET /sillytalk/models`) and then **one real picture per model and per reference
+count** (text, 1 reference, 2 references), kept in `~/.config/sillytalk/comfyui-test/` so you can
+look at them. A failing step is reported with the reason and what to do about it (the plugin not
+installed, a card without room, a job still queued, a server bound to 127.0.0.1 only).
 
-It reads nothing of your config and changes nothing — the URL, the size and the GPU are arguments:
+It reads nothing of your config and changes nothing — the URL, the models and the size are arguments:
 
 | Option | What it does |
 | --- | --- |
-| `--model <name>` | only this workflow (repeatable) |
-| `--size <WxH>` | the size of the test pictures (default `1024x1024`) |
-| `--device <gpu>` | the GPU the workflow pins its loaders to (default `cuda:0`) |
+| `--model <code>` | only this model of the server's catalogue (repeatable) |
+| `--size <WxH>` | the size of the test pictures (default: the model's own) |
 | `--prompt <text>` | the prompt of the test pictures |
 | `--out <dir>` | where the test pictures go (default `<data root>/comfyui-test`) |
-| `--no-refs` | draw the text template only |
+| `--no-refs` | draw without reference pictures only |
 | `--no-draw` | run the checks and draw nothing |
 
 Exit code: `0` clean, `1` something failed or needs a look, `2` a bad command line. Ctrl+C stops
@@ -177,10 +176,9 @@ Example:
     // server are queued (one at a time). "enabled" defaults to true.
     {
       "kind": "comfyui",
-      "url": "http://127.0.0.1:8188", // the ComfyUI server
-      "model": "qwen-image-2.1", // one of the models the app has a workflow for
-      "device": "cuda:0", // the GPU the workflow pins its model loaders to
-      "width": 1328,
+      "url": "http://127.0.0.1:8188", // the ComfyUI server (needs the comfyui-sillytalk node)
+      "model": "qwen-image-2.1", // a model code of THAT server's catalogue
+      "width": 1328, // the GPU is not here: the plugin picks it per job
       "height": 1328,
       "enabled": true,
     },
@@ -232,34 +230,25 @@ resolved by `resolveApiKey()`: `envKey` (an environment variable) takes priority
 - Image generation: there can be several methods (`imageGenerators`), each named by its `kind`
   (`comfyui` or `sdapi`) and carrying an `enabled` toggle (default `true` — a disabled method is
   never used; an entry whose `kind` the app does not know is dropped). At app startup every method
-  is probed: a ComfyUI server answers `GET /system_stats`, the SD API answers
-  `GET /sdapi/v1/sd-models`, and a workflow file has to define the ComfyUI generator's `model`.
+  is probed: the SD API answers `GET /sdapi/v1/sd-models`; a ComfyUI generator is available when the
+  server answers `GET /sillytalk/models` and that catalogue contains its `model`.
   **Every enabled and available method is used**: images can be generated on several generators at
   the same time, while the jobs of one server are queued (one at a time — the GPU is not hit by
   several runs concurrently; two ComfyUI generators of the same URL share that queue and take the
   jobs in turn).
-- A ComfyUI generator runs the workflow of its `model` on that server, so the server needs the
-  models of the workflow and the `comfyui-workflow-to-api-converter-endpoint` node (it turns the
-  UI-format workflow into the API format the server executes). `device` is the GPU the workflow pins
-  its model loaders to — on a multi-GPU server, one generator per GPU.
+- **A ComfyUI server needs the [`comfyui-sillytalk`](https://github.com/yar3333/comfyui-sillytalk)
+  custom node — it is a hard requirement, not an optional extra.** The app sends that plugin a
+  prompt, its reference pictures, a model code and a size; the plugin owns the workflow graph, runs
+  it and returns the finished picture. The app holds no graph, no converter endpoint and no GPU
+  name: which card draws the picture is decided on the server, from the memory free at the moment
+  the job arrives. A server without the plugin is simply not offered as a generator, and the log
+  says which custom node to install.
   `sillytalk test-comfyui <url>` checks exactly these prerequisites and draws one real picture per
-  template — see [Command line](#command-line).
-- **A ComfyUI workflow is an ordinary JSON file, so you can replace it without rebuilding the
-  app.** The app ships `qwen-image-2.1.json` and `qwen-image-2512.json` (in the source tree:
-  `backend/src/image_generation/comfyui/workflows/`, and the build copies them next to the compiled
-  code); put your own `~/.config/sillytalk/comfyui/<model>.json` to replace one of them under the
-  same name — copying the shipped file out and editing it is the usual way — or to add a model the
-  app has never heard of: it appears in the model pick of a ComfyUI generator right away (the file
-  name is the model name). The file holds the ComfyUI graph in the UI format (the
-  format ComfyUI's own "Save" writes) under `text`, `oneImage` and `twoImages` — the workflow to
-  run at 0, 1 and 2 reference images; ship fewer of the three and the model simply takes fewer
-  references. Where the parameters belong, the template carries the placeholders the app fills in
-  before submitting: `PARAM_PROMPT`, `PARAM_SEED`, `PARAM_DEVICE`,
-  `PARAM_INT_OUTPUT_IMAGE_WIDTH` / `_HEIGHT`, `PARAM_STRING_OUTPUT_IMAGE_FILENAME` and
-  `PARAM_STRING_INPUT_IMAGE_FILENAME` (`_1`, `_2` when there are two). Steps, CFG and the sampler
-  are yours to set inside the file — the app changes only those placeholders. The files are read
-  again for every generation, so a save is enough; a file that is not a workflow leaves its model
-  out of the app, and the server log says why.
+  model and reference count — see [Command line](#command-line).
+- **Adding a model therefore happens on the server, not in this app.** Drop a `<code>.json` workflow
+  into the plugin's `workflows/` folder (its README describes the file and the environment variables
+  that steer the GPU placement) and it appears in the model pick after the next save in **Settings**
+  — the list is what the servers report, so nothing has to be rebuilt or reconfigured here.
 
 ## Data storage
 
@@ -272,8 +261,6 @@ resolved by `resolveApiKey()`: `envKey` (an environment variable) takes priority
   `catalogs.db` (the card itself is that row)
 - Users: `~/.config/sillytalk/users/<id>/` — the persona's pictures sit directly in the folder; the
   avatar is one of them, named by the `avatar` id in the row of `catalogs.db`
-- ComfyUI workflows of your own: `~/.config/sillytalk/comfyui/<model>.json` — replaces the workflow
-  the app ships for that model name, or adds a model (empty by default)
 - Test pictures of `sillytalk test-comfyui`: `~/.config/sillytalk/comfyui-test/` — written by that
   command only (`--out` sends them elsewhere); nothing reads them, delete them whenever you like
 - Chats: `~/.config/sillytalk/chats/chats.db` — a SQLite database (`node:sqlite`) with the chat
@@ -313,8 +300,8 @@ backend/
                      # picture plan of the user's turn —
                      # the TextGenerationService class + its DI token
     image_generation/ # generation: the driver interface, the ComfyUI / SD API
-                      # backends (comfyui/ — the workflows of the models the app
-                      # can run), the top-level service class
+                      # backends (comfyui/ — the server probes and the
+                      # `test-comfyui` self-test), the top-level service class
                       # (background jobs); di.ts — the minimal DI container
     images/        # what is known about a picture: the global images.db table
                    # (ImageMetaService) and the picture browser's service

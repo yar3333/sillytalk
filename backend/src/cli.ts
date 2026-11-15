@@ -17,20 +17,18 @@ const USAGE = `sillytalk — a web chat with AI characters (the API and the fron
   sillytalk test-comfyui <url>     test a ComfyUI server from end to end
   sillytalk help                   this text
 
-test-comfyui <url> checks the server and every workflow the app can draw with —
-the ones it ships and the ones in <data root>/comfyui — and draws one real
-picture per template (text, 1 reference, 2 references), reporting each step: the
-server and its GPUs, the workflow files, the converter node, the node classes and
-model files the server actually has, then the jobs and the errors behind them.
-Nothing of the app's config is read or changed, and the only files written are
-the test pictures.
+test-comfyui <url> checks a ComfyUI server the app can draw through: that it is
+up and what hardware it has, that the comfyui-sillytalk plugin is installed on
+it and what that plugin offers, and then one real picture per model and per
+reference count, each verified on disk afterwards. The server chooses the GPUs
+itself, so nothing here names one. Nothing of the app's config is read or
+changed, and the only files written are the test pictures.
 
-  --model <name>      only this workflow (repeatable)
-  --size <WxH>        the size of the test pictures (default 1024x1024)
-  --device <gpu>      the GPU the workflow pins its loaders to (default cuda:0)
+  --model <code>      only this model of the server's catalogue (repeatable)
+  --size <WxH>        the size of the test pictures (default: the model's own)
   --prompt <text>     the prompt of the test pictures
   --out <dir>         where the test pictures go (default <data root>/comfyui-test)
-  --no-refs           draw the text template only
+  --no-refs           draw without reference images only
   --no-draw           run the checks and draw nothing
 
 Exit code: 0 clean, 1 something failed or needs a look, 2 a bad command line.
@@ -42,7 +40,7 @@ export type ParsedCommand =
   | { command: "test-comfyui"; url: string; options: ComfyUiSelfTestOptions }
   | { error: string };
 
-const FLAGS_WITH_VALUE = new Set(["--model", "--size", "--device", "--prompt", "--out"]);
+const FLAGS_WITH_VALUE = new Set(["--model", "--size", "--prompt", "--out"]);
 const SWITCHES = new Set(["--no-refs", "--no-draw"]);
 
 export function parseArgs(argv: string[]): ParsedCommand {
@@ -84,7 +82,6 @@ export function parseArgs(argv: string[]): ParsedCommand {
     }
     i++;
     if (flag === "--model") models.push(value);
-    else if (flag === "--device") options.device = value;
     else if (flag === "--prompt") options.prompt = value;
     else if (flag === "--out") options.outDir = value;
     else {
@@ -147,11 +144,14 @@ export async function run(argv: string[], overrides: CliOverrides = {}): Promise
 
   try {
     const report = await test.run(parsed.options, log);
-    if (report.ok && report.workflows.some((entry) => entry.set)) {
+    log("");
+    log(report.summary);
+    for (const problem of report.problems) log(`  ! ${problem}`);
+    if (report.ok && report.models.length) {
       log("");
       log(
         `To draw with this server in the app: Settings → Image generation → + ComfyUI, ` +
-          `URL ${report.url}, and the model name of a workflow that worked.`,
+          `URL ${report.url}, and one of its models: ${report.models.map((m) => m.code).join(", ")}.`,
       );
     }
     return report.ok ? 0 : 1;

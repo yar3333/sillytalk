@@ -31,8 +31,8 @@ export class ConfigStore {
 
   // Whether the active image generator is available (the first available one from the config).
   readonly imageGenAvailable = signal(false);
-  // The image models a ComfyUI generator can run — the backend knows which
-  // workflows the app ships, the settings dialog offers exactly these.
+  // The image model codes the ComfyUI servers offer — each server publishes its
+  // own catalogue, the settings dialog offers exactly these.
   readonly comfyUiModels = signal<string[]>([]);
   // The languages a picture's description can be written in — also the
   // backend's list: the name of a language is what the model is told, so the

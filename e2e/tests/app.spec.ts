@@ -998,7 +998,7 @@ test('GET /api/media serves a picture of a chat and nothing else', async () => {
 
   const refused: [number, string][] = [
     [400, 'config.json'],
-    [400, 'comfyui/qwen-image-2.1.json'],
+    [400, 'workflows/qwen-image-2.1.json'],
     [400, '../../../Windows/win.ini'],
     [400, 'C:/Windows/win.ini'],
     [404, 'chats/chats.db'],

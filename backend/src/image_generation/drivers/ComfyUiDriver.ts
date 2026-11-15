@@ -1,91 +1,125 @@
 import fs from "fs";
 import path from "path";
 import { ComfyUiSettings } from "../../configuration/ComfyUiSettings";
-import {
-  comfyUiMaxRefs,
-  comfyUiModelNames,
-  comfyUiWorkflowSet,
-  ComfyUiWorkflowTemplate,
-  variantFor,
-} from "../comfyui/ComfyUiWorkflows";
 import { ComfyUiObjectInfo, ComfyUiSystemStats } from "../comfyui/ComfyUiServerInfo";
 import { IImageGeneratorDriver } from "../IImageGeneratorDriver";
 
-// One node of a workflow in the API format (what the server's
-// /workflow/convert returns and what /prompt expects): inputs by name, a
-// link to another node being the node id + the output index.
-export type ApiNode = { class_type?: string; inputs?: Record<string, unknown> };
-export type ApiWorkflow = Record<string, ApiNode>;
-
-// The picture the server's SaveImage node wrote: where in its output/ folder.
-type SavedImage = { filename: string; subfolder?: string; type?: string };
-
-// The history entry of a submitted job.
-type HistoryEntry = {
-  status?: { status_str?: string; completed?: boolean; messages?: unknown[] };
-  outputs?: Record<string, { images?: SavedImage[] }>;
+// What a ComfyUI server answers on `/sillytalk/models` for one model. The
+// plugin describes its own catalogue, so the app holds no workflow file and no
+// list of what a model can do: `max_refs` is the server saying how many
+// reference pictures its graph has a place for.
+export type ComfyUiPluginModel = {
+  code: string;
+  label?: string;
+  max_refs: number;
+  width?: number;
+  height?: number;
 };
 
-// An HTTP answer of the server that carries its status code, so a caller can
-// react to one code (404 of /workflow/convert means the converter node is
-// missing) without parsing the message.
-type HttpFailure = Error & { status?: number };
+// `/sillytalk/health`: the server's own account of what it can run on.
+export type ComfyUiPluginHealth = {
+  version?: string;
+  comfyui_version?: string;
+  workflow_dir?: string;
+  models?: string[];
+  broken_workflows?: { code: string; file?: string; error: string }[];
+  devices?: {
+    device: string;
+    name?: string;
+    vram_total_mb?: number;
+    vram_free_mb?: number;
+    vram_reclaimable_mb?: number;
+  }[];
+  resident_models?: { model: string; device: string; mb: number }[];
+};
 
-// How often the finished job is looked for in the server history, and how long
-// to wait for it at all — the same 2 s / 10 min the cmd/ps1 generators used.
+// Where one model loader of a run landed. The server decides this from the VRAM
+// free at submit time, so the app neither asks nor overrides — it only reports
+// it, in the log line and the error of a job that no card could take.
+export type ComfyUiPlacement = {
+  node: string;
+  class: string;
+  device: string;
+  mb: number;
+  note?: string;
+};
+
+// The answer of every `/sillytalk/jobs/...` route.
+export type ComfyUiJob = {
+  job_id: string;
+  model?: string;
+  status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+  width?: number;
+  height?: number;
+  seed?: number;
+  seconds?: number;
+  error?: string;
+  placements?: ComfyUiPlacement[];
+};
+
+const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
+
+// How often the job is asked where it is, and how long to wait at all — the
+// same 2 s / 10 min the previous driver and the cmd/ps1 generators used.
 const POLL_INTERVAL_MS = 2000;
 const GENERATION_TIMEOUT_MS = 600_000;
-// The probe of "is the server up", and the requests sent when the user
-// cancelled: short, they must not hold the job.
+// The probe of "is the server there", and the request that cancels: short, they
+// must not hold the job.
 const PROBE_TIMEOUT_MS = 2000;
 const CANCEL_TIMEOUT_MS = 3000;
+// The plugin's own routes are small JSON answers, but they are read on the way
+// to a real draw, so a busy server gets a few seconds rather than two.
+const PLUGIN_TIMEOUT_MS = 10_000;
 // The node listing is a real payload, not a ping — the self-test would rather
 // wait a few seconds for it than report a healthy server as broken.
 const INFO_TIMEOUT_MS = 30_000;
 
-// The ComfyUI backend: the workflow templates come from the app's own folder
-// and the user's `<data root>/comfyui/` folder (see
-// ../comfyui/ComfyUiWorkflows.ts) and the driver walks a ComfyUI server over
-// its HTTP API — the same steps the cmd/ps1 generators of AiPic took, in one
-// place:
+// A ComfyUI server running the comfyui-sillytalk plugin.
 //
-//   1. POST /workflow/convert  — the server turns the UI-format template of the
-//      model into the API format (the custom node
-//      comfyui-workflow-to-api-converter-endpoint);
-//   2. the PARAM_* placeholders of the result become this run's prompt, seed,
-//      size, GPU and file name;
-//   3. POST /upload/image      — every reference picture is uploaded into the
-//      server's input/ folder and the workflow loads it by the name it got;
-//   4. POST /prompt            — the job is queued, its prompt_id is returned;
-//   5. GET  /history/{id}      — polled until the job is done (or the wait is
-//      given up);
-//   6. GET  /view              — the finished picture is downloaded, so no
-//      shared folder with the server is needed.
+// The whole protocol is four requests, and the app's side of the boundary is
+// deliberately small: a prompt, its reference pictures, a model code and a
+// size go out; a job id comes back; the finished PNG comes back.
 //
-// The server keeps its copies (ComfyUI cannot delete files over HTTP): the
-// picture stays in output/, the references in input/.
+//   1. POST /sillytalk/generate            — multipart, answers 202 with a job
+//   2. GET  /sillytalk/jobs/{id}           — polled until the job is terminal
+//   3. GET  /sillytalk/jobs/{id}/image     — the picture, as bytes
+//   4. DELETE /sillytalk/jobs/{id}         — the user stopped waiting
+//
+// What is NOT here is the point of this split. The app holds no workflow graph,
+// no PARAM_* placeholders and no converter endpoint, and it names no GPU: the
+// plugin picks the card for every model loader from the VRAM that is free at
+// the moment the job is submitted, which is the only moment that can know it.
+// A device in a config file is a guess about a future the next process on the
+// box can undo.
+//
+// The plugin is a hard requirement: a server without it is not a generator this
+// app can use, and `available()` says so with the name of what to install.
 export class ComfyUiDriver implements IImageGeneratorDriver {
   readonly key: string;
   readonly queueKey: string;
 
-  // The API-format copies of the UI templates, per model + reference count.
-  // The conversion is a property of the template, not of a run, so it happens
-  // once per template; the placeholders are substituted on a copy, so the
-  // cached workflow is never modified. The template text travels with the copy:
-  // a template is a file the user can edit between two generations, and a
-  // converted copy of the OLD text must not be what the next picture uses.
-  private readonly apiWorkflows = new Map<string, { templateJson: string; api: ApiWorkflow }>();
-
   private readonly base: string;
 
-  // How many references this model takes: the highest template its workflow
-  // FILE holds. Read live rather than cached, because the file is exactly the
-  // thing the user may replace between two pictures — and the planner above
-  // needs the number before the job exists, so it does not promise the user a
-  // second face the workflow has nowhere to load.
-  get maxRefs(): number {
-    return comfyUiMaxRefs(comfyUiWorkflowSet(this.cfg.model));
-  }
+  // This model as the server described it, from the last probe. `maxRefs` is a
+  // synchronous property of the interface while the answer is an HTTP request,
+  // so the probe that decided this generator is usable is what fills it — the
+  // service above only ever reads it on drivers it has probed.
+  private probed: ComfyUiPluginModel | null = null;
+
+  // Everything the server offered at the last probe, not only this generator's
+  // model: a server that is up but does not have the one model configured still
+  // knows what it could draw, and that is what the Settings pick should show.
+  private catalogue: ComfyUiPluginModel[] = [];
+
+  // Why the last probe rejected this server, for the self-test to show instead
+  // of a bare "unavailable".
+  private probeError: string | null = null;
+
+  // Where the model loaders of the last run landed, as the server reported it.
+  // The driver decides nothing about this and acts on none of it — it is kept
+  // only so a caller that shows the run (the self-test) can say which card did
+  // the work, which is the one thing a placement problem is read from.
+  private lastPlacements: ComfyUiPlacement[] = [];
 
   constructor(private readonly cfg: ComfyUiSettings) {
     this.base = ComfyUiDriver.normalizeUrl(cfg.url ?? "");
@@ -95,30 +129,103 @@ export class ComfyUiDriver implements IImageGeneratorDriver {
     this.queueKey = `comfyui:${this.base}`;
   }
 
+  /** The server URL this driver talks to (no trailing slash). */
+  get baseUrl(): string {
+    return this.base;
+  }
+
+  /** The model this generator asks the server for. */
+  get model(): string {
+    return this.cfg.model;
+  }
+
+  /** The model codes the server offered at the last probe. */
+  get offeredModels(): string[] {
+    return this.catalogue.map((m) => m.code);
+  }
+
+  /** Why the last probe said no, or null when it did not. */
+  get unavailableBecause(): string | null {
+    return this.probeError;
+  }
+
+  /** Where the loaders of the last run landed (empty before the first one). */
+  get placements(): ComfyUiPlacement[] {
+    return this.lastPlacements;
+  }
+
+  get maxRefs(): number {
+    return this.probed?.max_refs ?? 0;
+  }
+
   async available(): Promise<boolean> {
-    // The model has to be one a workflow file defines (the app's own or the
-    // user's); a generator naming a model it cannot run is filtered out here
-    // rather than failing every job.
-    if (!this.base || !comfyUiWorkflowSet(this.cfg.model)) return false;
+    if (!this.base) {
+      this.probeError = "no server URL is configured";
+      return false;
+    }
     try {
-      await this.systemStats();
+      const models = await this.pluginModels();
+      const mine = models.find((m) => m.code === this.cfg.model);
+      if (!mine) {
+        this.probeError =
+          `the server ${this.base} does not offer the model "${this.cfg.model}" ` +
+          `(it offers: ${models.map((m) => m.code).join(", ") || "nothing"})`;
+        return false;
+      }
+      this.probed = mine;
+      this.probeError = null;
       return true;
-    } catch {
+    } catch (err) {
+      this.probeError = (err as Error).message;
       return false;
     }
   }
 
   // ---- the read-only probes the self-test uses ----
   //
-  // These three are the questions a ComfyUI problem comes down to: is the
-  // server there and on what hardware, does it have the converter node, and can
-  // it run the graph the app is about to send. They are on the driver because
-  // the protocol belongs here — the self-test above asks questions, it does not
-  // learn HTTP dialects.
+  // The questions a ComfyUI problem comes down to: is the server there and on
+  // what hardware, is the plugin on it and what does it offer, and does the
+  // server have the nodes and model files the catalogue's workflows need. They
+  // live here because the protocol belongs here — the self-test asks questions,
+  // it does not learn HTTP dialects.
 
-  /** The server URL this driver talks to (no trailing slash). */
-  get baseUrl(): string {
-    return this.base;
+  /**
+   * GET /sillytalk/health — the plugin, its catalogue and its cards.
+   *
+   * A 404 here means the server is a plain ComfyUI, so the answer names the
+   * custom node to install: a server that is clearly up in a browser but is
+   * missing from this app is otherwise impossible to diagnose from the outside.
+   */
+  async pluginHealth(timeoutMs: number = PLUGIN_TIMEOUT_MS): Promise<ComfyUiPluginHealth> {
+    return this.pluginJson<ComfyUiPluginHealth>("/sillytalk/health", timeoutMs);
+  }
+
+  /**
+   * GET /sillytalk/models — every model code the server can draw, with what
+   * each takes.
+   */
+  async pluginModels(timeoutMs: number = PLUGIN_TIMEOUT_MS): Promise<ComfyUiPluginModel[]> {
+    const answer = await this.pluginJson<{ models?: ComfyUiPluginModel[] }>("/sillytalk/models", timeoutMs);
+    const models = Array.isArray(answer?.models) ? answer.models : [];
+    this.catalogue = models.filter((m) => typeof m?.code === "string");
+    return this.catalogue;
+  }
+
+  // A request to one of the plugin's own routes, with the one answer that needs
+  // interpreting: 404 is not "the plugin said no", it is "there is no plugin".
+  private async pluginJson<T>(route: string, timeoutMs: number): Promise<T> {
+    try {
+      return await this.requestJson<T>(route, { signal: AbortSignal.timeout(timeoutMs) });
+    } catch (err) {
+      if ((err as HttpFailure).status === 404) {
+        throw new Error(
+          `The ComfyUI server ${this.base} has no GET ${route} endpoint. Install the custom node ` +
+            `"comfyui-sillytalk" into its custom_nodes/ folder and restart it — this app draws through that ` +
+            `plugin and does not send workflow graphs of its own.`,
+        );
+      }
+      throw err;
+    }
   }
 
   /** GET /system_stats — is the server up, and what is it running on. */
@@ -128,9 +235,9 @@ export class ComfyUiDriver implements IImageGeneratorDriver {
 
   /**
    * GET /object_info — every node class the server can execute, with the input
-   * specs that say which checkpoint, LoRA or sampler names it actually has.
-   * The payload is a few hundred kilobytes to a couple of megabytes, so it is
-   * fetched once per run and given a longer timeout than a liveness probe.
+   * specs that say which model file names it actually has. The payload is a few
+   * hundred kilobytes to a couple of megabytes, so it is fetched once per run
+   * and given a longer timeout than a liveness probe.
    */
   objectInfo(timeoutMs: number = INFO_TIMEOUT_MS): Promise<ComfyUiObjectInfo> {
     return this.requestJson<ComfyUiObjectInfo>("/object_info", { signal: AbortSignal.timeout(timeoutMs) });
@@ -160,60 +267,58 @@ export class ComfyUiDriver implements IImageGeneratorDriver {
     registerAbort?: (ctrl: AbortController) => void,
   ): Promise<void> {
     if (!this.base) throw new Error("The ComfyUI generator has no server URL");
-    // The workflow is re-read for every job, so a template the user edited is
-    // used from the next picture on — no restart, no stale copy.
-    const set = comfyUiWorkflowSet(this.cfg.model);
-    if (!set) {
+    // The service clamps the references to `maxRefs` before a job starts, and
+    // maxRefs comes from the server's own catalogue — so a job that arrives
+    // with more pictures than the model has slots for is a caller that drove
+    // this driver directly. Dropping them quietly would draw a different
+    // picture than the one that was asked for.
+    if (this.probed && refPaths.length > this.probed.max_refs) {
       throw new Error(
-        `The ComfyUI generator names the model "${this.cfg.model}", which no workflow file of the app ` +
-          `defines (the app can draw with: ${comfyUiModelNames().join(", ")})`,
-      );
-    }
-    // The file decides how many references this model takes — the run is
-    // clamped to it by the service above, so by the time a job reaches here it
-    // fits. The check stays: a driver can also be driven directly (a test, a
-    // future caller) and drawing from a template with no place for the extra
-    // picture would drop the reference on the floor without a word.
-    const maxRefs = comfyUiMaxRefs(set);
-    if (refPaths.length > maxRefs) {
-      throw new Error(
-        `The "${this.cfg.model}" workflow supports at most ${maxRefs} reference images (${refPaths.length} provided)`,
-      );
-    }
-    const template = set[variantFor(refPaths.length)];
-    if (!template) {
-      throw new Error(
-        `The "${this.cfg.model}" workflow has no template for ${refPaths.length} reference images ` +
-          `(its file defines: ${Object.keys(set).join(", ")})`,
+        `The server ${this.base} takes at most ${this.probed.max_refs} reference image(s) for ` +
+          `"${this.cfg.model}" (${refPaths.length} provided)`,
       );
     }
 
-    // One controller for the whole run: cancelling the job stops every request
-    // of it, and the server is told to drop the prompt it was given.
+    // One controller for the whole run: cancelling stops every request of it,
+    // and the server is told to drop the job it was given.
     const ctrl = new AbortController();
     registerAbort?.(ctrl);
-    let promptId: string | null = null;
+    let jobId: string | null = null;
     let finished = false;
     ctrl.signal.addEventListener("abort", () => {
-      if (!finished) void this.abandonJob(promptId);
+      if (!finished && jobId) void this.abandonJob(jobId);
     });
 
-    const api = await this.convert(template, refPaths.length, ctrl.signal);
-    const refNames = await this.uploadRefs(refPaths, ctrl.signal);
-    // substitute() walks the workflow generically, so the result is handed back
-    // as the same shape it was given.
-    const job = ComfyUiDriver.substitute(api, this.valuesFor(prompt, refNames)) as ApiWorkflow;
-    promptId = await this.submit(job, ctrl.signal);
-    const saved = await this.awaitCompletion(promptId, ctrl.signal);
-    await this.download(saved, outPath, ctrl.signal);
+    const form = new FormData();
+    form.append("model", this.cfg.model);
+    form.append("prompt", prompt);
+    if (this.cfg.width > 0) form.append("width", String(this.cfg.width));
+    if (this.cfg.height > 0) form.append("height", String(this.cfg.height));
+    for (const ref of refPaths) {
+      form.append("image", new Blob([fs.readFileSync(ref)], { type: ComfyUiDriver.mimeOf(ref) }), path.basename(ref));
+    }
+
+    const job = await this.requestJson<ComfyUiJob>("/sillytalk/generate", { method: "POST", body: form, signal: ctrl.signal });
+    if (!job?.job_id) {
+      throw new Error(
+        `The ComfyUI server ${this.base} did not answer with a job_id (it said ${JSON.stringify(job).slice(0, 500)})`,
+      );
+    }
+    jobId = job.job_id;
+    const done = await this.awaitCompletion(jobId, ctrl.signal);
+    const body = await this.downloadImage(jobId, ctrl.signal);
+    fs.writeFileSync(outPath, body);
     finished = true;
+    this.lastPlacements = done.placements ?? [];
+    const where = this.lastPlacements.map((p) => `${p.class}@${p.device}`).join(", ");
+    console.log(`[comfyui] ${this.cfg.model}: ${done.seconds ?? "?"}s on ${this.base}${where ? ` (${where})` : ""}`);
   }
 
   // ---- one request ----
 
   // A request to the server. A non-2xx answer becomes an error carrying the
   // method, the full URL, the status and what the server said — a ComfyUI
-  // problem (a missing node, a missing model file, a bad workflow) has to be
+  // problem (a missing plugin, a missing model file, a card too full) has to be
   // readable in the card without opening the server console.
   private async request(route: string, init: RequestInit): Promise<Response> {
     const url = `${this.base}${route}`;
@@ -239,8 +344,7 @@ export class ComfyUiDriver implements IImageGeneratorDriver {
   private static describeFetchError(err: Error): string {
     const cause = (err as { cause?: unknown }).cause;
     const code = (cause as { code?: string } | undefined)?.code ?? "";
-    const reason =
-      (cause as { message?: string } | undefined)?.message ?? (typeof cause === "string" ? cause : "");
+    const reason = (cause as { message?: string } | undefined)?.message ?? (typeof cause === "string" ? cause : "");
     const detail = [code, reason].filter(Boolean).join(" ");
     return detail ? `${err.message} (${detail})` : err.message;
   }
@@ -250,260 +354,65 @@ export class ComfyUiDriver implements IImageGeneratorDriver {
     return (await response.json()) as T;
   }
 
-  // ---- the workflow of the model ----
-
-  // The API-format copy of the model's template: from the cache of this
-  // process when the template has not changed since it was converted, otherwise
-  // from the server's converter endpoint (which needs the
-  // comfyui-workflow-to-api-converter-endpoint custom node). An edited workflow
-  // file is a different template text, so it converts again — the user's edit
-  // cannot be shadowed by the copy of the previous one.
-  //
-  // Public because the self-test converts every template of every model before
-  // it spends a minute of GPU on one: the converter answers are where a broken
-  // workflow file shows up, and a job is the expensive way to find that out.
-  async convert(
-    template: ComfyUiWorkflowTemplate,
-    refCount: number,
-    signal: AbortSignal,
-  ): Promise<ApiWorkflow> {
-    const cacheKey = `${this.cfg.model}/${refCount}`;
-    const templateJson = JSON.stringify(template);
-    const cached = this.apiWorkflows.get(cacheKey);
-    if (cached && cached.templateJson === templateJson) return cached.api;
-
-    let api: ApiWorkflow;
-    try {
-      api = await this.requestJson<ApiWorkflow>("/workflow/convert", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(template),
-        signal,
-      });
-    } catch (err) {
-      if ((err as HttpFailure).status === 404) {
-        throw new Error(
-          `The ComfyUI server ${this.base} has no POST /workflow/convert endpoint. Install the custom node ` +
-            `"comfyui-workflow-to-api-converter-endpoint" on it — the app sends its workflow templates in the ` +
-            `UI format and the server turns them into the API format.`,
-        );
-      }
-      throw err;
-    }
-    if (!api || typeof api !== "object" || Object.keys(api).length === 0) {
-      throw new Error(
-        `The ComfyUI server ${this.base} returned no API workflow for the "${this.cfg.model}" template ` +
-          `(the converter node answered with ${JSON.stringify(api).slice(0, 300)})`,
-      );
-    }
-    this.apiWorkflows.set(cacheKey, { templateJson, api });
-    return api;
-  }
-
-  // This run's values for the placeholders of the template. The steps, CFG and
-  // the sampler stay inside the template — only these change per picture.
-  private valuesFor(prompt: string, refNames: string[]): Record<string, string | number> {
-    const values: Record<string, string | number> = {
-      PARAM_PROMPT: prompt,
-      PARAM_SEED: Math.floor(Math.random() * 2147483647),
-      PARAM_DEVICE: this.cfg.device || "cuda:0",
-      PARAM_INT_OUTPUT_IMAGE_WIDTH: this.cfg.width,
-      PARAM_INT_OUTPUT_IMAGE_HEIGHT: this.cfg.height,
-      PARAM_STRING_OUTPUT_IMAGE_FILENAME: this.outputPrefix(),
-    };
-    if (refNames.length === 1) values.PARAM_STRING_INPUT_IMAGE_FILENAME = refNames[0];
-    if (refNames.length === 2) {
-      values.PARAM_STRING_INPUT_IMAGE_FILENAME_1 = refNames[0];
-      values.PARAM_STRING_INPUT_IMAGE_FILENAME_2 = refNames[1];
-    }
-    return values;
-  }
-
-  // The prefix SaveImage gives the file in the server's output/ folder. The
-  // app keeps its own copy of the picture under its own name, so this one only
-  // has to be recognisable and unique on the server.
-  private outputPrefix(): string {
-    const d = new Date();
-    const pad = (n: number): string => String(n).padStart(2, "0");
-    const stamp =
-      `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}` +
-      `_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
-    const model = this.cfg.model.replace(/[^A-Za-z0-9]/g, "");
-    return `sillytalk_${model}_${stamp}_${Math.floor(Math.random() * 100000)}`;
-  }
-
-  // Replaces the PARAM_* placeholders with the run's values, returning a copy
-  // (the cached workflow of the template is never touched). A whole-string
-  // match only, as in the ps1 generators: a widget value either IS a
-  // placeholder or is text the template owns.
-  private static substitute(node: unknown, values: Record<string, string | number>): unknown {
-    if (typeof node === "string") {
-      return Object.prototype.hasOwnProperty.call(values, node) ? values[node] : node;
-    }
-    if (Array.isArray(node)) return node.map((item) => ComfyUiDriver.substitute(item, values));
-    if (node && typeof node === "object") {
-      const out: Record<string, unknown> = {};
-      for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
-        out[key] = ComfyUiDriver.substitute(value, values);
-      }
-      return out;
-    }
-    return node;
-  }
-
-  // ---- the reference pictures ----
-
-  // Uploads the references into the server's input/ folder (the built-in
-  // endpoint) under a name that cannot collide, and returns the names the
-  // server actually gave them — the workflow loads the pictures by those.
-  private async uploadRefs(refPaths: string[], signal: AbortSignal): Promise<string[]> {
-    const names: string[] = [];
-    for (const refPath of refPaths) {
-      const form = new FormData();
-      const remote = `ref_${Math.floor(Math.random() * 1000000)}_${ComfyUiDriver.safeName(path.basename(refPath))}`;
-      form.append("image", new Blob([fs.readFileSync(refPath)], { type: ComfyUiDriver.mimeOf(refPath) }), remote);
-      // No Content-Type of its own: fetch adds the multipart boundary.
-      const saved = await this.requestJson<{ name?: string }>("/upload/image", {
-        method: "POST",
-        body: form,
-        signal,
-      });
-      if (!saved?.name) {
-        throw new Error(
-          `The ComfyUI server ${this.base} uploaded ${refPath} but answered with no file name ` +
-            `(it said ${JSON.stringify(saved).slice(0, 300)})`,
-        );
-      }
-      names.push(saved.name);
-    }
-    return names;
-  }
-
-  // The name of a reference on the server: the file's own name, without
-  // anything a path or a file system would take for a separator.
-  private static safeName(name: string): string {
-    return name.replace(/[^\w.+=-]+/g, "_").slice(-64);
-  }
-
-  private static mimeOf(file: string): string {
-    const ext = path.extname(file).toLowerCase();
-    if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
-    if (ext === ".webp") return "image/webp";
-    return "image/png";
-  }
-
   // ---- the job ----
 
-  private async submit(workflow: ApiWorkflow, signal: AbortSignal): Promise<string> {
-    const answer = await this.requestJson<{ prompt_id?: string; node_errors?: Record<string, unknown> }>(
-      "/prompt",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: workflow }),
-        signal,
-      },
-    );
-    if (answer?.node_errors && Object.keys(answer.node_errors).length > 0) {
-      throw new Error(
-        `The ComfyUI server ${this.base} refused the workflow of "${this.cfg.model}": ` +
-          `${JSON.stringify(answer.node_errors).slice(0, 1500)}\n` +
-          `(usually a custom node or a model file of the workflow is missing on that server)`,
-      );
-    }
-    if (!answer?.prompt_id) {
-      throw new Error(
-        `The ComfyUI server ${this.base} did not answer with a prompt_id ` +
-          `(it said ${JSON.stringify(answer).slice(0, 500)})`,
-      );
-    }
-    return answer.prompt_id;
-  }
-
-  // Waits for the job to leave the queue and finish, then returns the picture
-  // its SaveImage node wrote. A job that is not in the history yet is still
-  // queued — the server does not say where in the queue it is.
-  private async awaitCompletion(promptId: string, signal: AbortSignal): Promise<SavedImage> {
+  // Waits for the job to reach a terminal state. The server owns the queue, so
+  // "queued" is all it can say about a job that has not started; a job it has
+  // forgotten is gone for good (its restart is not this app's restart).
+  private async awaitCompletion(jobId: string, signal: AbortSignal): Promise<ComfyUiJob> {
     const deadline = Date.now() + GENERATION_TIMEOUT_MS;
     for (;;) {
       if (Date.now() > deadline) {
         throw new Error(
           `Timed out after ${Math.round(GENERATION_TIMEOUT_MS / 1000)}s waiting for the ComfyUI job ` +
-            `${promptId} — check the queue of ${this.base}`,
+            `${jobId} — check the queue of ${this.base}`,
         );
       }
       await ComfyUiDriver.sleep(POLL_INTERVAL_MS, signal);
-      const history = await this.requestJson<Record<string, HistoryEntry>>(
-        `/history/${encodeURIComponent(promptId)}`,
-        { signal },
-      );
-      const entry = history?.[promptId];
-      if (!entry) continue;
-      if (entry.status?.status_str === "error") {
+      const job = await this.requestJson<ComfyUiJob>(`/sillytalk/jobs/${encodeURIComponent(jobId)}`, { signal });
+      if (!job?.status) {
         throw new Error(
-          `The ComfyUI job ${promptId} failed on the server: ${JSON.stringify(entry.status.messages ?? []).slice(0, 1500)}`,
+          `The ComfyUI server ${this.base} answered the job ${jobId} with ${JSON.stringify(job).slice(0, 300)}`,
         );
       }
-      if (!entry.status?.completed) continue;
-      const saved = ComfyUiDriver.firstImage(entry);
-      if (!saved) {
+      if (job.status === "succeeded") return job;
+      if (job.status === "failed" || job.status === "cancelled") {
         throw new Error(
-          `The ComfyUI job ${promptId} finished but left no picture in its history (its SaveImage node wrote nothing)`,
+          `The ComfyUI job ${jobId} is ${job.status}${job.error ? `: ${job.error}` : ""}`,
         );
       }
-      return saved;
     }
   }
 
-  // The first picture of the job's outputs — the workflow has one SaveImage
-  // node, so in practice there is exactly one.
-  private static firstImage(entry: HistoryEntry): SavedImage | null {
-    for (const output of Object.values(entry.outputs ?? {})) {
-      const image = output?.images?.[0];
-      if (image?.filename) return image;
-    }
-    return null;
-  }
-
-  // Downloads the picture through the built-in /view endpoint — the app needs
-  // no shared folder with the server.
-  private async download(image: SavedImage, outPath: string, signal: AbortSignal): Promise<void> {
-    const query = new URLSearchParams({ filename: image.filename, type: "output" });
-    if (image.subfolder) query.set("subfolder", image.subfolder);
-    const response = await this.request(`/view?${query.toString()}`, { signal });
+  // The finished picture, as bytes. The plugin serves them from its own copy and
+  // removes that copy on its own schedule, so the app needs neither a shared
+  // folder with the server nor a cleanup call.
+  private async downloadImage(jobId: string, signal: AbortSignal): Promise<Buffer> {
+    const response = await this.request(`/sillytalk/jobs/${encodeURIComponent(jobId)}/image`, { signal });
     const body = Buffer.from(await response.arrayBuffer());
     if (body.length === 0) {
-      throw new Error(`The ComfyUI server ${this.base} sent an empty file for ${image.filename}`);
+      throw new Error(`The ComfyUI server ${this.base} sent an empty picture for the job ${jobId}`);
     }
-    fs.writeFileSync(outPath, body);
+    return body;
   }
 
-  // The user stopped waiting for this picture: the server is asked to drop it,
-  // so the GPU is free for the next job. Removing it from the queue covers a
-  // job that has not started, /interrupt one that has. Neither endpoint is
-  // guaranteed to exist on every server — a server that refuses keeps the job
-  // it was given, and nothing here fails the cancelled generation.
-  private async abandonJob(promptId: string | null): Promise<void> {
-    if (!promptId) return;
-    for (const [route, body] of [
-      ["/queue", { remove: [promptId] }],
-      ["/interrupt", { prompt_id: promptId }],
-    ] as const) {
-      try {
-        await fetch(`${this.base}${route}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-          signal: AbortSignal.timeout(CANCEL_TIMEOUT_MS),
-        });
-      } catch {
-        // best effort — a server without the endpoint goes on with its job
-      }
+  // The user stopped waiting for this picture: the server is asked to drop the
+  // job, so the GPU is free for the next one. Best effort — a job that already
+  // finished has nothing to drop, and a server that refuses keeps what it was
+  // given without failing the generation the user already cancelled.
+  private async abandonJob(jobId: string): Promise<void> {
+    try {
+      await fetch(`${this.base}/sillytalk/jobs/${encodeURIComponent(jobId)}`, {
+        method: "DELETE",
+        signal: AbortSignal.timeout(CANCEL_TIMEOUT_MS),
+      });
+    } catch {
+      // best effort
     }
   }
 
-  // Waits between the history polls, and stops waiting the moment the job is
-  // cancelled instead of after the interval.
+  // Waits between the polls, and stops waiting the moment the job is cancelled
+  // instead of after the interval.
   private static sleep(ms: number, signal: AbortSignal): Promise<void> {
     return new Promise((resolve, reject) => {
       if (signal.aborted) return reject(new Error("The generation was cancelled"));
@@ -519,9 +428,22 @@ export class ComfyUiDriver implements IImageGeneratorDriver {
     });
   }
 
+  private static mimeOf(file: string): string {
+    const ext = path.extname(file).toLowerCase();
+    if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
+    if (ext === ".webp") return "image/webp";
+    if (ext === ".bmp") return "image/bmp";
+    return "image/png";
+  }
+
   // Strips the trailing slashes of a ComfyUI base URL (the config may carry
   // "http://host:8188/").
   private static normalizeUrl(url: string): string {
     return url.trim().replace(/\/+$/, "");
   }
 }
+
+// An HTTP answer of the server that carries its status code, so a caller can
+// react to one code (a 404 of /sillytalk/models means the plugin is missing)
+// without parsing the message.
+type HttpFailure = Error & { status?: number };

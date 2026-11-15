@@ -51,14 +51,6 @@ export class PathHelper {
     return path.join(root, id);
   }
 
-  // The user's own ComfyUI workflows: a <model>.json here replaces the workflow
-  // the app ships for that model, or adds a model the app does not know. The
-  // app reads this folder next to its own workflows folder — see
-  // image_generation/comfyui/ComfyUiWorkflows.ts.
-  static comfyWorkflowsDir(): string {
-    return path.join(PathHelper.configDir(), "comfyui");
-  }
-
   static chatsDir(): string {
     return process.env.SILLYTALK_CHATS_DIR || path.join(PathHelper.configDir(), "chats");
   }
@@ -216,8 +208,6 @@ export class PathHelper {
     fs.mkdirSync(PathHelper.chatsDir(), { recursive: true });
     fs.mkdirSync(PathHelper.charactersDir(), { recursive: true });
     fs.mkdirSync(PathHelper.personsDir(), { recursive: true });
-    // Empty by design: it is where the user puts their own ComfyUI workflows.
-    fs.mkdirSync(PathHelper.comfyWorkflowsDir(), { recursive: true });
   }
 
   static expandPath(p: string): string {

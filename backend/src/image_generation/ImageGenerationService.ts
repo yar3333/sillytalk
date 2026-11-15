@@ -11,6 +11,7 @@ import { createToken } from "../di";
 import { ImageGenerator } from "../configuration/ImageGenerator";
 import { TextGenerationService } from "../text_generation/TextGenerationService";
 import { DriverFactory } from "./DriverFactory";
+import { ComfyUiDriver } from "./drivers/ComfyUiDriver";
 import { ImageJobResult } from "./ImageJobResult";
 import { ImageJob } from "./ImageJob";
 import { IImageGeneratorDriver } from "./IImageGeneratorDriver";
@@ -101,12 +102,42 @@ export class ImageGenerationService {
     return this.availableDrivers.reduce((max, d) => Math.max(max, d.maxRefs), 0);
   }
 
+  // The model codes the configured ComfyUI servers offered, collected across
+  // probes and kept between them: the Settings dialog fills its pick from here,
+  // and a server that happens to be down while settings are saved must not
+  // empty a list the user just filled in. It is the servers' catalogue now —
+  // the app ships no workflow files, so it cannot know the names any other way.
+  comfyUiModels(): string[] {
+    return [...ImageGenerationService.comfyUiCatalogue].sort();
+  }
+
+  private static readonly comfyUiCatalogue = new Set<string>();
+
   // Recomputes the available generators; called at startup and when settings
   // are saved. The probes run in parallel.
   async refreshAvailableGenerators(generators: ImageGenerator[]): Promise<IImageGeneratorDriver[]> {
     const candidates = generators.filter((g) => ImageGenerationService.isEnabled(g)).map((g) => this.drivers.create(g));
-    const probed = await Promise.all(candidates.map(async (d) => ((await d.available()) ? d : null)));
+    const probed = await Promise.all(
+      candidates.map(async (d) => {
+        if (await d.available()) return d;
+        // A ComfyUI server that is up but has no plugin is the failure the user
+        // cannot diagnose from the settings screen: the address answers in a
+        // browser, yet the generator is missing. Say what is absent.
+        if (d instanceof ComfyUiDriver) {
+          console.warn(`[comfyui] ${d.baseUrl}: ${d.unavailableBecause ?? "the generator is not usable"}`);
+        }
+        return null;
+      }),
+    );
     this.availableDrivers = probed.filter((d): d is IImageGeneratorDriver => d !== null);
+    // Every model a server offered is worth remembering, including to a
+    // generator that named one that server turns out not to have — that is
+    // exactly the case where the pick should show what could be chosen instead.
+    for (const driver of candidates) {
+      if (driver instanceof ComfyUiDriver) {
+        for (const code of driver.offeredModels) ImageGenerationService.comfyUiCatalogue.add(code);
+      }
+    }
     return this.availableDrivers;
   }
 

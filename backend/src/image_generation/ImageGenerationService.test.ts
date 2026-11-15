@@ -11,7 +11,6 @@ import { ConfigurationService } from "../configuration/ConfigurationService";
 import { ComfyUiSettings } from "../configuration/ComfyUiSettings";
 import { Config } from "../configuration/Config";
 import { ImageJobResult } from "./ImageJobResult";
-import { comfyUiModelNames } from "./comfyui/ComfyUiWorkflows";
 
 // Isolate the data root: an image id is a path relative to it and only the ids
 // inside it are accepted, so the folders used below must not be the real
@@ -53,68 +52,74 @@ function imageFile(chatId: string, name: string): string {
 // a real PNG decoder.
 const PICTURE = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47]), Buffer.from("a picture from the mock server")]);
 
-// The API-format workflow the mock converter answers with: the placeholders of
-// the variant the driver asked about, in nodes the test can pick by class_type.
-function apiWorkflowOf(variant: "text" | "oneImage" | "twoImages"): Record<string, unknown> {
-  const nodes: Record<string, unknown> = {
-    "1": { class_type: "UNETLoaderMultiGPU", inputs: { unet_name: "model.safetensors", device: "PARAM_DEVICE" } },
-    "5": { class_type: "CLIPTextEncode", inputs: { text: "PARAM_PROMPT", clip: ["4", 0] } },
-    "9": {
-      class_type: "EmptySD3LatentImage",
-      inputs: { width: "PARAM_INT_OUTPUT_IMAGE_WIDTH", height: "PARAM_INT_OUTPUT_IMAGE_HEIGHT", batch_size: 1 },
-    },
-    "10": { class_type: "KSampler", inputs: { seed: "PARAM_SEED", steps: 4, model: ["3", 0] } },
-    "13": { class_type: "SaveImage", inputs: { filename_prefix: "PARAM_STRING_OUTPUT_IMAGE_FILENAME" } },
-  };
-  if (variant === "oneImage") {
-    nodes["20"] = { class_type: "LoadImage", inputs: { image: "PARAM_STRING_INPUT_IMAGE_FILENAME" } };
+// One model of the mock plugin's catalogue. `max_refs` is what the app is told
+// a model takes, and the only place the app learns it — the app ships no
+// workflow files of its own any more.
+type MockModel = { code: string; max_refs: number; width: number; height: number };
+
+// The fields and the picture parts of a multipart request, read the crude way:
+// split on the boundary the client announced and look at each part's header.
+function readMultipart(headers: Record<string, unknown>, raw: Buffer): { fields: Record<string, string>; files: { filename: string; bytes: number }[] } {
+  const declared = String(headers["content-type"] ?? "");
+  const boundary = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(declared)?.[1] ?? /boundary=([^;]+)/i.exec(declared)?.[1];
+  const fields: Record<string, string> = {};
+  const files: { filename: string; bytes: number }[] = [];
+  if (!boundary) return { fields, files };
+  for (const part of raw.toString("binary").split(`--${boundary}`)) {
+    const cut = part.indexOf("\r\n\r\n");
+    if (cut < 0) continue;
+    const head = part.slice(0, cut);
+    const name = /name="([^"]*)"/.exec(head)?.[1] ?? "";
+    const filename = /filename="([^"]*)"/.exec(head)?.[1];
+    const body = part.slice(cut + 4).replace(/\r\n$/, "");
+    if (filename === undefined) fields[name] = body;
+    else files.push({ filename, bytes: Buffer.byteLength(body, "binary") });
   }
-  if (variant === "twoImages") {
-    nodes["20"] = { class_type: "LoadImage", inputs: { image: "PARAM_STRING_INPUT_IMAGE_FILENAME_1" } };
-    nodes["21"] = { class_type: "LoadImage", inputs: { image: "PARAM_STRING_INPUT_IMAGE_FILENAME_2" } };
-  }
-  return nodes;
+  return { fields, files };
 }
 
 // What one submitted job looked like on the server.
 interface MockJob {
   id: string;
-  // the values the driver substituted into the workflow
+  // what the app sent for this run
+  model: string;
   prompt: string;
   width: unknown;
   height: unknown;
-  seed: unknown;
-  device: unknown;
-  prefix: unknown;
-  refs: unknown[];
-  // the whole workflow, so a test can look for anything left unsubstituted
-  workflow: string;
+  // every text field of the request, so a test can see what the app sent — and
+  // what it no longer sends (a workflow, a device, a seed)
+  fields: Record<string, string>;
+  // the file names the reference parts arrived under, and how big each was
+  refs: string[];
+  refBytes: number[];
   finishesAt: number;
   fails: boolean;
+  cancelled: boolean;
 }
 
-// A stand-in for a ComfyUI server, carrying the part of the API the driver
-// uses: the built-in system_stats probe, the workflow converter (the custom
-// node), POST /upload/image, the /prompt queue, GET /history and GET /view.
-// What a job does is decided by the prompt text the driver put into the
-// workflow: "fail" — the server fails it, "hang" — it never finishes.
-// Everything the driver sent is recorded, so a test can read the workflow back.
+// A stand-in for a ComfyUI server running the comfyui-sillytalk plugin: the
+// built-in system_stats probe plus the plugin's own routes — the catalogue, the
+// job, its picture and its cancellation. What a job does is decided by the
+// prompt text the app sent: "fail" — the server fails it, "hang" — it never
+// finishes.
+// Everything the app sent is recorded, so a test can read the run back.
 interface MockComfy {
   url: string;
   close(): Promise<void>;
   reset(): void;
   jobs: MockJob[];
-  uploads: string[];
-  // the template variants the converter was asked about (once per driver run)
-  converted: string[];
-  // the prompt ids the client asked the server to drop (the cancel path)
+  /** The catalogue this server offers (a test narrows it to what it needs). */
+  models: MockModel[];
+  /** The server has no comfyui-sillytalk installed: every /sillytalk route 404s. */
+  noPlugin: boolean;
+  /** How often the catalogue was asked for — the probes, not the draws. */
+  probes: number;
+  // the job ids the client asked the server to drop (the cancel path)
   cancelled: string[];
   // "start <id>" when a job was queued, "finish <id>" when its picture was
   // downloaded — the order of these lines is how a queue test sees the runs
   // serialize one behind the other and a parallel test sees them overlap
   log: string[];
-  // the server has no converter custom node installed
-  noConverter: boolean;
 }
 
 function startMockComfy(): Promise<MockComfy> {
@@ -123,11 +128,15 @@ function startMockComfy(): Promise<MockComfy> {
     close: () => Promise.resolve(),
     reset: () => undefined,
     jobs: [],
-    uploads: [],
-    converted: [],
+    models: [
+      { code: "qwen-image-2.1", max_refs: 2, width: 1328, height: 1328 },
+      { code: "qwen-image-2512", max_refs: 2, width: 1328, height: 1328 },
+      { code: "text-only-model", max_refs: 0, width: 1024, height: 1024 },
+    ],
+    noPlugin: false,
+    probes: 0,
     cancelled: [],
     log: [],
-    noConverter: false,
   };
   let nextId = 1;
 
@@ -143,93 +152,98 @@ function startMockComfy(): Promise<MockComfy> {
       };
       const route = `${req.method} ${url.pathname}`;
       try {
-        if (route === "GET /system_stats") return send(200, { system: "mock" });
+        if (route === "GET /system_stats") return send(200, { system: { comfyui_version: "0.0.0-mock" } });
 
-        if (route === "POST /workflow/convert") {
-          if (mock.noConverter) return send(404, { error: "Not Found" });
-          const ui = raw.toString("utf-8");
-          const variant = ui.includes("PARAM_STRING_INPUT_IMAGE_FILENAME_1")
-            ? "twoImages"
-            : ui.includes("PARAM_STRING_INPUT_IMAGE_FILENAME")
-              ? "oneImage"
-              : "text";
-          mock.converted.push(variant);
-          return send(200, apiWorkflowOf(variant));
-        }
+        // Everything below is the plugin. Without it the server is a plain
+        // ComfyUI, and this app has nothing to say to a plain ComfyUI.
+        if (url.pathname.startsWith("/sillytalk")) {
+          // A probe that was refused is still a probe — the app asked the
+          // server what it offers, which is what the count is for.
+          if (url.pathname === "/sillytalk/models") mock.probes++;
+          if (mock.noPlugin) return send(404, { error: "Not Found" });
 
-        if (route === "POST /upload/image") {
-          const name = /filename="([^"]+)"/.exec(raw.toString("binary"))?.[1] ?? "unnamed.png";
-          mock.uploads.push(name);
-          return send(200, { name, subfolder: "", type: "input" });
-        }
+          if (route === "GET /sillytalk/models") {
+            return send(200, { models: mock.models });
+          }
 
-        if (route === "POST /prompt") {
-          const submitted = (JSON.parse(raw.toString("utf-8")) as { prompt: Record<string, { class_type?: string; inputs?: Record<string, unknown> }> }).prompt;
-          const nodes = Object.values(submitted);
-          const inputsOf = (classType: string): Record<string, unknown> =>
-            nodes.find((n) => n?.class_type === classType)?.inputs ?? {};
-          const text = String(inputsOf("CLIPTextEncode").text ?? "");
-          const id = `mock-${nextId++}`;
-          const prefix = String(inputsOf("SaveImage").filename_prefix ?? "");
-          mock.jobs.push({
-            id,
-            prompt: text,
-            width: inputsOf("EmptySD3LatentImage").width,
-            height: inputsOf("EmptySD3LatentImage").height,
-            seed: inputsOf("KSampler").seed,
-            device: inputsOf("UNETLoaderMultiGPU").device,
-            prefix,
-            refs: nodes.filter((n) => n?.class_type === "LoadImage").map((n) => n?.inputs?.image),
-            workflow: JSON.stringify(submitted),
-            // A job that "hangs" is never finished — the client gives up or
-            // cancels it; anything else is drawn almost at once.
-            finishesAt: Date.now() + (/hang/i.test(text) ? 3_600_000 : 150),
-            fails: /fail/i.test(text),
-          });
-          mock.log.push(`start ${id}`);
-          return send(200, { prompt_id: id, node_errors: {} });
-        }
-
-        if (url.pathname.startsWith("/history/")) {
-          const id = decodeURIComponent(url.pathname.slice("/history/".length));
-          const job = mock.jobs.find((j) => j.id === id);
-          if (!job) return send(200, {}); // the server forgot it (removed from the queue)
-          if (job.fails) {
+          if (route === "GET /sillytalk/health") {
             return send(200, {
-              [id]: {
-                status: {
-                  status_str: "error",
-                  completed: false,
-                  messages: [["execution_error", { exception_message: "the mock server ran out of patience" }]],
-                },
-              },
+              name: "comfyui-sillytalk",
+              version: "1.0.0-mock",
+              comfyui_version: "0.0.0-mock",
+              workflow_dir: "/mock/workflows",
+              models: mock.models.map((m) => m.code),
+              broken_workflows: [],
+              devices: [{ device: "cuda:0", name: "Mock Card", vram_total_mb: 24560, vram_free_mb: 24000 }],
+              resident_models: [],
             });
           }
-          if (Date.now() < job.finishesAt) {
-            return send(200, { [id]: { status: { status_str: "running", completed: false, messages: [] } } });
+
+          if (route === "POST /sillytalk/generate") {
+            const { fields, files } = readMultipart(req.headers, raw);
+            if (!fields.model || !fields.prompt) {
+              return send(400, { error: "the 'model' and 'prompt' fields are required" });
+            }
+            const known = mock.models.find((m) => m.code === fields.model);
+            if (!known) return send(400, { error: `no workflow named '${fields.model}' in this server's catalogue` });
+            if (files.length > known.max_refs) {
+              return send(400, {
+                error: `the '${fields.model}' workflow takes at most ${known.max_refs} reference image(s), ${files.length} were sent`,
+              });
+            }
+            const id = `mock-${nextId++}`;
+            mock.jobs.push({
+              id,
+              model: fields.model,
+              prompt: fields.prompt,
+              width: fields.width,
+              height: fields.height,
+              fields,
+              refs: files.map((f) => f.filename),
+              refBytes: files.map((f) => f.bytes),
+              // A job that "hangs" is never finished — the client gives up or
+              // cancels it; anything else is drawn almost at once.
+              finishesAt: Date.now() + (/hang/i.test(fields.prompt) ? 3_600_000 : 150),
+              fails: /fail/i.test(fields.prompt),
+              cancelled: false,
+            });
+            mock.log.push(`start ${id}`);
+            return send(202, { job_id: id, model: fields.model, status: "queued", placements: [] });
           }
-          return send(200, {
-            [id]: {
-              status: { status_str: "success", completed: true, messages: [] },
-              outputs: { "13": { images: [{ filename: `${job.prefix}_00001_.png`, subfolder: "", type: "output" }] } },
-            },
-          });
-        }
 
-        if (route === "GET /view") {
-          const filename = url.searchParams.get("filename") ?? "";
-          const job = mock.jobs.find((j) => filename.startsWith(String(j.prefix)));
-          if (job) mock.log.push(`finish ${job.id}`);
-          res.writeHead(200, { "Content-Type": "image/png" });
-          res.end(PICTURE);
-          return;
-        }
+          // The user stopped waiting: the job goes, and with it the picture the
+          // server may already have written.
+          if (req.method === "DELETE" && /^\/sillytalk\/jobs\/[^/]+$/.test(url.pathname)) {
+            const id = decodeURIComponent(url.pathname.slice("/sillytalk/jobs/".length));
+            const job = mock.jobs.find((j) => j.id === id);
+            if (job) job.cancelled = true;
+            mock.cancelled.push(id);
+            return send(200, { job_id: id, status: "cancelled" });
+          }
 
-        if (route === "POST /queue" || route === "POST /interrupt") {
-          const body = JSON.parse(raw.toString("utf-8") || "{}") as { remove?: string[]; prompt_id?: string };
-          for (const id of body.remove ?? []) mock.cancelled.push(`queue:${id}`);
-          if (body.prompt_id) mock.cancelled.push(`interrupt:${body.prompt_id}`);
-          return send(200, {});
+          const jobRoute = /^\/sillytalk\/jobs\/([^/]+)(\/image)?$/.exec(url.pathname);
+          if (jobRoute) {
+            const id = decodeURIComponent(jobRoute[1]);
+            const job = mock.jobs.find((j) => j.id === id);
+            if (!job) return send(404, { error: "no such job on this server" });
+            if (jobRoute[2]) {
+              if (job.fails || job.cancelled) return send(410, { error: "the job has no picture to send" });
+              if (Date.now() < job.finishesAt) return send(409, { error: "the job is still running" });
+              mock.log.push(`finish ${job.id}`);
+              res.writeHead(200, { "Content-Type": "image/png" });
+              res.end(PICTURE);
+              return;
+            }
+            if (job.cancelled) return send(200, { job_id: id, status: "cancelled" });
+            if (job.fails) return send(200, { job_id: id, status: "failed", error: "the mock server ran out of patience" });
+            if (Date.now() < job.finishesAt) return send(200, { job_id: id, status: "running" });
+            return send(200, {
+              job_id: id,
+              status: "succeeded",
+              seconds: 0.2,
+              placements: [{ node: "1", class: "UNETLoaderMultiGPU", device: "cuda:0", mb: 12000 }],
+            });
+          }
         }
 
         return send(404, { error: `the mock server has no ${route} route` });
@@ -246,11 +260,10 @@ function startMockComfy(): Promise<MockComfy> {
       mock.close = () => new Promise<void>((done) => server.close(() => done()));
       mock.reset = () => {
         mock.jobs = [];
-        mock.uploads = [];
-        mock.converted = [];
+        mock.probes = 0;
         mock.cancelled = [];
         mock.log = [];
-        mock.noConverter = false;
+        mock.noPlugin = false;
       };
       resolve(mock);
     });
@@ -263,7 +276,6 @@ function comfyGen(comfy: MockComfy, over: Partial<ComfyUiSettings> = {}): ComfyU
     kind: "comfyui",
     url: comfy.url,
     model: "qwen-image-2.1",
-    device: "cuda:2",
     width: 1664,
     height: 928,
     enabled: true,
@@ -314,61 +326,57 @@ beforeEach(() => {
 
 // ------------------------------------------------------------------ the driver
 describe("ComfyUI generator", () => {
-  it("substitutes the prompt, the size, the seed and the GPU into the workflow of the model", async () => {
+  it("sends the prompt and the size, and writes the picture back", async () => {
     const r = await oneShot(comfyGen(comfy), "a red boat at dusk", [], "substituted.png");
     expect(r.status).toBe("ok");
     const job = comfy.jobs[0];
+    expect(job.model).toBe("qwen-image-2.1");
     expect(job.prompt).toBe("a red boat at dusk");
-    expect(job.width).toBe(1664);
-    expect(job.height).toBe(928);
-    expect(job.device).toBe("cuda:2");
-    expect(typeof job.seed).toBe("number");
-    // the file name SaveImage gets is unique per run and says which app made it
-    expect(String(job.prefix)).toMatch(/^sillytalk_qwenimage21_\d{8}_\d{6}_\d+$/);
-    // nothing of the template is left for the server to guess
-    expect(job.workflow).not.toMatch(/PARAM_/);
+    expect(job.width).toBe("1664");
+    expect(job.height).toBe("928");
+    // …and that is the whole request. No graph (the plugin owns the workflows),
+    // no device (the plugin picks the cards from the VRAM free when the job
+    // arrives), no seed (the plugin draws one and reports it with the job).
+    expect(Object.keys(job.fields).sort()).toEqual(["height", "model", "prompt", "width"]);
+    // the bytes the server served are the bytes the chat shows
+    expect(fs.readFileSync(imageFile(chatIdDefault, "substituted.png"))).toEqual(PICTURE);
   }, 30000);
 
-  it("takes the template of the model that matches the number of references and uploads them into input/", async () => {
+  it("sends the reference pictures with the job, in the order they were given", async () => {
     fs.mkdirSync(PathHelper.chatDir(chatIdDefault), { recursive: true });
     const refs: string[] = [];
     for (const name of ["first-ref.png", "second-ref.png"]) {
-      fs.writeFileSync(imageFile(chatIdDefault, name), "x");
+      fs.writeFileSync(imageFile(chatIdDefault, name), `the bytes of ${name}`);
       refs.push(imageId(chatIdDefault, name));
     }
 
     const gen = comfyGen(comfy);
     expect((await oneShot(gen, "no reference", [], "wf-text.png")).status).toBe("ok");
-    expect(comfy.converted).toEqual(["text"]);
-    expect(comfy.uploads).toEqual([]);
     expect(comfy.jobs[0].refs).toEqual([]);
 
     expect((await oneShot(gen, "one reference", [refs[0]], "wf-one.png")).status).toBe("ok");
-    expect(comfy.converted).toEqual(["text", "oneImage"]);
-    expect(comfy.uploads).toHaveLength(1);
-    expect(comfy.jobs[1].refs).toEqual([comfy.uploads[0]]);
-    expect(comfy.uploads[0]).toMatch(/^ref_\d+_first-ref\.png$/);
+    expect(comfy.jobs[1].refs).toEqual(["first-ref.png"]);
+    expect(comfy.jobs[1].refBytes).toEqual([Buffer.byteLength("the bytes of first-ref.png")]);
 
     expect((await oneShot(gen, "two references", refs, "wf-two.png")).status).toBe("ok");
-    expect(comfy.converted).toEqual(["text", "oneImage", "twoImages"]);
-    expect(comfy.uploads).toHaveLength(3);
-    expect(comfy.jobs[2].refs).toEqual([comfy.uploads[1], comfy.uploads[2]]);
+    expect(comfy.jobs[2].refs).toEqual(["first-ref.png", "second-ref.png"]);
   }, 60000);
 
-  it("asks the server to convert a workflow once, not once per picture", async () => {
-    // One refresh means one driver instance, and the conversion belongs to the
-    // template, not to a run.
+  it("asks the server for its catalogue once per refresh, not once per picture", async () => {
+    // One refresh means one driver instance, and what it learned about the
+    // server — the model, how many references it takes — belongs to it.
     const gen = comfyGen(comfy);
     await images.refreshAvailableGenerators([gen]);
-    await images.startImageJob({ id: imageId(chatIdDefault, "conv-1.png"), prompt: "p", refs: [] })
+    expect(comfy.probes).toBe(1);
+    await images.startImageJob({ id: imageId(chatIdDefault, "probe-1.png"), prompt: "p", refs: [] })
       .result;
-    await images.startImageJob({ id: imageId(chatIdDefault, "conv-2.png"), prompt: "p", refs: [] })
+    await images.startImageJob({ id: imageId(chatIdDefault, "probe-2.png"), prompt: "p", refs: [] })
       .result;
     expect(comfy.jobs).toHaveLength(2);
-    expect(comfy.converted).toEqual(["text"]);
+    expect(comfy.probes).toBe(1);
   }, 60000);
 
-  it("drops the references the model has no template for, instead of failing", async () => {
+  it("drops the references the model has no room for, instead of failing", async () => {
     // The plan is made for the strongest generator the user configured; the job
     // can still land on one that takes fewer. Dropping the extra reference keeps
     // the picture (with the faces that did fit) instead of leaving a broken card.
@@ -378,17 +386,21 @@ describe("ComfyUI generator", () => {
       fs.writeFileSync(imageFile(chatIdDefault, name), "x");
       refs.push(imageId(chatIdDefault, name));
     }
+    // the server says this model takes two, and that is the number the app may
+    // promise the user — it comes from the server, not from a template
+    await images.refreshAvailableGenerators([comfyGen(comfy)]);
+    expect(images.maxReferenceCount()).toBe(2);
     const r = await oneShot(comfyGen(comfy), "three of them", refs, "too-many-refs.png");
     expect(r.status).toBe("ok");
-    // the first two of them are what the workflow could load
+    // the first two of them are what the server's workflow could load
     expect(comfy.jobs).toHaveLength(1);
-    expect(comfy.jobs[0].refs).toEqual([comfy.uploads[0], comfy.uploads[1]]);
+    expect(comfy.jobs[0].refs).toEqual(["a.png", "b.png"]);
   });
 
-  it("is not available for a model the app has no workflow for", async () => {
+  it("is not available for a model the server does not offer", async () => {
     await images.refreshAvailableGenerators([comfyGen(comfy, { model: "flux-dev" })]);
     expect(images.hasAvailableGenerator()).toBe(false);
-    const job = images.startImageJob({ id: imageId(chatIdDefault, "no-wf.png"), prompt: "p", refs: [] });
+    const job = images.startImageJob({ id: imageId(chatIdDefault, "no-model.png"), prompt: "p", refs: [] });
     const r = await job.result;
     expect(r.status).toBe("failed");
     if (r.status === "failed") expect(r.error).toMatch(/not configured/);
@@ -399,21 +411,34 @@ describe("ComfyUI generator", () => {
     expect(images.hasAvailableGenerator()).toBe(false);
   });
 
-  it("names the converter custom node when the server has none", async () => {
-    comfy.noConverter = true;
-    const r = await oneShot(comfyGen(comfy), "p", [], "no-converter.png");
-    expect(r.status).toBe("failed");
-    if (r.status === "failed") {
-      expect(r.error).toContain("/workflow/convert");
-      expect(r.error).toContain("comfyui-workflow-to-api-converter-endpoint");
+  it("names the plugin custom node when the server has none", async () => {
+    // A plain ComfyUI is not a generator this app can use, and the reason has
+    // to say what to install — otherwise the user is left guessing why a server
+    // that is clearly up does not appear.
+    comfy.noPlugin = true;
+    const logged: string[] = [];
+    const spy = jest.spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
+      logged.push(args.join(" "));
+    });
+    try {
+      const r = await oneShot(comfyGen(comfy), "p", [], "no-plugin.png");
+      expect(r.status).toBe("failed");
+      expect(comfy.probes).toBe(1);
+    } finally {
+      spy.mockRestore();
     }
+    const lines = logged.join("\n");
+    expect(lines).toContain("/sillytalk/models");
+    expect(lines).toContain("comfyui-sillytalk");
+    // nothing was ever queued, because nothing could be
+    expect(comfy.jobs).toEqual([]);
   });
 
   it("carries the message of a job the server failed", async () => {
     const r = await oneShot(comfyGen(comfy), "please fail here", [], "server-fail.png");
     expect(r.status).toBe("failed");
     if (r.status === "failed") {
-      expect(r.error).toContain("failed on the server");
+      expect(r.error).toContain("is failed");
       expect(r.error).toContain("ran out of patience");
     }
     expect(fs.existsSync(imageFile(chatIdDefault, "server-fail.png"))).toBe(false);
@@ -427,148 +452,13 @@ describe("ComfyUI generator", () => {
     job.cancel();
     const r = await job.result;
     expect(r.status).toBe("cancelled");
-    // it is taken out of the queue and interrupted, so the GPU is free again
+    // the job is deleted on the server, so the GPU is free for the next one
     await new Promise((resolve) => setTimeout(resolve, 300));
-    const promptId = comfy.jobs[0]?.id;
-    expect(promptId).toBeTruthy();
-    expect(comfy.cancelled).toEqual([`queue:${promptId}`, `interrupt:${promptId}`]);
+    const jobId = comfy.jobs[0]?.id;
+    expect(jobId).toBeTruthy();
+    expect(comfy.cancelled).toEqual([jobId]);
     expect(fs.existsSync(imageFile(chatIdDefault, "cancel-server.png"))).toBe(false);
   }, 30000);
-});
-
-// --------------------------------------------------- the workflow files of the app
-// A workflow is a JSON file, not compiled code: the app ships its own and the
-// user can replace them or add models in <data root>/comfyui/. The files are
-// read again for every job, so these tests write a file, run a job, and see the
-// server get exactly what the file said.
-describe("the ComfyUI workflow files", () => {
-  // One-node template the tests recognise; the PARAM_* names are the ones the
-  // app substitutes, the mock converter picks the variant by them.
-  function templateOf(marker: string): Record<string, unknown> {
-    return {
-      last_node_id: 5,
-      nodes: [{ id: 5, type: "CLIPTextEncode", widgets_values: [`PARAM_PROMPT ${marker}`, marker] }],
-    };
-  }
-
-  function writeWorkflow(model: string, set: unknown): void {
-    fs.mkdirSync(PathHelper.comfyWorkflowsDir(), { recursive: true });
-    fs.writeFileSync(path.join(PathHelper.comfyWorkflowsDir(), `${model}.json`), JSON.stringify(set, null, 2));
-  }
-
-  afterEach(() => {
-    fs.rmSync(PathHelper.comfyWorkflowsDir(), { recursive: true, force: true });
-  });
-
-  it("adds a model whose workflow file the user wrote", async () => {
-    writeWorkflow("my-flux", { text: templateOf("text-only"), oneImage: templateOf("PARAM_STRING_INPUT_IMAGE_FILENAME") });
-    expect(comfyUiModelNames()).toContain("my-flux");
-    // the shipped ones are still there
-    expect(comfyUiModelNames()).toContain("qwen-image-2.1");
-
-    const gen = comfyGen(comfy, { model: "my-flux" });
-    expect((await oneShot(gen, "a picture of mine", [], "own-model.png")).status).toBe("ok");
-    expect(comfy.converted).toEqual(["text"]);
-
-    // the same file's oneImage template is what a reference runs on
-    fs.mkdirSync(PathHelper.chatDir(chatIdDefault), { recursive: true });
-    fs.writeFileSync(imageFile(chatIdDefault, "own-ref.png"), "x");
-    expect(
-      (await oneShot(gen, "with my reference", [imageId(chatIdDefault, "own-ref.png")], "own-model-ref.png")).status,
-    ).toBe("ok");
-    expect(comfy.converted).toEqual(["text", "oneImage"]);
-  }, 60000);
-
-  it("replaces the workflow of a shipped model with the user's file", async () => {
-    // The marker below is a placeholder of the ONE-reference workflow, put into
-    // the text variant on purpose: had the app used its own file, the server
-    // would have been told this is a text workflow.
-    writeWorkflow("qwen-image-2.1", { text: templateOf("PARAM_STRING_INPUT_IMAGE_FILENAME") });
-    const r = await oneShot(comfyGen(comfy), "the shipped model, my graph", [], "overridden.png");
-    expect(r.status).toBe("ok");
-    expect(comfy.converted).toEqual(["oneImage"]);
-  }, 60000);
-
-  it("reads an edited workflow file on the next picture, and converts it again", async () => {
-    writeWorkflow("qwen-image-2.1", { text: templateOf("first") });
-    const gen = comfyGen(comfy);
-    // one refresh — so one driver instance and one convert cache
-    await images.refreshAvailableGenerators([gen]);
-    await images.startImageJob({ id: imageId(chatIdDefault, "edit-1.png"), prompt: "p", refs: [] })
-      .result;
-    expect(comfy.converted).toEqual(["text"]);
-
-    // the same file, unchanged: the cached API copy is still the right one
-    await images.startImageJob({ id: imageId(chatIdDefault, "edit-2.png"), prompt: "p", refs: [] })
-      .result;
-    expect(comfy.converted).toEqual(["text"]);
-
-    writeWorkflow("qwen-image-2.1", { text: templateOf("second") });
-    await images.startImageJob({ id: imageId(chatIdDefault, "edit-3.png"), prompt: "p", refs: [] })
-      .result;
-    // the new template went through the converter again — the picture was not
-    // drawn from the API copy of the graph that was there before
-    expect(comfy.converted).toEqual(["text", "text"]);
-  }, 60000);
-
-  it("leaves a model whose workflow file is broken out of the app", async () => {
-    const logged: string[] = [];
-    const spy = jest.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
-      logged.push(args.join(" "));
-    });
-    try {
-      // an unreadable file of its own: no model, no generator
-      fs.mkdirSync(PathHelper.comfyWorkflowsDir(), { recursive: true });
-      fs.writeFileSync(path.join(PathHelper.comfyWorkflowsDir(), "my-flux.json"), "{ not json");
-      expect(comfyUiModelNames()).not.toContain("my-flux");
-
-      // and a broken override of a shipped model does not fall back to the
-      // shipped graph: the file the user wrote wins, so it decides the model
-      fs.writeFileSync(path.join(PathHelper.comfyWorkflowsDir(), "qwen-image-2.1.json"), '{"nodes": "not a graph"}');
-      expect(comfyUiModelNames()).not.toContain("qwen-image-2.1");
-      await images.refreshAvailableGenerators([comfyGen(comfy)]);
-      expect(images.hasAvailableGenerator()).toBe(false);
-    } finally {
-      spy.mockRestore();
-    }
-    // the reason reaches the log, with the file it is about
-    expect(logged.join("\n")).toMatch(/my-flux\.json.*not readable JSON/s);
-    expect(logged.join("\n")).toMatch(/qwen-image-2\.1\.json.*none of/s);
-  });
-
-  it("leaves the reference out for a model whose file has no template for it", async () => {
-    // A file the user writes can ship fewer variants than the app's own — the
-    // model then simply does not take references. The picture is still drawn,
-    // from the text alone, and the unusable reference is never uploaded.
-    writeWorkflow("text-only-model", { text: templateOf("no references here") });
-    fs.mkdirSync(PathHelper.chatDir(chatIdDefault), { recursive: true });
-    fs.writeFileSync(imageFile(chatIdDefault, "ref-for-text-only.png"), "x");
-    const r = await oneShot(
-      comfyGen(comfy, { model: "text-only-model" }),
-      "one reference, no template for it",
-      [imageId(chatIdDefault, "ref-for-text-only.png")],
-      "text-only-ref.png",
-    );
-    expect(r.status).toBe("ok");
-    // the server saw the job, never the picture it cannot take
-    expect(comfy.uploads).toEqual([]);
-    expect(comfy.jobs).toHaveLength(1);
-    expect(comfy.jobs[0].refs).toEqual([]);
-  });
-
-  it("takes a model name as a file name, never as a path", async () => {
-    // a hand-written config must not be able to point the loader outside the
-    // two workflow folders (data root holds config.json with the API keys)
-    expect(comfyUiModelNames()).not.toContain("..\\config");
-    await images.refreshAvailableGenerators([comfyGen(comfy, { model: "../../config" })]);
-    expect(images.hasAvailableGenerator()).toBe(false);
-    const job = images.startImageJob({
-      id: imageId(chatIdDefault, "escaping-model.png"),
-      prompt: "p",
-      refs: [],
-    });
-    expect((await job.result).status).toBe("failed");
-  });
 });
 
 // ------------------------------------------------------------------ the service
@@ -654,11 +544,10 @@ describe("background image jobs", () => {
       refs: [imageId(jobChatId, "a-real-reference.png"), "/etc/passwd", `${jobChatId}/files/gone.png`, "../out.png"],
     });
     expect(r.status).toBe("ok");
-    expect(comfy.uploads).toHaveLength(1);
-    expect(comfy.uploads[0]).toContain("a-real-reference.png");
-    expect(comfy.jobs[0].workflow).not.toContain("passwd");
-    expect(comfy.jobs[0].workflow).not.toContain("gone.png");
-    expect(comfy.jobs[0].workflow).not.toContain("out.png");
+    // the three paths that are not a picture of the data folder never left the
+    // app: the server saw one part, of the one real file
+    expect(comfy.jobs[0].refs).toEqual(["a-real-reference.png"]);
+    expect(comfy.jobs[0].refBytes).toEqual([1]);
   }, 30000);
 
   it("refuses an id that points outside the data folders", async () => {
@@ -817,8 +706,7 @@ describe("background image jobs", () => {
 
   it("queues the generators of one server together and gives them the jobs in turn", async () => {
     // Two entries, the same URL, different models: they are different
-    // generators (each with its own workflow) but they share one GPU, so one
-    // queue.
+    // generators but they share one GPU, so one queue.
     await images.refreshAvailableGenerators([
       comfyGen(comfy, { model: "qwen-image-2.1" }),
       comfyGen(comfy, { model: "qwen-image-2512" }),
@@ -830,11 +718,7 @@ describe("background image jobs", () => {
     expect(r1.status).toBe("ok");
     expect(r2.status).toBe("ok");
     expect(comfy.log.map((line) => line.split(" ")[0])).toEqual(["start", "finish", "start", "finish"]);
-    // …and each of them ran its own model's workflow, named in the file it
-    // asked the server to save the picture as.
-    expect(comfy.jobs.map((j) => String(j.prefix).split("_")[1]).sort()).toEqual([
-      "qwenimage21",
-      "qwenimage2512",
-    ]);
+    // …and each of them asked the server for its own model.
+    expect(comfy.jobs.map((j) => j.model).sort()).toEqual(["qwen-image-2.1", "qwen-image-2512"]);
   }, 60000);
 });

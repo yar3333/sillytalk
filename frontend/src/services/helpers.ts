@@ -126,7 +126,7 @@ export function splitNarration(text: string): Array<{ text: string; narration: b
 }
 
 // The hover hint of ONE picture of a line: how it was generated (a ComfyUI
-// server and the model of its workflow / a request to SD API / just the prompt).
+// server and the model it drew with / a request to SD API / just the prompt).
 // With several enabled generators the picture may have been made by any of them,
 // so the server details are shown only for a single one. A file somebody brought
 // has no generation data — its hint is the plain click note.
