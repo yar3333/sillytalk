@@ -225,10 +225,17 @@ async function setPlan(plan: {
   if (llm) await llm.setImagePlan(plan);
 }
 
+// What the model answers stage one with: the sentence the 📷 picture is captioned
+// by (null = it says nothing, which is the other way the card can break).
+async function setPictureDescription(text: string | null): Promise<void> {
+  if (llm) await llm.setPictureDescription(text);
+}
+
 test.beforeEach(async () => {
   issues = [];
   markerReply = null;
   await setDelay(300);
+  await setPictureDescription('A red circle on a white background');
   await setPlan({
     name: 'red circle on paper',
     description: 'A red circle drawn on a white paper sheet',
@@ -676,22 +683,27 @@ test('UX 10b: the picture editor — the prompt, the description, the file kind'
   await expect(page.getByTestId('picture-prompt')).toHaveValue('a red circle on a white background');
   await page.screenshot({ path: `${SHOTS}/ux-10b-editor.png` });
 
-  // "From the chat": the model writes the prompt. The description is LEFT ALONE —
-  // the picture already carries the user's own sentence as its caption, and a
-  // plan must not overwrite what the user wrote. The helper fills a description
-  // only when the picture has none, which is what the second half does.
-  await page.getByTestId('picture-prompt-from-chat').click();
+  // The two stages, in the order of the fields: "From the chat" writes the IDEA
+  // of the picture from the conversation (the caption — the field's own button,
+  // so it does replace the user's sentence), and "Prompt and references" turns
+  // that sentence into the generator's prompt plus the pictures it borrows faces
+  // and places from. The prompt is never written from the dialogue directly.
+  await page.getByTestId('picture-description-from-chat').click();
+  await expect(page.getByTestId('picture-description')).toHaveValue('A red circle on a white background', {
+    timeout: 20000,
+  });
+  await expect(page.getByTestId('picture-prompt')).toHaveValue('a red circle on a white background');
+
+  await page.getByTestId('picture-description').fill('the same circle, now on a wooden shelf');
+  await page.getByTestId('picture-prompt-from-description').click();
   await expect(page.getByTestId('picture-prompt')).toHaveValue('a red circle on a white background', {
     timeout: 20000,
   });
-  await expect(page.getByTestId('picture-description')).toHaveValue('a red circle');
-
+  // With an empty description there is nothing to turn into a prompt, and the
+  // button says so instead of asking the model for a guess.
   await page.getByTestId('picture-description').fill('');
-  await page.getByTestId('picture-prompt-from-chat').click();
-  await expect(page.getByTestId('picture-description')).toHaveValue(
-    'A red circle drawn on a white paper sheet',
-    { timeout: 20000 },
-  );
+  await expect(page.getByTestId('picture-prompt-from-description')).toBeDisabled();
+  await page.getByTestId('picture-description').fill('the same circle, now on a wooden shelf');
 
   // "Make it English" rewrites a typed prompt for the generator.
   await page.getByTestId('picture-prompt').fill('круг');
@@ -735,6 +747,10 @@ test('UX 10b: the picture editor — the prompt, the description, the file kind'
 
 test('UX 11: the picture of the user turn (the 📷 button)', async ({ page }) => {
   await setDelay(200);
+  // The two stages answer with sentences of their own, so the test can tell
+  // which one wrote what: the caption is stage one's answer, the prompt is the
+  // plan stage two built from it.
+  await setPictureDescription('Alice holds up a red circle, proud of it');
   await openApp(page);
   // The button belongs to the user turn only: an empty chat has none.
   await expect(page.getByTestId('auto-image')).toHaveCount(0);
@@ -756,10 +772,16 @@ test('UX 11: the picture of the user turn (the 📷 button)', async ({ page }) =
   await expect(page.getByTestId('send')).toHaveText('➤');
   await page.screenshot({ path: `${SHOTS}/ux-11b-placeholder.png` });
 
-  // The placeholder turns into the planned picture with its caption.
+  // The placeholder turns into the planned picture. Its caption is the sentence
+  // stage one wrote (the one a user can read and correct), its prompt is what
+  // stage two turned that sentence into for the generator.
   await expect(page.getByTestId('img-pending')).toBeHidden({ timeout: 25000 });
   await expect(cardImages(page).first()).toBeVisible();
-  await expect(page.getByTestId('card-caption')).toContainText('red circle');
+  await expect(page.getByTestId('card-caption')).toContainText('Alice holds up a red circle');
+  await expect(page.getByTestId('card-prompt')).toContainText('a red circle on a white background');
+  // and the two calls really were two: the second one read the first answer
+  expect(llm?.lastDescriptionRequest()).not.toBeNull();
+  expect(llm?.lastPlanRequest()?.text ?? '').toContain('Alice holds up a red circle');
   await page.screenshot({ path: `${SHOTS}/ux-11c-planned-picture.png` });
 
   // The picture is the user's own message now, so it is the characters' turn:
@@ -1223,6 +1245,45 @@ test('UX 20: the picture browser edits the picture, not a message', async ({ pag
   await expect(page.getByTestId('error-banner')).toBeVisible({ timeout: 10000 });
   const still = (await api('/pictures')) as { pictures: Array<{ id: string }> };
   expect(still.pictures.some((p) => p.id === newId)).toBe(true);
+
+  // Discard the refused name first — the list refuses to switch pictures while
+  // the form holds an edit.
+  await page.getByTestId('picture-reset').click();
+  // Deleting the FILE of a picture: the bytes go, the record stays. The words of
+  // a picture can be worth more than its pixels, so this is the half-delete the
+  // browser offers — and it is armed by a first click, like everything here that
+  // cannot be undone.
+  await page.locator(`[data-testid=picture-row][title="${secondId}"]`).click();
+  await page.getByTestId('picture-delete-file').click();
+  await expect(page.getByTestId('picture-delete-file')).toHaveClass(/armed/);
+  const beforeDelete = (await api('/pictures')) as { pictures: Array<{ id: string }> };
+  expect(beforeDelete.pictures.some((p) => p.id === secondId)).toBe(true);
+  await page.getByTestId('picture-delete-file').click();
+  await expect(async () => {
+    const after = (await api('/pictures')) as {
+      pictures: Array<{ id: string; exists: boolean }>;
+    };
+    expect(after.pictures.find((p) => p.id === secondId)?.exists).toBe(false);
+    // and the media route has nothing to hand out for that id any more
+    const media = await fetch(`${API}/media?path=${encodeURIComponent(secondId)}`);
+    expect(media.ok).toBe(false);
+  }).toPass({ timeout: 10000 });
+  // the list says so: the row is the dimmed orphan, still selectable
+  await expect(page.locator(`[data-testid=picture-row][title="${secondId}"]`)).toHaveClass(/gone/);
+  await page.screenshot({ path: `${SHOTS}/ux-20e-file-deleted-record-kept.png` });
+
+  // The other half of the same removal, right here: the orphan's record goes too.
+  // Not only for completeness — the shared test data must not keep a record of
+  // bytes that are nowhere any more, because the sync follows a picture by its
+  // size and hash and EVERY picture this suite draws has exactly these bytes, so
+  // a stranded record would attach itself to the next test's file.
+  await page.getByTestId('picture-forget').click();
+  await expect(page.getByTestId('picture-forget')).toHaveClass(/armed/);
+  await page.getByTestId('picture-forget').click();
+  await expect(async () => {
+    const after = (await api('/pictures')) as { pictures: Array<{ id: string }> };
+    expect(after.pictures.some((p) => p.id === secondId)).toBe(false);
+  }).toPass({ timeout: 10000 });
 });
 
 // The disk sync: the pictures are files and the user may touch them outside
@@ -1375,7 +1436,7 @@ test('UX 21: a character shares a picture of its own — by id and by request', 
   // The planner was told what she asked for, in her words, together with the
   // cast of the conversation — so it can match a name to a face.
   await expect(drawn.locator('[data-testid=line-picture] img')).toBeVisible({ timeout: 30000 });
-  const asked = llm?.lastRequestPlanRequest();
+  const asked = llm?.lastPlanRequest();
   expect(asked?.text ?? '').toContain(askedFor);
   expect(asked?.text ?? '').toContain('char:alice');
 

@@ -48,14 +48,12 @@ describe("reading and writing a row", () => {
       description: "a red boat on a calm lake",
       prompt: "a red boat at dusk",
       refs: ["characters/alice/photos/photo1.jpg"],
-      depicts: ["char:alice"],
       source: "manual",
     });
     expect(meta.get(id)).toMatchObject({
       description: "a red boat on a calm lake",
       prompt: "a red boat at dusk",
       refs: ["characters/alice/photos/photo1.jpg"],
-      depicts: ["char:alice"],
       source: "manual",
     });
     // the id IS the relative path, so any reader that has the path has the row
@@ -143,27 +141,27 @@ describe("moving, copying and removing rows", () => {
   });
 
   // The row of one picture must never become part of another picture's row: a
-  // move that lands on an existing record would fuse a caption with a cast that
-  // belong to different pictures, and nothing would ever say so.
+  // move that lands on an existing record would fuse a caption with a prompt
+  // that belong to different pictures, and nothing would ever say so.
   it("refuses to move a row onto one that already exists", () => {
     const boat = picture("chats/c1/files/a-boat-1a2b3c.png");
     const portrait = picture("chats/c1/files/alice-4d5e6f.png");
     meta.set(boat, { description: "a red boat at dusk" });
-    meta.set(portrait, { description: "alice by the window", depicts: ["char:alice"] });
+    meta.set(portrait, { description: "alice by the window", prompt: "a woman at a window" });
 
     expect(() => meta.move(boat, portrait)).toThrow(/already a record/);
     // both records are exactly what they were
     expect(meta.get(boat)?.description).toBe("a red boat at dusk");
     expect(meta.get(portrait)?.description).toBe("alice by the window");
-    expect(meta.get(portrait)?.depicts).toEqual(["char:alice"]);
+    expect(meta.get(portrait)?.prompt).toBe("a woman at a window");
   });
 
   it("a copy leaves the source row alone", () => {
     const source = picture("characters/alice/photos/photo1.jpg");
     const copy = picture("chats/c1/files/photo1-1a2b3c.jpg");
-    meta.set(source, { description: "alice at the window", depicts: ["char:alice"] });
+    meta.set(source, { description: "alice at the window", prompt: "a woman at a window" });
     meta.copy(source, copy);
-    expect(meta.get(copy)?.depicts).toEqual(["char:alice"]);
+    expect(meta.get(copy)?.prompt).toBe("a woman at a window");
     expect(meta.get(source)?.description).toBe("alice at the window");
     expect(meta.list()).toHaveLength(2);
   });

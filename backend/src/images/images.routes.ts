@@ -30,7 +30,7 @@ export function createPicturesRouter(library: PictureLibraryService): express.Ro
   });
 
   router.patch("/", (req, res) => {
-    const { id, description, prompt, refs, depicts } = req.body ?? {};
+    const { id, description, prompt, refs } = req.body ?? {};
     if (typeof id !== "string" || !PathHelper.resolvePictureId(id)) {
       res.status(400).json({ error: "Unknown picture" });
       return;
@@ -44,8 +44,8 @@ export function createPicturesRouter(library: PictureLibraryService): express.Ro
         return;
       }
     }
-    const lists: Record<string, string[] | undefined> = { refs: idList(refs), depicts: idList(depicts) };
-    if ((refs !== undefined && lists.refs === undefined) || (depicts !== undefined && lists.depicts === undefined)) {
+    const lists: Record<string, string[] | undefined> = { refs: idList(refs) };
+    if (refs !== undefined && lists.refs === undefined) {
       res.status(400).json({ error: "Expected a list of picture ids" });
       return;
     }
@@ -61,7 +61,6 @@ export function createPicturesRouter(library: PictureLibraryService): express.Ro
       ...(typeof description === "string" ? { description } : {}),
       ...(typeof prompt === "string" ? { prompt } : {}),
       ...(lists.refs ? { refs: lists.refs } : {}),
-      ...(lists.depicts ? { depicts: lists.depicts } : {}),
     });
     if (!picture) {
       res.status(404).json({ error: `Unknown picture "${id}"` });
@@ -99,9 +98,11 @@ export function createPicturesRouter(library: PictureLibraryService): express.Ro
     }
   });
 
-  // Forgets the record of a picture whose file is gone — the only delete the
-  // browser has, so an orphan row does not have to live forever. The service
-  // refuses a picture whose file still exists: the app does not delete pictures.
+  // Forgets the record of a picture whose file is gone — the record half of what
+  // the browser can delete, so an orphan row does not have to live forever. The
+  // service refuses a picture whose file still exists: removing the picture is
+  // the other route's job, and clearing the words of a picture that is still
+  // there is never what a click on the wrong row should have done.
   router.delete("/", (req, res) => {
     const { id } = req.body ?? {};
     if (typeof id !== "string" || !PathHelper.resolvePictureId(id)) {
@@ -114,6 +115,28 @@ export function createPicturesRouter(library: PictureLibraryService): express.Ro
         return;
       }
       res.json({ forgotten: id });
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
+  // Removes the FILE of a picture and keeps its record: the description, the
+  // prompt and the reference set stay in the images table, and the row becomes an
+  // orphan the browser shows dimmed — the words can be attached to another file
+  // later or cleared with the route above. What the lines of the chats that show
+  // this picture keep is the id, which now names a file that is not there.
+  router.post("/delete-file", (req, res) => {
+    const { id } = req.body ?? {};
+    if (typeof id !== "string" || !PathHelper.resolvePictureId(id)) {
+      res.status(400).json({ error: "Unknown picture" });
+      return;
+    }
+    try {
+      if (!library.deleteFile(id)) {
+        res.status(404).json({ error: `There is no file at "${id}"` });
+        return;
+      }
+      res.json({ deleted: id });
     } catch (err) {
       res.status(400).json({ error: (err as Error).message });
     }

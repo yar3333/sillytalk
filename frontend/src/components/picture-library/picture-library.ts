@@ -238,6 +238,20 @@ function sameList(a: string[], b: string[]): boolean {
               >
                 {{ forgetArmed() ? 'Click again to forget' : 'Forget record' }}
               </button>
+            } @else {
+              <!-- The other half: the file goes, the words stay. A picture whose
+                   description is worth more than its pixels keeps it here — the
+                   record survives as an orphan and can be pointed at another
+                   file by Rename. -->
+              <button
+                class="btn danger"
+                data-testid="picture-delete-file"
+                [class.armed]="fileArmed()"
+                title="Remove this file from disk. What the app knows about the picture — its description, prompt and references — stays (click again to confirm)"
+                (click)="deleteFile()"
+              >
+                {{ fileArmed() ? 'Click again to delete' : 'Delete file' }}
+              </button>
             }
             <span class="spacer"></span>
             <button class="btn" data-testid="picture-reset" (click)="reset()">Discard</button>
@@ -325,7 +339,7 @@ export class PictureLibraryComponent implements OnDestroy {
 
   private fill(picture: Picture | null): void {
     this.loaded.set(picture);
-    this.disarmForget();
+    this.disarm();
     this.blocked.set(false);
     this.description.set(picture?.description ?? '');
     this.prompt.set(picture?.prompt ?? '');
@@ -530,40 +544,61 @@ export class PictureLibraryComponent implements OnDestroy {
     });
   }
 
-  // The two-click confirm of the one irreversible action here: the first click
-  // arms the button (it goes red and says so), a second click within ~2 s
-  // forgets the record, otherwise it disarms. Local to this dialog, and reset
+  // The two-click confirm of the two things here that cannot be undone: dropping
+  // a record and removing a file. ONE arm at a time — arming the other button is
+  // what a click on it means, and two armed buttons would leave the user
+  // guessing which one a stray click fires. Local to this dialog, and reset
   // whenever the selection changes — a confirm for a picture the user is no
   // longer looking at is a trap.
-  readonly forgetArmed = signal(false);
-  private forgetTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly armed = signal<'record' | 'file' | null>(null);
+  private armTimer: ReturnType<typeof setTimeout> | null = null;
+  readonly forgetArmed = computed(() => this.armed() === 'record');
+  readonly fileArmed = computed(() => this.armed() === 'file');
+
+  private arm(what: 'record' | 'file'): void {
+    this.armed.set(what);
+    if (this.armTimer) clearTimeout(this.armTimer);
+    this.armTimer = setTimeout(() => {
+      this.armed.set(null);
+      this.armTimer = null;
+    }, 2000);
+  }
+
+  private disarm(): void {
+    if (this.armTimer) {
+      clearTimeout(this.armTimer);
+      this.armTimer = null;
+    }
+    this.armed.set(null);
+  }
 
   forget(): void {
-    if (!this.forgetArmed()) {
-      this.forgetArmed.set(true);
-      if (this.forgetTimer) clearTimeout(this.forgetTimer);
-      this.forgetTimer = setTimeout(() => {
-        this.forgetArmed.set(false);
-        this.forgetTimer = null;
-      }, 2000);
+    if (this.armed() !== 'record') {
+      this.arm('record');
       return;
     }
-    this.disarmForget();
+    this.disarm();
     this.store.forgetPicture();
   }
 
-  private disarmForget(): void {
-    if (this.forgetTimer) {
-      clearTimeout(this.forgetTimer);
-      this.forgetTimer = null;
+  // Removes the FILE of this picture and keeps what the app knows about it: the
+  // description, the prompt and the references stay in the table, so the words
+  // outlive the file — they can be pointed at another picture later (Rename) or
+  // dropped with "Forget record". The row becomes the orphan the list already
+  // knows how to show.
+  deleteFile(): void {
+    if (this.armed() !== 'file') {
+      this.arm('file');
+      return;
     }
-    this.forgetArmed.set(false);
+    this.disarm();
+    this.store.deletePictureFile();
   }
 
   ngOnDestroy(): void {
-    if (this.forgetTimer) {
-      clearTimeout(this.forgetTimer);
-      this.forgetTimer = null;
+    if (this.armTimer) {
+      clearTimeout(this.armTimer);
+      this.armTimer = null;
     }
     if (this.blockedTimer) {
       clearTimeout(this.blockedTimer);

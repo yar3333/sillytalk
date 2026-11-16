@@ -361,11 +361,14 @@ describe("editing a picture from the browser", () => {
     fs.writeFileSync(portrait, "img");
     const id = PathHelper.imageIdOf(portrait);
 
-    library.edit(id, { description: "alice in a green coat", depicts: ["char:alice"] });
-    expect(meta.get(id)).toMatchObject({ description: "alice in a green coat", depicts: ["char:alice"] });
-    // a picture is never owned by one chat: the row is what the picture planner
-    // reads when it offers her a face to draw
-    expect(library.get(id)?.depicts).toEqual(["char:alice"]);
+    library.edit(id, { description: "alice in a green coat", prompt: "a woman in a green coat" });
+    expect(meta.get(id)).toMatchObject({
+      description: "alice in a green coat",
+      prompt: "a woman in a green coat",
+    });
+    // a picture is never owned by one chat: the row is what every line that
+    // shows this photo reads, wherever it came from
+    expect(library.get(id)?.description).toBe("alice in a green coat");
   });
 
   it("sets the reference list a stored prompt names, and clears it with an empty one", () => {
@@ -483,7 +486,7 @@ describe("renaming a record whose file is gone", () => {
     const chat = chats.create(["a"], "me");
     const lost = chats.saveImage(chat.id, PNG(), { nameHint: "the lost boat" });
     chats.addImageMessage(chats.get(chat.id)!, lost, { description: "a red boat at dusk" });
-    meta.set(lost, { depicts: ["char:alice"] });
+    meta.set(lost, { prompt: "a red boat at dusk, painted" });
     // the user deletes the picture and drops a file under another name himself:
     // different bytes, so the sync has nothing to match the record by
     fs.rmSync(fileOf(lost));
@@ -496,7 +499,7 @@ describe("renaming a record whose file is gone", () => {
       id: kept,
       exists: true,
       description: "a red boat at dusk",
-      depicts: ["char:alice"],
+      prompt: "a red boat at dusk, painted",
     });
     // the file was not touched: it was already there
     expect(fs.readFileSync(fileOf(kept), "utf8")).toBe("the bytes the user has now");
@@ -532,16 +535,16 @@ describe("renaming a record whose file is gone", () => {
     const id = chats.saveImage(chat.id, PNG(), { nameHint: "a boat" });
     meta.set(id, { description: "a boat" });
     const orphan = renamedIn(id, "alice-by-the-window.png");
-    meta.set(orphan, { description: "alice by the window", depicts: ["char:alice"] });
+    meta.set(orphan, { description: "alice by the window", prompt: "a woman at a window" });
 
     expect(() => library.rename(id, orphan)).toThrow(/A record already uses/);
 
     // nothing moved and nothing merged: the boat is still the boat
     expect(meta.get(id)?.description).toBe("a boat");
     expect(fs.existsSync(fileOf(id))).toBe(true);
-    // and the record of the lost picture did not become the boat's cast
-    expect(meta.get(id)?.depicts).toBeUndefined();
-    expect(meta.get(orphan)?.depicts).toEqual(["char:alice"]);
+    // and the record of the lost picture did not become the boat's prompt
+    expect(meta.get(id)?.prompt).toBeUndefined();
+    expect(meta.get(orphan)?.prompt).toBe("a woman at a window");
   });
 
   it("never creates the folder of the new id", () => {
@@ -598,6 +601,59 @@ describe("forgetting a record whose file is gone", () => {
 
     expect(library.browse().some((p) => p.id === lost)).toBe(false);
     expect(library.get(lost)).toBeNull();
+  });
+});
+
+describe("deleting the file of a picture and keeping its record", () => {
+  it("removes the bytes, keeps the words", () => {
+    const chat = chats.create(["a"], "me");
+    const id = chats.saveImage(chat.id, PNG(), { nameHint: "a boat" });
+    meta.set(id, { description: "a boat at anchor", prompt: "a boat at anchor, dusk", refs: [] });
+
+    expect(library.deleteFile(id)).toBe(true);
+    expect(fs.existsSync(fileOf(id))).toBe(false);
+    // the row is what the user wanted to keep: the caption, the prompt and the
+    // facts of the file that used to be there
+    expect(meta.get(id)).toMatchObject({
+      description: "a boat at anchor",
+      prompt: "a boat at anchor, dusk",
+      fileHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    // nothing left to remove
+    expect(library.deleteFile(id)).toBe(false);
+  });
+
+  it("leaves the picture as an orphan the browser still lists, and that forget can clear", () => {
+    const chat = chats.create(["a"], "me");
+    const id = chats.saveImage(chat.id, PNG(), { nameHint: "a boat" });
+    meta.set(id, { description: "a boat at anchor" });
+
+    library.deleteFile(id);
+
+    const row = library.browse().find((p) => p.id === id);
+    expect(row).toBeDefined();
+    expect(row?.exists).toBe(false);
+    expect(row?.description).toBe("a boat at anchor");
+    // the two buttons are the two halves of one removal: now that the file is
+    // gone, the record can be dropped too
+    expect(library.forget(id)).toBe(true);
+    expect(library.browse().some((p) => p.id === id)).toBe(false);
+  });
+
+  it("waits for a picture that is still being drawn", () => {
+    const chat = chats.create(["a"], "me");
+    const id = chats.saveImage(chat.id, PNG(), { nameHint: "a boat" });
+    const message = chats.addImageMessage(chats.get(chat.id)!, id, { description: "a boat" });
+    // a regeneration: the old file is still there and a job is about to write
+    // over exactly this path
+    chats.setMessageImageStatus(chat.id, message.id, id, "pending");
+
+    expect(() => library.deleteFile(id)).toThrow(/still being generated/);
+    expect(fs.existsSync(fileOf(id))).toBe(true);
+  });
+
+  it("refuses an id that is not a picture of the data folders", () => {
+    expect(library.deleteFile("chats/nope/nothing-here.png")).toBe(false);
   });
 });
 

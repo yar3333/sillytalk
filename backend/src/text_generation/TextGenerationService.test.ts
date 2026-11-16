@@ -735,7 +735,10 @@ describe("chatCompletion", () => {
   });
 });
 
-describe("composeImagePrompt", () => {
+// Stage one of planning a picture: the dialogue becomes ONE sentence saying what
+// the next picture shows. It is a caption a person reads and may correct — the
+// generator never sees it, so naming people is allowed here.
+describe("composePictureDescription", () => {
   const originalFetch = global.fetch;
 
   afterEach(() => {
@@ -749,10 +752,10 @@ describe("composeImagePrompt", () => {
   it("sends the dialogue and the numbered picture catalogue", async () => {
     const fetchMock = jest
       .fn()
-      .mockResolvedValue(jsonRes({ choices: [{ message: { content: '{"prompt": "a boat", "refs": [1]}' } }] }));
+      .mockResolvedValue(jsonRes({ choices: [{ message: { content: "A red boat on the calm lake at dusk." } }] }));
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    await textGenerationService.composeImagePrompt(model, {
+    const description = await textGenerationService.composePictureDescription(model, {
       scene: "Alice: the lake is calm tonight.\nCarol: [shares a picture: a red boat]",
       images: [
         { id: "chats/c/files/boat.png", description: "a red boat", age: "2 messages ago", origin: "uploaded" },
@@ -761,14 +764,115 @@ describe("composeImagePrompt", () => {
     });
     const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
     const body = asked(init.body);
-    expect(body.messages[0].content).toContain("JSON");
+    expect(body.messages[0].content).toContain("ONE sentence");
     expect(body.messages[1].content).toContain("Alice: the lake is calm tonight.");
     expect(body.messages[1].content).toContain("#1 — shows: a red boat; uploaded by the user; 2 messages ago");
     // Ownership is written in the id of the picture (whose folder it lives in),
     // never said to the model: a drawing does not care who owns a file.
     expect(body.messages[1].content).not.toContain("shared by");
     expect(body.messages[1].content).toContain("#2 — no description; generated from prompt: a harbour at dusk");
+    expect(description).toBe("A red boat on the calm lake at dusk.");
   });
+
+  it("says so when the conversation has no pictures", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(jsonRes({ choices: [{ message: { content: "Alice at her desk." } }] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await textGenerationService.composePictureDescription(model, { scene: "Alice: hi", images: [] });
+    const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
+    expect(asked(init.body).messages[1].content).toContain("no pictures to draw from");
+  });
+
+  it("names how many pictures the budget left out of the catalogue", async () => {
+    // The list the model is shown is not the whole library; a plan that reaches
+    // for a scene it never saw has to be a plan about the pictures it did see.
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(jsonRes({ choices: [{ message: { content: "Alice at the harbour." } }] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await textGenerationService.composePictureDescription(model, {
+      scene: "Alice: hi",
+      images: [{ id: "chats/c/last.png", description: "the harbour" }],
+      omittedPictures: 37,
+    });
+    const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
+    expect(asked(init.body).messages[1].content).toContain("(37 older pictures are not listed)");
+  });
+
+  // The sentence is the card's caption, so it is written in the language of the
+  // descriptions — and a model wraps a caption in quotes more often than it wraps
+  // a prompt, which the card would then show.
+  it("asks for the sentence in the language of the descriptions", async () => {
+    const fetchMock = jest.fn().mockResolvedValue(
+      jsonRes({
+        choices: [{ message: { content: '“Красная лодка на озере.”\n' } }],
+      }),
+    );
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const description = await textGenerationService.composePictureDescription(model, {
+      scene: "Alice: hi",
+      images: [],
+      language: "Russian",
+    });
+    const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
+    expect(asked(init.body).messages[0].content).toContain("ONE sentence in Russian");
+    expect(description).toBe("Красная лодка на озере.");
+  });
+
+  it("asks for English when no language is given", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(jsonRes({ choices: [{ message: { content: "A red boat on a lake." } }] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await textGenerationService.composePictureDescription(model, { scene: "Alice: hi", images: [] });
+    const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
+    expect(asked(init.body).messages[0].content).toContain("ONE sentence in English");
+  });
+
+  it("keeps the style of the conversation in the sentence", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(jsonRes({ choices: [{ message: { content: "A boat, in watercolour." } }] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await textGenerationService.composePictureDescription(model, {
+      scene: "Alice: hi",
+      images: [],
+      style: "watercolour, soft edges",
+    });
+    const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
+    expect(asked(init.body).messages[0].content).toContain("the style they share: watercolour, soft edges");
+  });
+
+  it("answers an empty string when the model says nothing", async () => {
+    const fetchMock = jest.fn().mockResolvedValue(jsonRes({ choices: [{ message: { content: "   " } }] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await expect(
+      textGenerationService.composePictureDescription(model, { scene: "…", images: [] }),
+    ).resolves.toBe("");
+  });
+});
+
+// Stage two: such a sentence — the user's own words (the 🎨 dialog), a character's
+// [IMAGE_BY_PROMPT] marker, or the answer of stage one — becomes the generator's
+// prompt and the reference set it is drawn from. The description may be in any
+// language and may name the people of the chat; the prompt may do neither.
+describe("composeImagePromptFromDescription", () => {
+  const originalFetch = global.fetch;
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  function asked(body: string) {
+    return JSON.parse(body) as { messages: Array<{ role: string; content: string }> };
+  }
 
   it("tells the model whose face a look reference carries, and never a name to draw", async () => {
     // The generator has never heard these people, so the plan is asked to write
@@ -779,8 +883,8 @@ describe("composeImagePrompt", () => {
       .mockResolvedValue(jsonRes({ choices: [{ message: { content: '{"prompt": "a boat", "refs": [2]}' } }] }));
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    await textGenerationService.composeImagePrompt(model, {
-      scene: "Alice: I row out alone.",
+    await textGenerationService.composeImagePromptFromDescription(model, {
+      description: "Alice rows out alone.",
       images: [
         { id: "chats/c/files/lake.png", description: "the lake at dawn", age: "the last message" },
         { id: "characters/alice/photos/photo1.jpg", role: "look", ofWho: "char:alice", shows: "Alice" },
@@ -796,61 +900,68 @@ describe("composeImagePrompt", () => {
     expect(body.messages[1].content).toContain("#2 — a look reference of Alice");
   });
 
-  it("says so when the conversation has no pictures to reference", async () => {
+  it("hands the description over as the thing to fulfil, not as a prompt", async () => {
     const fetchMock = jest
       .fn()
-      .mockResolvedValue(jsonRes({ choices: [{ message: { content: '{"prompt": "a boat", "refs": []}' } }] }));
+      .mockResolvedValue(jsonRes({ choices: [{ message: { content: '{"prompt": "a red fox", "refs": []}' } }] }));
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    const plan = await textGenerationService.composeImagePrompt(model, { scene: "Alice: hi", images: [] });
+    await textGenerationService.composeImagePromptFromDescription(model, {
+      description: "рыжая лиса у калитки её дома",
+      context: "Characters: Alice.\nThe conversation so far:\nAlice: come and see.",
+      images: [{ id: "characters/alice/photo1.jpg", role: "look", ofWho: "char:alice", shows: "Alice" }],
+      cast: [{ ref: "char:alice", name: "Alice", look: "a tall woman with short red hair", anchors: [1] }],
+    });
     const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
-    expect(asked(init.body).messages[1].content).toContain("no pictures to draw from");
-    expect(plan?.refs).toEqual([]);
+    const body = asked(init.body);
+    expect(body.messages[1].content).toContain("The picture to make, in words:\nрыжая лиса у калитки её дома");
+    // the dialogue comes along, so "her house" can be resolved
+    expect(body.messages[1].content).toContain("Alice: come and see.");
+    expect(body.messages[1].content).toContain("char:alice — Alice: a tall woman with short red hair (shown on picture 1)");
   });
 
-  // The plan's DESCRIPTION becomes the card's caption, so it is written in the
-  // language of the descriptions — while the prompt, the file name and the
-  // subject phrases stay English (the generator reads the prompt).
-  it("asks for the plan's description in the language of the descriptions and keeps the prompt English", async () => {
-    const fetchMock = jest.fn().mockResolvedValue(
-      jsonRes({
-        choices: [
-          {
-            message: {
-              content:
-                '{"name": "a red boat", "description": "Красная лодка на озере.", "prompt": "a red boat on a lake", "refs": []}',
-            },
-          },
-        ],
-      }),
-    );
+  it("asks for a prompt and no description: the sentence it was given is the caption", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(jsonRes({ choices: [{ message: { content: '{"prompt": "a fox", "refs": []}' } }] }));
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    const plan = await textGenerationService.composeImagePrompt(model, {
-      scene: "Alice: hi",
+    const plan = await textGenerationService.composeImagePromptFromDescription(model, {
+      description: "a fox",
       images: [],
-      language: "Russian",
     });
     const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
     const system = asked(init.body).messages[0].content;
-    expect(system).toContain("the description is in Russian");
-    expect(system).toContain("the name, the prompt and the subject phrases are in english");
-    expect(plan?.description).toBe("Красная лодка на озере.");
+    expect(system).not.toMatch(/"description"/);
+    expect(system).toContain("NEVER write a person's name in the prompt");
+    // Nothing to invent here: the subject is given, so the model is told to keep
+    // it rather than decorate the scene with people the description never mentioned.
+    expect(system).toContain("never a person, an event or an object it does not imply");
+    expect(plan?.description ?? "").toBe("");
   });
 
-  it("asks for an English description when no language is given", async () => {
+  it("puts a lone person's look reference first", async () => {
     const fetchMock = jest
       .fn()
-      .mockResolvedValue(jsonRes({ choices: [{ message: { content: '{"prompt": "a boat", "refs": []}' } }] }));
+      .mockResolvedValue(jsonRes({ choices: [{ message: { content: '{"prompt": "a woman at the window", "refs": [2]}' } }] }));
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    await textGenerationService.composeImagePrompt(model, { scene: "Alice: hi", images: [] });
+    await textGenerationService.composeImagePromptFromDescription(model, {
+      description: "Алиса у окна",
+      images: [
+        { id: "chats/c/harbour.png", description: "the harbour" },
+        { id: "characters/alice/photo1.jpg", role: "look", ofWho: "char:alice", shows: "Alice" },
+      ],
+      cast: [{ ref: "char:alice", name: "Alice", anchors: [2] }],
+      maxRefs: 2,
+    });
     const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
     const system = asked(init.body).messages[0].content;
-    expect(system).toContain("the description is in English");
+    expect(system).toMatch(/about ONE person[\s\S]*look reference goes first/i);
+    expect(system).toContain("at most 2 numbers");
   });
 
-  it("reads a plan wrapped in a code fence and prose, and keeps the name and description", async () => {
+  it("reads a plan wrapped in a code fence and prose, and keeps the name", async () => {
     const fetchMock = jest
       .fn()
       .mockResolvedValue(
@@ -859,7 +970,7 @@ describe("composeImagePrompt", () => {
             {
               message: {
                 content:
-                  'Here is my plan:\n```json\n{"name": "a red boat at dusk", "description": "a boat on a lake", "prompt": "a red boat on a calm lake at dusk", "refs": ["2"]}\n```\nHope it fits!',
+                  'Here is my plan:\n```json\n{"name": "a red boat at dusk", "prompt": "a red boat on a calm lake at dusk", "refs": ["2"]}\n```\nHope it fits!',
               },
             },
           ],
@@ -867,13 +978,13 @@ describe("composeImagePrompt", () => {
       );
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    const plan = await textGenerationService.composeImagePrompt(model, {
-      scene: "…",
+    const plan = await textGenerationService.composeImagePromptFromDescription(model, {
+      description: "a red boat at dusk",
       images: [{ id: "a.png" }, { id: "b.png" }],
     });
     expect(plan).toEqual({
       name: "a red boat at dusk",
-      description: "a boat on a lake",
+      description: "",
       prompt: "a red boat on a calm lake at dusk",
       refs: [2],
       cast: [],
@@ -901,8 +1012,8 @@ describe("composeImagePrompt", () => {
       );
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    const plan = await textGenerationService.composeImagePrompt(model, {
-      scene: "…",
+    const plan = await textGenerationService.composeImagePromptFromDescription(model, {
+      description: "Alice rows",
       images: [{ id: "a.png" }],
       cast: [{ ref: "char:alice", name: "Alice", anchors: [1] }],
     });
@@ -918,8 +1029,8 @@ describe("composeImagePrompt", () => {
       );
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    const plan = await textGenerationService.composeImagePrompt(model, {
-      scene: "…",
+    const plan = await textGenerationService.composeImagePromptFromDescription(model, {
+      description: "x",
       images: [{ id: "a.png" }, { id: "b.png" }],
     });
     expect(plan?.refs).toEqual([1]);
@@ -931,7 +1042,10 @@ describe("composeImagePrompt", () => {
       .mockResolvedValue(jsonRes({ choices: [{ message: { content: '{"prompt": "a snowy pine ridge", "refs": []}' } }] }));
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    const plan = await textGenerationService.composeImagePrompt(model, { scene: "…", images: [] });
+    const plan = await textGenerationService.composeImagePromptFromDescription(model, {
+      description: "a snowy pine ridge",
+      images: [],
+    });
     expect(plan?.name).toBe("a snowy pine ridge");
   });
 
@@ -941,7 +1055,9 @@ describe("composeImagePrompt", () => {
       .mockResolvedValue(jsonRes({ choices: [{ message: { content: "I would draw a boat, I think." } }] }));
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    await expect(textGenerationService.composeImagePrompt(model, { scene: "…", images: [] })).resolves.toBeNull();
+    await expect(
+      textGenerationService.composeImagePromptFromDescription(model, { description: "…", images: [] }),
+    ).resolves.toBeNull();
   });
 
   it("answers null when the plan has no prompt to draw", async () => {
@@ -949,122 +1065,21 @@ describe("composeImagePrompt", () => {
     global.fetch = fetchMock as unknown as typeof fetch;
 
     await expect(
-      textGenerationService.composeImagePrompt(model, { scene: "…", images: [{ id: "a.png" }] }),
+      textGenerationService.composeImagePromptFromDescription(model, {
+        description: "…",
+        images: [{ id: "a.png" }],
+      }),
     ).resolves.toBeNull();
   });
-});
 
-// The planner of a picture somebody asked for in their own words (the 🎨 dialog
-// and a character's [IMAGE_BY_PROMPT]). The request is not a prompt: it is the
-// picture's description, written by a person in whatever language they speak,
-// and it may name the people of the chat.
-describe("composeImagePromptFromRequest", () => {
-  const originalFetch = global.fetch;
-
-  afterEach(() => {
-    global.fetch = originalFetch;
-  });
-
-  function asked(body: string) {
-    return JSON.parse(body) as { messages: Array<{ role: string; content: string }> };
-  }
-
-  it("hands the request over as the thing to fulfil, not as a prompt", async () => {
-    const fetchMock = jest
-      .fn()
-      .mockResolvedValue(jsonRes({ choices: [{ message: { content: '{"prompt": "a red fox", "refs": []}' } }] }));
-    global.fetch = fetchMock as unknown as typeof fetch;
-
-    await textGenerationService.composeImagePromptFromRequest(model, {
-      request: "рыжая лиса у калитки её дома",
-      context: "Characters: Alice.\nThe conversation so far:\nAlice: come and see.",
-      images: [{ id: "characters/alice/photo1.jpg", role: "look", ofWho: "char:alice", shows: "Alice" }],
-      cast: [{ ref: "char:alice", name: "Alice", look: "a tall woman with short red hair", anchors: [1] }],
-    });
-    const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
-    const body = asked(init.body);
-    expect(body.messages[1].content).toContain("The picture to make, as it was asked for:\nрыжая лиса у калитки её дома");
-    // the dialogue comes along, so "her house" can be resolved
-    expect(body.messages[1].content).toContain("Alice: come and see.");
-    expect(body.messages[1].content).toContain("char:alice — Alice: a tall woman with short red hair (shown on picture 1)");
-  });
-
-  it("asks for a prompt and no description: the request itself is the caption", async () => {
-    const fetchMock = jest
-      .fn()
-      .mockResolvedValue(jsonRes({ choices: [{ message: { content: '{"prompt": "a fox", "refs": []}' } }] }));
-    global.fetch = fetchMock as unknown as typeof fetch;
-
-    const plan = await textGenerationService.composeImagePromptFromRequest(model, {
-      request: "a fox",
-      images: [],
-    });
-    const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
-    const system = asked(init.body).messages[0].content;
-    expect(system).not.toMatch(/"description"/);
-    expect(system).toContain("NEVER write a person's name in the prompt");
-    // Nothing to invent here: the subject is given, so the model is told to keep
-    // it rather than decorate the scene with people the request never mentioned.
-    expect(system).toContain("never a person, an event or an object the request does not imply");
-    expect(plan?.description ?? "").toBe("");
-  });
-
-  it("puts a lone person's look reference first", async () => {
-    const fetchMock = jest
-      .fn()
-      .mockResolvedValue(jsonRes({ choices: [{ message: { content: '{"prompt": "a woman at the window", "refs": [2]}' } }] }));
-    global.fetch = fetchMock as unknown as typeof fetch;
-
-    await textGenerationService.composeImagePromptFromRequest(model, {
-      request: "Алиса у окна",
-      images: [
-        { id: "chats/c/harbour.png", description: "the harbour" },
-        { id: "characters/alice/photo1.jpg", role: "look", ofWho: "char:alice", shows: "Alice" },
-      ],
-      cast: [{ ref: "char:alice", name: "Alice", anchors: [2] }],
-      maxRefs: 2,
-    });
-    const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
-    const system = asked(init.body).messages[0].content;
-    expect(system).toMatch(/about ONE person[\s\S]*look reference goes first/i);
-    expect(system).toContain("at most 2 numbers");
-  });
-
-  it("reads the plan and keeps the cast layer", async () => {
-    const fetchMock = jest.fn().mockResolvedValue(
-      jsonRes({
-        choices: [
-          {
-            message: {
-              content:
-                '```json\n{"name": "alice at the gate", "prompt": "the red-haired woman at a wooden gate", "refs": [1], "cast": ["char:alice"], "subjects": [{"id": "char:alice", "noun": "the red-haired woman"}]}\n```',
-            },
-          },
-        ],
-      }),
-    );
-    global.fetch = fetchMock as unknown as typeof fetch;
-
-    const plan = await textGenerationService.composeImagePromptFromRequest(model, {
-      request: "Алиса у калитки",
-      images: [{ id: "characters/alice/photo1.jpg" }],
-      cast: [{ ref: "char:alice", name: "Alice", anchors: [1] }],
-    });
-    expect(plan?.name).toBe("alice at the gate");
-    expect(plan?.prompt).toBe("the red-haired woman at a wooden gate");
-    expect(plan?.refs).toEqual([1]);
-    expect(plan?.cast).toEqual(["char:alice"]);
-    expect(plan?.subjects).toEqual([{ ref: "char:alice", noun: "the red-haired woman" }]);
-  });
-
-  it("says so when there is nothing to draw from, and answers null on prose", async () => {
+  it("says so when there is nothing to draw from", async () => {
     const fetchMock = jest
       .fn()
       .mockResolvedValue(jsonRes({ choices: [{ message: { content: "I would need a description." } }] }));
     global.fetch = fetchMock as unknown as typeof fetch;
 
     await expect(
-      textGenerationService.composeImagePromptFromRequest(model, { request: "что-нибудь", images: [] }),
+      textGenerationService.composeImagePromptFromDescription(model, { description: "что-нибудь", images: [] }),
     ).resolves.toBeNull();
     const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
     expect(asked(init.body).messages[1].content).toContain("no pictures to draw from");

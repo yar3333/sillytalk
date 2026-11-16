@@ -111,7 +111,6 @@ describe("renaming a character", () => {
     assistantLine(chat.id, "alice", "Hi there.");
     chats.addImageMessage(chats.get(chat.id)!, photo, {
       description: "alice at the window",
-      depicts: ["char:alice"],
     });
 
     entityIds.renameCharacter("alice", "lisa");
@@ -125,32 +124,29 @@ describe("renaming a character", () => {
     const card = after.messages[2];
     expect(card.images).toEqual(["characters/lisa/photos/photo1.jpg"]);
     expect(card.text).toBe("alice at the window");
-    expect(card.pictures?.["characters/lisa/photos/photo1.jpg"]?.depicts).toEqual(["char:lisa"]);
   });
 
-  it("follows the picture rows: the cast of her own pictures and the reference set of the ones drawn from them", () => {
+  it("follows the picture rows: her own pictures and the reference set of the ones drawn from them", () => {
     characters.save({ id: "alice", name: "Alice", description: "" });
     const photo = characterPhoto("alice", "photo1.jpg");
     const chat = chats.create(["alice"], "me");
     const drawn = chats.saveImage(chat.id, PNG, { nameHint: "alice-in-the-garden" });
-    meta.set(photo, { description: "alice in a green coat", depicts: ["char:alice"] });
+    meta.set(photo, { description: "alice in a green coat" });
     meta.set(drawn, {
       prompt: "the first reference image shows the woman in the green coat",
       refs: [photo],
-      depicts: ["char:alice"],
     });
 
     entityIds.renameCharacter("alice", "heroine");
 
     const moved = "characters/heroine/photos/photo1.jpg";
     expect(meta.get(photo)).toBeNull();
-    expect(meta.get(moved)).toMatchObject({ description: "alice in a green coat", depicts: ["char:heroine"] });
+    expect(meta.get(moved)).toMatchObject({ description: "alice in a green coat" });
     // the drawn picture keeps its own id (it lives in the chat) and follows the
-    // reference and the cast; its prompt text is the user's wording and stays
+    // reference; its prompt text is the user's wording and stays
     expect(meta.get(drawn)).toMatchObject({
       prompt: "the first reference image shows the woman in the green coat",
       refs: [moved],
-      depicts: ["char:heroine"],
     });
   });
 
@@ -171,7 +167,7 @@ describe("renaming a character", () => {
   it("renaming to the same ID does nothing and breaks nothing", () => {
     characters.save({ id: "alice", name: "Alice", description: "" });
     const photo = characterPhoto("alice", "photo1.jpg");
-    meta.set(photo, { description: "alice", depicts: ["char:alice"] });
+    meta.set(photo, { description: "alice" });
 
     entityIds.renameCharacter("alice", "alice");
 
@@ -232,7 +228,6 @@ describe("renaming a persona", () => {
     chats.addUserMessage(chat, "this is me");
     chats.addImageMessage(chats.get(chat.id)!, avatar, {
       description: "carol at the door",
-      depicts: ["user:carol"],
     });
 
     entityIds.renamePerson("carol", "karin");
@@ -243,26 +238,10 @@ describe("renaming a persona", () => {
     const card = after.messages[1];
     expect(card.images).toEqual(["users/karin/avatar.jpg"]);
     expect(card.text).toBe("carol at the door");
-    expect(card.pictures?.["users/karin/avatar.jpg"]?.depicts).toEqual(["user:karin"]);
-    // The card names nobody, and there is nothing left to rewrite: it is the
-    // PICTURE that belongs to the persona (its id is a path under users/<id>/)
-    // and the cast note that says whose face is on it — both follow the rename.
+    // The card names nobody: it is the PICTURE that belongs to the persona (its
+    // id is a path under users/<id>/), and that path follows the rename.
     expect(persons.get("karin")).toMatchObject({ name: "Carol" });
     expect(persons.get("carol")).toBeNull();
-  });
-
-  it("rewrites the cast of the pictures that name her, and not the characters of the same ID", () => {
-    characters.save({ id: "sam", name: "Sam", description: "" });
-    persons.save({ id: "carol", name: "Carol", description: "" });
-    const photo = characterPhoto("sam", "photo1.jpg");
-    meta.set(photo, { description: "the two of them", depicts: ["char:sam", "user:carol"] });
-
-    entityIds.renamePerson("carol", "katrin");
-
-    expect(meta.get("characters/sam/photos/photo1.jpg")).toMatchObject({
-      depicts: ["char:sam", "user:katrin"],
-    });
-    expect(characters.get("sam")).toMatchObject({ name: "Sam" });
   });
 
   it("refuses an ID that another persona already has", () => {

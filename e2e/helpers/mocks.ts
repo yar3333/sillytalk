@@ -13,10 +13,13 @@ import zlib from 'zlib';
 // text, which is how a test makes a character END ITS LINE with a picture
 // marker — [IMAGE_BY_ID …] / [IMAGE_BY_PROMPT …]. The side calls of the pipeline
 // are answered by their own branches: the prompt translation ("Translate …"),
-// the two picture planners — the user's-turn one ("You plan one picture …") and
-// the one of a hand-written request ("You turn a hand-written request …", the
-// 🎨 dialog and the [IMAGE_BY_PROMPT] marker) — both getting the strict JSON plan
-// the service parses, plus the editor's "Make it English" and "Describe the
+// the TWO stages a picture is planned in — stage one, where the model says what
+// the next picture of the conversation should show ("You decide what picture …",
+// the 📷 button), and stage two, where a description becomes the generator's
+// prompt plus its reference set ("You turn a description of one picture …", used
+// by 📷, the 🎨 dialog, the [IMAGE_BY_PROMPT] marker and the editor's "Prompt and
+// references") — the second getting the strict JSON plan the service parses,
+// plus the editor's "Make it English" and "Describe the
 // picture".
 //
 // The mock ComfyUI server speaks the part of the API the app uses — the
@@ -91,15 +94,23 @@ export interface MockLlm {
   baseUrl: string;
   port: number;
   setDelay(ms: number): Promise<void>;
+  // Stage two: the plan a description is turned into (the prompt, the reference
+  // numbers, the cast). null = the model answers with prose, which the app has
+  // to survive as a broken picture.
   setImagePlan(plan: MockImagePlan | null): Promise<void>;
-  // What the picture-planning call last asked for (null — none yet): the system
-  // prompt and the user text, so a test can see what the model was told about
-  // the people and the pictures of the chat.
+  // Stage one: the sentence the model says the next picture of the conversation
+  // should show — it becomes that picture's caption. null = it says nothing,
+  // which is the other way a 📷 card can break.
+  setPictureDescription(text: string | null): Promise<void>;
+  // What the stage-two call last asked for (null — none yet): the system prompt
+  // and the user text, so a test can see what the model was told about the
+  // people and the pictures of the chat. One call serves the 📷 button, the 🎨
+  // dialog, a character's [IMAGE_BY_PROMPT] marker and the editor's "Prompt and
+  // references" — the description is the only thing that differs.
   lastPlanRequest(): { system: string; text: string } | null;
-  // The same for the planner of a hand-written picture request (the 🎨 dialog
-  // and the [IMAGE_BY_PROMPT] marker of a character) — what the model was told
-  // about the request, the dialogue and the people in it.
-  lastRequestPlanRequest(): { system: string; text: string } | null;
+  // The same for stage one: what the model was shown when it had to decide what
+  // the next picture should be about.
+  lastDescriptionRequest(): { system: string; text: string } | null;
   close(): void;
 }
 
@@ -124,6 +135,10 @@ const DEFAULT_IMAGE_PLAN: MockImagePlan = {
   cast: [],
   subjects: [],
 };
+
+// What stage one says by default. It is the picture's CAPTION, so a test that
+// cares about the caption sets its own sentence and reads it back in the card.
+const DEFAULT_PICTURE_DESCRIPTION = 'A red circle on a white background';
 
 // When set, the mock calls it for a normal (non-translate, non-planning) reply
 // and uses the returned text (when not null) instead of the default "Mock
@@ -151,8 +166,10 @@ export async function startMockLlm(
   // + the dialogue/pictures/cast it was given) — a test reads it to check what
   // the model was actually told.
   let planRequest: { system: string; text: string } | null = null;
-  // The same for the planner of a hand-written request (🎨 / [IMAGE_BY_PROMPT]).
-  let requestPlanRequest: { system: string; text: string } | null = null;
+  // Stage one: the same for the call that decides WHAT the next picture of the
+  // conversation should show, and the sentence it answers with (the caption).
+  let descriptionRequest: { system: string; text: string } | null = null;
+  let pictureDescription: string | null = DEFAULT_PICTURE_DESCRIPTION;
   const responder = opts.customReplies;
   const server = http.createServer((req, res) => {
     let body = '';
@@ -182,22 +199,22 @@ export async function startMockLlm(
           if (/fail/i.test(text)) content = 'mock failure requested';
           else if (/slow/i.test(text)) content = 'a slow scenic painting';
           else content = 'a red circle on a white background';
-        } else if (system.startsWith('You plan one picture')) {
-          // composeImagePrompt: the JSON plan of the user's-turn picture. null
-          // means the model "refused" — it answers with prose instead, which
+        } else if (system.startsWith('You decide what picture')) {
+          // Stage one of the 📷 picture: the model reads the dialogue and the
+          // catalogue and says what the next picture should show. The answer is
+          // the picture's caption, so a test that wants to read it back sets its
+          // own sentence; null makes the model say nothing, which the app has to
+          // turn into a broken card instead of a pending one.
+          descriptionRequest = { system, text };
+          content = pictureDescription ?? '';
+        } else if (system.startsWith('You turn a description of one picture')) {
+          // Stage two: a description becomes the generator's prompt plus the
+          // pictures it draws the faces and places from. One branch serves the
+          // 📷 button, the 🎨 dialog, a character's [IMAGE_BY_PROMPT] marker and
+          // the editor's "Prompt and references" — they all ask the same thing.
+          // null means the model "refused" — it answers with prose instead, which
           // the backend has to survive.
           planRequest = { system, text };
-          content = imagePlan
-            ? JSON.stringify(imagePlan)
-            : 'I am not sure what to draw here, sorry.';
-        } else if (system.startsWith('You turn a hand-written request')) {
-          // composeImagePromptFromRequest: the planner of a picture someone
-          // ASKED FOR in their own words — the 🎨 dialog of the user and the
-          // [IMAGE_BY_PROMPT] marker of a character. It reads the request, the
-          // dialogue around it, the cast and the pictures of the chat, and it
-          // answers with the same JSON shape (its caption is the request
-          // itself, so the plan's description is not used).
-          requestPlanRequest = { system, text };
           content = imagePlan
             ? JSON.stringify(imagePlan)
             : 'I am not sure what to draw here, sorry.';
@@ -237,11 +254,15 @@ export async function startMockLlm(
       imagePlan = plan ? { ...DEFAULT_IMAGE_PLAN, ...plan } : null;
       return Promise.resolve();
     },
+    setPictureDescription(text: string | null) {
+      pictureDescription = text;
+      return Promise.resolve();
+    },
     lastPlanRequest() {
       return planRequest;
     },
-    lastRequestPlanRequest() {
-      return requestPlanRequest;
+    lastDescriptionRequest() {
+      return descriptionRequest;
     },
     close() {
       server.close();

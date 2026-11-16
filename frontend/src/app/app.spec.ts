@@ -1240,7 +1240,8 @@ describe('PictureDialog — the picture editor', () => {
   let replaced: Array<{ chatId: string; messageId: string; image: string; data: string }>;
   let described: Array<{ chatId: string; image?: string; data?: string }>;
   let tuned: Array<{ chatId: string; prompt: string }>;
-  let planned: Array<{ chatId: string; messageId?: string }>;
+  let planned: Array<{ chatId: string; description: string; messageId?: string }>;
+  let fromChat: Array<{ chatId: string; messageId?: string }>;
   let chat: Chat;
 
   // A line whose one picture is the editor's target. The words the dialog edits
@@ -1257,7 +1258,7 @@ describe('PictureDialog — the picture editor', () => {
       text: description,
       images: [cardImage],
       pictures: {
-        [cardImage]: { description, generation, ...(facts.depicts ? { depicts: facts.depicts } : {}) },
+        [cardImage]: { description, generation },
       },
       timestamp: 2,
       ...over,
@@ -1276,13 +1277,17 @@ describe('PictureDialog — the picture editor', () => {
             { id: otherImage, exists: true },
           ],
         }),
-      composePicturePrompt: (chatId: string, messageId?: string) => {
-        planned.push({ chatId, messageId });
+      describePictureFromChat: (chatId: string, messageId?: string) => {
+        fromChat.push({ chatId, messageId });
+        return Promise.resolve({ description: 'an idea the model took from the dialogue' });
+      },
+      composePromptFromDescription: (chatId: string, description: string, messageId?: string) => {
+        planned.push({ chatId, description, messageId });
         return Promise.resolve({
           prompt: 'a planned prompt',
-          description: 'a planned description',
           // the plan names these pictures in order, so they belong to the prompt
           refs: ['chat-1/the-fox-face-9f8e7d.png'],
+          name: 'a fox at the shore',
         });
       },
       tunePicturePrompt: (chatId: string, prompt: string) => {
@@ -1347,6 +1352,7 @@ describe('PictureDialog — the picture editor', () => {
     described = [];
     tuned = [];
     planned = [];
+    fromChat = [];
   });
 
   it('a generated card opens in "generated" with its prompt and description, and Save keeps it generated', async () => {
@@ -1375,15 +1381,38 @@ describe('PictureDialog — the picture editor', () => {
     expect(TestBed.inject(ImageStore).pictureEdit()).toBeNull();
   });
 
-  it('"From the chat" writes the prompt from the dialogue; "Make it English" rewrites it', async () => {
+  it('the description field comes before the prompt: the idea, then what draws it', async () => {
     const { el } = await render(card());
-    (el.querySelector('[data-testid=picture-prompt-from-chat]') as HTMLButtonElement).click();
+    const order = [...el.querySelectorAll('[data-testid=picture-description], [data-testid=picture-prompt]')];
+    expect(order.map((n) => n.getAttribute('data-testid'))).toEqual(['picture-description', 'picture-prompt']);
+  });
+
+  it('"From the chat" writes the IDEA of the picture, not its prompt', async () => {
+    const { el } = await render(card());
+    (el.querySelector('[data-testid=picture-description-from-chat]') as HTMLButtonElement).click();
     await tick();
     await tick();
-    expect(planned).toEqual([{ chatId: 'chat-1', messageId: 'card-1' }]);
-    const prompt = el.querySelector('[data-testid=picture-prompt]') as HTMLTextAreaElement;
-    expect(prompt.value).toBe('a planned prompt');
-    // the description was already there — the plan's own does not overwrite it
+    expect(fromChat).toEqual([{ chatId: 'chat-1', messageId: 'card-1' }]);
+    expect((el.querySelector('[data-testid=picture-description]') as HTMLTextAreaElement).value).toBe(
+      'an idea the model took from the dialogue',
+    );
+    // the generator's prompt is a different thing and a different call — the
+    // dialogue does not become it directly
+    expect(planned).toEqual([]);
+    expect((el.querySelector('[data-testid=picture-prompt]') as HTMLTextAreaElement).value).toBe('a red fox');
+  });
+
+  it('"Prompt and references" turns the description into the prompt it draws from', async () => {
+    const { el } = await render(card());
+    (el.querySelector('[data-testid=picture-prompt-from-description]') as HTMLButtonElement).click();
+    await tick();
+    await tick();
+    // the sentence the field holds is the input of the call, as the user wrote it
+    expect(planned).toEqual([{ chatId: 'chat-1', description: 'a fox in the snow', messageId: 'card-1' }]);
+    expect((el.querySelector('[data-testid=picture-prompt]') as HTMLTextAreaElement).value).toBe(
+      'a planned prompt',
+    );
+    // the idea stays what it was — the user may still correct it
     expect((el.querySelector('[data-testid=picture-description]') as HTMLTextAreaElement).value).toBe(
       'a fox in the snow',
     );
@@ -1392,7 +1421,19 @@ describe('PictureDialog — the picture editor', () => {
     await tick();
     await tick();
     expect(tuned).toEqual([{ chatId: 'chat-1', prompt: 'a planned prompt' }]);
-    expect(prompt.value).toBe('a tuned english prompt');
+    expect((el.querySelector('[data-testid=picture-prompt]') as HTMLTextAreaElement).value).toBe(
+      'a tuned english prompt',
+    );
+  });
+
+  it('there is nothing to turn into a prompt while the description is empty', async () => {
+    const { el } = await render(card({ description: '' }));
+    expect((el.querySelector('[data-testid=picture-prompt-from-description]') as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    (el.querySelector('[data-testid=picture-prompt-from-description]') as HTMLButtonElement).click();
+    await tick();
+    expect(planned).toEqual([]);
   });
 
   it('"Describe the picture" asks the model about the card picture', async () => {
@@ -1406,10 +1447,10 @@ describe('PictureDialog — the picture editor', () => {
     );
   });
 
-  it('"From the chat" also hands over the pictures its prompt names, and Save keeps them with it', async () => {
+  it('"Prompt and references" also hands over the pictures its prompt names, and Save keeps them with it', async () => {
     const face = 'chat-1/the-fox-face-9f8e7d.png';
     const { fixture, el } = await render(card());
-    (el.querySelector('[data-testid=picture-prompt-from-chat]') as HTMLButtonElement).click();
+    (el.querySelector('[data-testid=picture-prompt-from-description]') as HTMLButtonElement).click();
     await tick();
     await tick();
     fixture.detectChanges();
@@ -1438,28 +1479,21 @@ describe('PictureDialog — the picture editor', () => {
     ]);
   });
 
-  it('the "who is on this picture" chips say who the next picture may draw', async () => {
-    const { fixture, el } = await render(card({ depicts: ['char:c1'] }));
-    const config = TestBed.inject(ConfigStore);
-    config.characters.set([{ id: 'c1', name: 'Alice', description: '' }]);
-    config.users.set([{ id: 'u1', name: 'Carol', description: '' }]);
+  it('the dialog offers no "who is on this picture" control — the picture says it itself', async () => {
+    const { fixture, el } = await render(card({ description: 'Alice holds a red fox in the snow' }));
     fixture.detectChanges();
+    // Who a picture shows reads off the picture itself — whose folder it lives
+    // in and what its description says — so the editor offers no chips for it
+    // and Save has nothing to say about it.
+    expect(el.querySelectorAll('[data-testid=picture-depicts]')).toHaveLength(0);
 
-    const chips = [...el.querySelectorAll('[data-testid=picture-depicts]')] as HTMLButtonElement[];
-    expect(chips.map((c) => c.textContent?.trim())).toEqual(['Alice', 'Carol']);
-    // the card already says Alice; nobody else is on it
-    expect(chips.map((c) => c.classList.contains('on'))).toEqual([true, false]);
-
-    chips[1].click();
-    fixture.detectChanges();
     (el.querySelector('[data-testid=picture-save]') as HTMLButtonElement).click();
     await tick();
-
-    expect(patched[0]?.patch).toMatchObject({ depicts: ['char:c1', 'user:u1'] });
+    expect(patched[0]?.patch).not.toHaveProperty('depicts');
   });
 
-  it('a picture nobody touched is saved without touching its people or its references', async () => {
-    const { fixture, el } = await render(card({ depicts: ['char:c1'], generation: { prompt: 'a red fox', source: 'auto', refs: [otherImage] } }));
+  it('a picture nobody touched is saved without touching its references', async () => {
+    const { fixture, el } = await render(card({ generation: { prompt: 'a red fox', source: 'auto', refs: [otherImage] } }));
     fixture.detectChanges();
     (el.querySelector('[data-testid=picture-save]') as HTMLButtonElement).click();
     await tick();
@@ -1580,6 +1614,7 @@ describe('PictureLibrary — the picture browser', () => {
   let edited: { id: string; patch: Record<string, unknown> }[];
   let renamed: { id: string; newId: string }[];
   let forgotten: string[];
+  let deleted: string[];
   let describeCalls: { chatId: string; image?: string; data?: string }[];
   let renameFails: string | null;
   let reloadedChats: number;
@@ -1608,6 +1643,12 @@ describe('PictureLibrary — the picture browser', () => {
         forgotten.push(id);
         listed = listed.filter((p) => p.id !== id);
         return Promise.resolve({ forgotten: id });
+      },
+      deletePictureFile: (id: string) => {
+        deleted.push(id);
+        // the server keeps the row and loses the file — which is the whole point
+        listed = listed.map((p) => (p.id === id ? { ...p, exists: false } : p));
+        return Promise.resolve({ deleted: id });
       },
       describePicture: (chatId: string, body: { image?: string; data?: string }) => {
         describeCalls.push({ chatId, ...body });
@@ -1657,6 +1698,7 @@ describe('PictureLibrary — the picture browser', () => {
     edited = [];
     renamed = [];
     forgotten = [];
+    deleted = [];
     describeCalls = [];
     renameFails = null;
     reloadedChats = 0;
@@ -2057,6 +2099,37 @@ describe('PictureLibrary — the picture browser', () => {
     // the row is gone from the catalog and the selection moved to a picture
     expect(TestBed.inject(PictureLibraryStore).pictures().some((p) => p.id === lost)).toBe(false);
     expect(TestBed.inject(PictureLibraryStore).selectedId()).toBe(boat);
+  });
+
+  it('deleting the FILE keeps the record — the words outlive the pixels', async () => {
+    const { fixture, el } = await render();
+    // the boat has a file, so this is the button that removes it; "Forget
+    // record" is not offered while there is something to keep
+    expect(el.querySelector('[data-testid=picture-forget]')).toBeNull();
+    const del = el.querySelector('[data-testid=picture-delete-file]') as HTMLButtonElement;
+    expect(del).not.toBeNull();
+
+    // armed by the first click, like every irreversible action here
+    del.click();
+    await tick();
+    fixture.detectChanges();
+    expect(deleted).toEqual([]);
+    expect(del.classList.contains('armed')).toBe(true);
+    expect(del.textContent).toContain('Click again');
+
+    del.click();
+    await tick();
+    fixture.detectChanges();
+
+    expect(deleted).toEqual([boat]);
+    const store = TestBed.inject(PictureLibraryStore);
+    // the picture is still in the list and still selected — only its file is
+    // gone, so the row is the orphan the browser already knows how to show
+    expect(store.pictures().some((p) => p.id === boat)).toBe(true);
+    expect(store.pictures().find((p) => p.id === boat)?.exists).toBe(false);
+    expect(store.selectedId()).toBe(boat);
+    // and the other half of the removal is what the orphan offers now
+    expect(el.querySelector('[data-testid=picture-forget]')).not.toBeNull();
   });
 
   // The library's own "Describe the picture": the chat's vision model looks at

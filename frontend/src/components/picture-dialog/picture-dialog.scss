@@ -169,33 +169,6 @@ textarea {
     }
   }
 
-  /* the "who is on this picture" toggles */
-  .chips {
-    display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
-    margin-top: 2px;
-
-    .chip {
-      background: var(--panel-2);
-      border: 1px solid var(--border);
-      border-radius: 999px;
-      color: var(--text);
-      font-size: 12px;
-      padding: 4px 10px;
-      cursor: pointer;
-
-      &:hover {
-        border-color: var(--accent);
-      }
-
-      &.on {
-        border-color: var(--accent);
-        background: rgba(79, 140, 255, 0.14);
-      }
-    }
-  }
-
   .dialog-hint {
     color: var(--fg-dim, #888);
     font-size: 12px;

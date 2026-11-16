@@ -17,8 +17,6 @@ export const DI_ENTITY_ID_SERVICE = createToken<EntityIdService>("EntityIdServic
 type EntityTarget = {
   kind: "character" | "person";
   word: string;
-  // The prefix a cast ref of this kind carries ("char:alice" / "user:carol").
-  cast: "char" | "user";
   dir: (id: string) => string;
   isValid: (id: string) => boolean;
   // Whether the catalog has such an entity — the row of the catalogs table is
@@ -40,8 +38,7 @@ type EntityTarget = {
 //   chats: Chat.characterIds, Chat.userId, the characterId/userId of every line
 //   picture ids: characters/<id>/photos/x.jpg, users/<id>/avatar.jpg — the very
 //                primary keys of the images table and the ids the cards point at
-//   picture rows: their refs (a saved prompt's reference set) and their depicts
-//                (the cast refs "char:<id>" / "user:<id>")
+//   picture rows: their refs (a saved prompt's reference set)
 // So renaming one is not editing a field: it is a move whose trail every one of
 // those has to pick up, or the old lines of a chat lose their author, a card
 // loses its file and the next picture of the same woman is drawn with a new
@@ -106,7 +103,6 @@ export class EntityIdService {
       target.repointAvatar(oldId, nextId);
     }
     this.chats.repointAuthor(target.kind, id, newId);
-    this.imageMeta.repointDepicts(`${target.cast}:${id}`, `${target.cast}:${newId}`);
   }
 
   // Every picture id the old folder addressed: the files in it (a starter-set
@@ -151,7 +147,6 @@ export class EntityIdService {
     return {
       kind: "character",
       word: "character",
-      cast: "char",
       dir: (id) => PathHelper.characterDir(id),
       isValid: (id) => service.isValidId(id),
       exists: (id) => service.get(id) !== null,
@@ -165,7 +160,6 @@ export class EntityIdService {
     return {
       kind: "person",
       word: "persona",
-      cast: "user",
       dir: (id) => PathHelper.personDir(id),
       isValid: (id) => service.isValidId(id),
       exists: (id) => service.get(id) !== null,

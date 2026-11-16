@@ -5,9 +5,9 @@
 // One of these is one ROW of the global images table (images/ImageMetaService.ts),
 // keyed by the image id — the path of the picture relative to the data folder.
 // The table is the one source of this data: an image card of a chat reads its
-// caption, its prompt and its cast from there, so a card and its picture cannot
-// drift apart. (The *.json sidecar files this used to live in are the old
-// format: not supported, not read and not migrated.)
+// caption and its prompt from there, so a card and its picture cannot drift
+// apart. (The *.json sidecar files this used to live in are the old format: not
+// supported, not read and not migrated.)
 //
 // The type is also the patch shape the writers hand to the service, which is
 // why it stays open at the bottom: a field given as `undefined` removes that
@@ -32,10 +32,6 @@ export type ImageMeta = {
   // How the image got here: uploaded by the user, drawn on request (the 🎨
   // mode), or drawn automatically for the user's turn.
   source?: "upload" | "manual" | "auto";
-  // Who is visible on the picture: cast refs ("char:alice", "user:carol") of
-  // the people in it. The picture planner offers such a picture as the look
-  // reference of those people, so the next one keeps the same face.
-  depicts?: string[];
   // The generator that produced it (the driver key: an SD API URL or a
   // ComfyUI server + model) and the model that wrote the prompt (an llmModels
   // key).

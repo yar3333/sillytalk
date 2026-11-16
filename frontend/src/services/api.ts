@@ -160,18 +160,16 @@ export interface ChatMessage {
   imageErrors?: Record<string, string>;
 }
 
-// What the app knows about ONE picture of a message. All three fields are the
+// What the app knows about ONE picture of a message. Both fields are the
 // picture's row of the global images table; the message only names the picture
 // by its id.
 export interface PictureFacts {
   // What is visible on it — the caption under the picture, and the sentence a
-  // model without vision is told in place of it.
+  // model without vision is told in place of it. Who is on the picture is part
+  // of this sentence, together with the folder its id names.
   description?: string;
   // How it was made (absent for a file somebody brought).
   generation?: ImageGenerationData;
-  // Who is ON the picture ("char:alice", "user:carol") — content, not
-  // ownership: it is what keeps the same face in the next picture.
-  depicts?: string[];
 }
 
 // How a picture was made: the prompt it was drawn from, the pictures it was
@@ -202,7 +200,6 @@ export interface ImageGenerationData {
 export interface Picture extends ImageGenerationData {
   id: string;
   description?: string;
-  depicts?: string[];
   exists: boolean;
   // When the file was last written (ms) — the browser's order.
   modifiedAt?: number;
@@ -491,7 +488,6 @@ export class ApiService {
       repointTo?: string;
       kind?: 'generated' | 'file';
       refs?: string[];
-      depicts?: string[];
     },
   ): Promise<{ chat: Chat }> {
     return this.req('/chats/' + chatId + '/messages/' + messageId + '/picture', {
@@ -509,12 +505,12 @@ export class ApiService {
   }
 
   // Edits what the images table says about a picture, wherever it came from:
-  // the description, the prompt and its references, the cast on it. A card of
+  // the description, the prompt and its references. A card of
   // any chat that shows this picture reads the change on its next poll, because
   // the card is the row.
   editPicture(
     id: string,
-    patch: { description?: string; prompt?: string; refs?: string[]; depicts?: string[] },
+    patch: { description?: string; prompt?: string; refs?: string[] },
   ): Promise<{ picture: Picture }> {
     return this.req<{ picture: Picture }>('/pictures', {
       method: 'PATCH',
@@ -533,9 +529,9 @@ export class ApiService {
     });
   }
 
-  // Drops the record of a picture whose file is gone. The one delete the browser
-  // has: the app never removes a picture file, so a picture that still exists
-  // comes back as a 400 with the reason instead of losing its caption.
+  // Drops the record of a picture whose file is gone. The record half of what
+  // the browser can delete: the app never clears the words of a picture that is
+  // still there, so such a picture comes back as a 400 with the reason.
   forgetPicture(id: string): Promise<{ forgotten: string }> {
     return this.req<{ forgotten: string }>('/pictures', {
       method: 'DELETE',
@@ -543,16 +539,39 @@ export class ApiService {
     });
   }
 
-  // The prompt for a picture card, planned from the dialogue ("From the chat").
-  // The references come back with it: the prompt says what each of them is for,
-  // so saving one without the others would redraw something else.
-  composePicturePrompt(
-    chatId: string,
-    messageId?: string,
-  ): Promise<{ prompt: string; description: string; refs: string[] }> {
-    return this.req<{ prompt: string; description: string; refs: string[] }>('/image/prompt', {
+  // Removes the FILE of a picture and keeps its record: the description, the
+  // prompt and the references stay in the images table, so the words of the
+  // picture outlive the file and can be attached to another one later. The
+  // record of a picture that has no file comes back as a 404.
+  deletePictureFile(id: string): Promise<{ deleted: string }> {
+    return this.req<{ deleted: string }>('/pictures/delete-file', {
+      method: 'POST',
+      body: JSON.stringify({ id }),
+    });
+  }
+
+  // What the next picture of this chat should show, in one sentence — stage one
+  // of the "From the chat" button of the DESCRIPTION field. A caption, not a
+  // prompt: the user reads it, may rewrite it, and only then asks for the prompt.
+  describePictureFromChat(chatId: string, messageId?: string): Promise<{ description: string }> {
+    return this.req<{ description: string }>('/image/describe-from-chat', {
       method: 'POST',
       body: JSON.stringify({ chatId, messageId }),
+    });
+  }
+
+  // The prompt and the reference pictures of one picture, planned from its
+  // description — stage two. The references come back with the prompt: it says
+  // what each of them is for, so saving one without the others would redraw
+  // something else.
+  composePromptFromDescription(
+    chatId: string,
+    description: string,
+    messageId?: string,
+  ): Promise<{ prompt: string; refs: string[]; name: string }> {
+    return this.req<{ prompt: string; refs: string[]; name: string }>('/image/prompt-from-description', {
+      method: 'POST',
+      body: JSON.stringify({ chatId, description, messageId }),
     });
   }
 

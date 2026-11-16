@@ -152,6 +152,24 @@ export class PictureLibraryStore {
       .catch((e) => this.ui.error.set(String((e as Error).message)));
   }
 
+  // Removes the FILE of the selected picture and keeps its record — the words of
+  // a picture can be worth more than its pixels, and this is how a user throws
+  // the file away without losing them: the row stays (the browser shows it as the
+  // orphan it now is), the description and prompt stay editable, and Rename can
+  // point them at another file later. The selection stays on the picture the user
+  // was working with; only the bytes under that path are gone.
+  deletePictureFile(): void {
+    const id = this.selectedId();
+    if (!id) return;
+    this.api
+      .deletePictureFile(id)
+      .then(() => {
+        this.refresh();
+        this.refreshCurrentChat();
+      })
+      .catch((e) => this.ui.error.set(String((e as Error).message)));
+  }
+
   private replace(picture: Picture): void {
     this.pictures.update((list) => {
       const index = list.findIndex((p) => p.id === picture.id);

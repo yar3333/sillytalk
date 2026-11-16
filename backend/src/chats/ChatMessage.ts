@@ -32,23 +32,19 @@ export type ImageGenerationData = {
 //             folder — which is what the id of the picture says out loud.
 export type MessageKind = "text" | "image";
 
-// What the app knows about ONE picture of a message: its caption, what it was
-// drawn from, and who is on it. All of it is the picture's row of the global
+// What the app knows about ONE picture of a message: its caption and what it
+// was drawn from. All of it is the picture's row of the global
 // images table — the message only names the picture by its id, so a picture
 // shown inside a line and a picture of a card are described by exactly one
 // shape and one source.
 export type PictureFacts = {
   // What is visible on the picture — the caption under it, the sentence a model
-  // without vision is told in place of the picture.
+  // without vision is told in place of the picture. Who is on the picture is
+  // part of this sentence, together with the folder its id names.
   description?: string;
   // How it was made (absent for a file the user brought — an upload has no
   // prompt of its own).
   generation?: ImageGenerationData;
-  // Who is ON the picture: the cast refs of the people visible in it
-  // ("char:alice", "user:carol"). The next picture of the same person is drawn
-  // from this one, which is what keeps a face the same from picture to picture;
-  // an upload can carry it too (the user says who is in their photo).
-  depicts?: string[];
 };
 
 export type ChatMessage = {

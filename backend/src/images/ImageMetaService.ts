@@ -19,7 +19,6 @@ const COLUMNS = [
   "prompt",
   "negative_prompt",
   "refs",
-  "depicts",
   "source",
   "generator",
   "model",
@@ -44,7 +43,6 @@ const FIELD_TO_COLUMN: Record<string, Column> = {
   prompt: "prompt",
   negativePrompt: "negative_prompt",
   refs: "refs",
-  depicts: "depicts",
   source: "source",
   generator: "generator",
   model: "model",
@@ -61,7 +59,7 @@ const FIELD_TO_COLUMN: Record<string, Column> = {
 // The image metadata database: the ONE place what is known about a picture is
 // stored. Every picture of the data folder can have a row, whatever brought it
 // here (a chat card, a character photo, a file the user dropped into a folder),
-// and an image card of a chat reads its caption, its prompt and its cast from
+// and an image card of a chat reads its caption and its prompt from
 // this table rather than from a copy of its own — so the card and the picture
 // cannot drift apart.
 //
@@ -106,7 +104,6 @@ export class ImageMetaService {
         prompt          TEXT,
         negative_prompt TEXT,
         refs            TEXT,
-        depicts         TEXT,
         source          TEXT,
         generator       TEXT,
         model           TEXT,
@@ -261,10 +258,10 @@ export class ImageMetaService {
   // to the picture, not to its file name. Missing source row — nothing to move.
   //
   // A target that already HAS a row is refused rather than merged into: the row
-  // of one picture (its caption, its cast, the faces on it) must never become
-  // part of another picture's row. Every caller moves into a folder or a name it
-  // has just proven free; this is the backstop that keeps a hand-edited table or
-  // a future caller from silently fusing two pictures.
+  // of one picture (its caption, its prompt, the references it was drawn from)
+  // must never become part of another picture's row. Every caller moves into a
+  // folder or a name it has just proven free; this is the backstop that keeps a
+  // hand-edited table or a future caller from silently fusing two pictures.
   move(fromId: string, toId: string): ImageMeta | null {
     const meta = this.get(fromId);
     if (!meta) return null;
@@ -321,14 +318,6 @@ export class ImageMetaService {
     this.repointList("refs", pairs);
   }
 
-  // Points every picture's cast at a person that got a new ID: a row that says
-  // "char:alice stands in this picture" has to say it about the same person
-  // after her folder is renamed, or the next plan stops offering the card as
-  // her anchor and the generator draws a stranger.
-  repointDepicts(fromRef: string, toRef: string): void {
-    this.repointList("depicts", ImageMetaService.pairMap(fromRef, toRef));
-  }
-
   // One replacement as the map the list rewrite speaks.
   private static pairMap(fromValue: string, toValue: string): Map<string, string> {
     return !fromValue || !toValue || fromValue === toValue ? new Map() : new Map([[fromValue, toValue]]);
@@ -338,7 +327,7 @@ export class ImageMetaService {
   // scan is over the whole table (the lists are short and the table is one user's
   // pictures), so a row whose own id is not involved still gets fixed. A row is
   // rewritten only when one of its entries really changes.
-  private repointList(column: "refs" | "depicts", pairs: Map<string, string>): void {
+  private repointList(column: "refs", pairs: Map<string, string>): void {
     if (pairs.size === 0) return;
     const db = this.db();
     const rows = db.prepare(`SELECT id, ${column} AS value FROM images`).all() as Array<{
@@ -373,7 +362,7 @@ export class ImageMetaService {
     for (const [field, column] of Object.entries(FIELD_TO_COLUMN)) {
       const value = row[column as Column];
       if (value === null || value === undefined) continue;
-      if (column === "refs" || column === "depicts") {
+      if (column === "refs") {
         const list = ImageMetaService.parseList(String(value));
         if (list.length > 0) (meta as Record<string, unknown>)[field] = list;
         continue;
@@ -390,7 +379,7 @@ export class ImageMetaService {
     const field = Object.keys(FIELD_TO_COLUMN).find((key) => FIELD_TO_COLUMN[key] === column);
     const value = field === undefined ? undefined : (meta as Record<string, unknown>)[field];
     if (value === undefined || value === null) return null;
-    if (column === "refs" || column === "depicts") {
+    if (column === "refs") {
       return Array.isArray(value) && value.length > 0 ? JSON.stringify(value) : null;
     }
     if (typeof value === "number" || typeof value === "string") return value;
@@ -408,7 +397,7 @@ export class ImageMetaService {
 
   // The list fields of a meta, exposed for the callers that build a patch out
   // of a stored one (the chat clone repoints the references of a copied row).
-  static listField(meta: ImageMeta, key: "refs" | "depicts"): string[] {
+  static listField(meta: ImageMeta, key: "refs"): string[] {
     const value = meta[key];
     return Array.isArray(value) ? value.filter((x): x is string => typeof x === "string") : [];
   }

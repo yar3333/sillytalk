@@ -545,16 +545,15 @@ export class ChatsService {
   // the file does.
   //
   // A card has NO author on purpose: it is the picture of this conversation, and
-  // the words somebody wrote about a picture are their own line. Who is ON the
-  // picture is the row's `depicts` and whose file it is — the row's path
-  // (`chats/<chatId>/…`), so the card itself needs no owner field.
+  // the words somebody wrote about a picture are their own line. Whose file it is
+  // the row's path says (`chats/<chatId>/…`), so the card itself needs no owner
+  // field — and who is ON it is what its description says.
   addImageMessage(
     chat: Chat,
     image: string,
     opts: {
       description?: string;
       generation?: ImageGenerationData;
-      depicts?: string[];
       status?: "pending" | "failed" | "cancelled";
       error?: string;
     } = {},
@@ -571,7 +570,7 @@ export class ChatsService {
     };
     chat.messages.push(message);
     this.insertMessage(chat.id, message);
-    this.writeImageMeta(image, opts.description, opts.generation, opts.depicts);
+    this.writeImageMeta(image, opts.description, opts.generation);
     // The card the caller keeps in its in-memory chat is filled from the table
     // right away, so the answer of this call already carries its caption.
     const meta = this.imageMeta.get(image);
@@ -638,32 +637,9 @@ export class ChatsService {
     return true;
   }
 
-  // Who a picture claims is on it (cast refs), written by ids the same way the
-  // caption is — into the images table, where a picture's cast lives. The
-  // message is named only to reach the picture: a line may show several.
-  // [] is a real edit: the picture claims nobody. Returns false when the row is
-  // gone or it does not show that picture.
-  setMessageDepicts(chatId: string, messageId: string, image: string, depicts: string[]): boolean {
-    const db = this.db();
-    const row = db.prepare("SELECT data FROM messages WHERE chat_id = ? AND id = ?").get(chatId, messageId) as
-      | MessageRow
-      | undefined;
-    if (!row) return false;
-    let msg: ChatMessage;
-    try {
-      msg = JSON.parse(row.data) as ChatMessage;
-    } catch {
-      return false;
-    }
-    if (!msg.images.includes(image)) return false;
-    this.imageMeta.set(image, { depicts: depicts.length > 0 ? depicts : undefined });
-    db.prepare("UPDATE messages SET data = ? WHERE chat_id = ? AND id = ?").run(this.messageData(msg), chatId, messageId);
-    return true;
-  }
-
   // Edits what ONE picture of a message says about itself. Everything the edit
-  // touches is a field of the images table — the caption, the prompt, the
-  // references, the cast — so the picture a chat renders and the picture the
+  // touches is a field of the images table — the caption, the prompt and the
+  // references — so the picture a chat renders and the picture the
   // planner reads are the same data, edited in one place. The message row is
   // rewritten only so the picture keeps its place in the line that shows it.
   editPictureOf(
@@ -673,10 +649,6 @@ export class ChatsService {
     patch: {
       description?: string;
       prompt?: string;
-      // The people visible on the picture (cast refs). Given as [] — nobody is
-      // claimed, which stops the picture being offered as somebody's look
-      // reference.
-      depicts?: string[];
       // undefined — keep the generation block as it is; null — the picture stops
       // claiming a generation (it is just a file now); an object — replaces the
       // block (the caller merges what it keeps).
@@ -685,7 +657,6 @@ export class ChatsService {
   ): void {
     const metaPatch: ImageMeta = {};
     if (patch.description !== undefined) metaPatch.description = patch.description;
-    if (patch.depicts !== undefined) metaPatch.depicts = patch.depicts.length > 0 ? patch.depicts : undefined;
     if (patch.generation === null) {
       // The picture stops claiming it was generated: its generation fields go,
       // or the prompt would come back on the next read.
@@ -858,27 +829,23 @@ export class ChatsService {
 
   // ---- the picture data: the one global images table ----
 
-  // Records what is known about a picture: its description, the generation data
-  // behind it and the cast visible on it. This is the write half of the single
+  // Records what is known about a picture: its description and the generation
+  // data behind it. This is the write half of the single
   // source the cards are read from (applyImageMeta), so a card and its picture
   // are the same data by construction, not by syncing two copies.
   //
   // A field the call does not pass keeps what the row said (`set` merges); a
   // field passed as undefined is removed. An upload with nothing to say thus
   // leaves no row at all, and the files/ folder of a chat stays plain pictures.
-  // `depicts` — the cast refs of the people visible on the picture; it belongs
-  // to the picture, not to its generation, so an upload carries it too.
   writeImageMeta(
     imageId: string | undefined,
     description: string | undefined,
     generation?: ImageGenerationData,
-    depicts?: string[],
   ): void {
     if (!imageId) return;
     if (!PathHelper.resolveImageId(imageId)) return;
     const meta: ImageMeta = {};
     if (description !== undefined) meta.description = description.trim();
-    if (depicts !== undefined) meta.depicts = depicts.length > 0 ? depicts : undefined;
     if (generation !== undefined) Object.assign(meta, ChatsService.metaOfGeneration(generation));
     this.imageMeta.set(imageId, meta);
   }
@@ -904,8 +871,8 @@ export class ChatsService {
     return meta;
   }
 
-  // Fills every picture of a chat from the images table: the caption, the
-  // generation data and the cast of a picture ARE its row, so a picture edited
+  // Fills every picture of a chat from the images table: the caption and the
+  // generation data of a picture ARE its row, so a picture edited
   // in the picture browser or described by another chat reads the same way in
   // every line that shows it.
   //
@@ -954,8 +921,6 @@ export class ChatsService {
       has = true;
     }
     if (has) facts.generation = generation;
-    const depicts = ImageMetaService.listField(meta, "depicts");
-    if (depicts.length > 0) facts.depicts = depicts;
     const pictures = message.pictures ?? {};
     if (Object.keys(facts).length > 0) pictures[image] = facts;
     else delete pictures[image];

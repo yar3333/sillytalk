@@ -190,7 +190,6 @@ export class ImageStore {
       imageId?: string;
       data?: string;
       refs?: string[];
-      depicts?: string[];
     },
   ): Promise<boolean> {
     const c = this.chatStore.chat();
@@ -217,7 +216,6 @@ export class ImageStore {
         // reference image shows …"), so a picture redrawn later draws the same
         // face rather than a new one.
         ...(edit.kind === 'generated' && edit.refs ? { refs: edit.refs } : {}),
-        ...(edit.depicts ? { depicts: edit.depicts } : {}),
         ...(edit.kind === 'file' && edit.imageId && edit.imageId !== target
           ? { repointTo: edit.imageId }
           : {}),

@@ -477,7 +477,7 @@ export function createChatsRouter(
       res.status(404).json({ error: "Message not found" });
       return;
     }
-    const { description, prompt, repointTo, kind, refs, depicts } = req.body ?? {};
+    const { description, prompt, repointTo, kind, refs } = req.body ?? {};
     // Which of the line's pictures the edit is about.
     const target = imageOf(req.body, msg.images) ?? (msg.images.length === 1 ? msg.images[0] : null);
     if (!target) {
@@ -492,15 +492,11 @@ export function createChatsRouter(
       res.status(400).json({ error: "Expected prompt (string)" });
       return;
     }
-    // The references and the cast arrive as lists of ids; anything else in the
+    // The references arrive as a list of ids; anything else in the
     // list is dropped rather than rejected — a half-parsed catalog entry is
     // still a valid edit of the rest of it.
     if (refs !== undefined && !Array.isArray(refs)) {
       res.status(400).json({ error: "Expected refs (a list of picture ids)" });
-      return;
-    }
-    if (depicts !== undefined && !Array.isArray(depicts)) {
-      res.status(400).json({ error: "Expected depicts (a list of participant ids)" });
       return;
     }
     if (Array.isArray(refs)) {
@@ -541,9 +537,6 @@ export function createChatsRouter(
       ...(kind !== undefined ? { kind } : {}),
       ...(refs !== undefined
         ? { refs: (refs as unknown[]).filter((x): x is string => typeof x === "string") }
-        : {}),
-      ...(depicts !== undefined
-        ? { depicts: (depicts as unknown[]).filter((x): x is string => typeof x === "string") }
         : {}),
     });
     if (!fresh) {

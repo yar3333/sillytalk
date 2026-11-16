@@ -32,9 +32,11 @@ export type ImageBrief = {
   role?: "chat" | "look";
   // The cast ref (`char:alice`) of the person a look reference belongs to.
   ofWho?: string;
-  // Pre-rendered for the list: who is visible on the picture ("Alice",
-  // "Alice and Bob"). Names belong to this text only — the generator never
-  // sees them, see the no-names rule of composeImagePrompt.
+  // Pre-rendered for the list, and only a look reference carries it: the name of
+  // the person this picture is the face OF ("Alice"). What a conversation
+  // picture shows is its own description, printed in the same line. Names belong
+  // to this text only — the generator never sees them, see the no-names rule of
+  // composeImagePromptFromDescription.
   shows?: string;
 };
 
@@ -74,7 +76,7 @@ type MessageParam = { role: string; content: string | ContentPart[] };
 
 // The top-level LLM service: the OpenAI-compatible provider client
 // (chatCompletion — text + images with the no-mmproj retry, translatePrompt,
-// composeImagePrompt) and the prompt/history helpers the reply pipeline is
+// the two picture stages) and the prompt/history helpers the reply pipeline is
 // built from (the system prompt, the [SILENT] handling, author labels, history
 // trimming). The service is stateless — every call works on its arguments; the
 // provider key and the model list are resolved through the lower-level
@@ -82,8 +84,11 @@ type MessageParam = { role: string; content: string | ContentPart[] };
 // image is named by its path relative to the data folder).
 //
 // A picture enters the conversation in two directions. The user attaches one,
-// asks for one in their own words, or lets the app pick one for their turn
-// (composeImagePrompt / composeImagePromptFromRequest). A character can do one
+// asks for one in their own words, or lets the app pick one for their turn — the
+// last two go through the same two stages: composePictureDescription says what
+// the picture should show (a sentence a person reads and may correct) and
+// composeImagePromptFromDescription turns such a sentence into the generator's
+// prompt and its reference set. A character can do one
 // thing only: end its line with a picture marker — [IMAGE_BY_ID] to attach a
 // picture of its own, [IMAGE_BY_PROMPT] to have a new one drawn — which the app
 // (ReplyService) carries out and strips, so the character never sends a file and
@@ -455,124 +460,115 @@ export class TextGenerationService {
     return answer.trim();
   }
 
-  // ---- planning a picture for the user's turn ----
+  // ---- stage one: what the next picture should show, in words ----
 
-  // Asks the model to plan the picture the user wants on their own turn: it
-  // gets the whole dialogue, the CAST of people who can appear (each with the
-  // look description and the numbers of the pictures that show them), and the
-  // numbered list of pictures to draw from. It answers with the scene to draw,
-  // a short English name for the file, the caption of the result, the reference
-  // numbers and the people it put in the scene.
+  // The first half of planning a picture nobody wrote down yet: the model reads
+  // the dialogue and answers ONE sentence saying what the next picture shows.
+  // The sentence is written for a person, not for a generator — it becomes the
+  // picture's caption, it is what the user reads and corrects in the picture
+  // editor, and it is the input of the second stage
+  // (composeImagePromptFromDescription), which turns it into the English prompt
+  // and the reference set.
   //
-  // The no-names rule is the point of this call. The generator is a model that
-  // has never heard of Alice or Carol: a prompt naming them gets a brand-new
-  // face every run, which is exactly the inconsistency the user sees. So the
-  // planner describes people by how they look or binds them to a reference
-  // image, and the app assembles the references and the binding sentence around
-  // its answer (see ReplyService.finishPlan).
+  // Splitting the plan in two is what makes the middle editable. One call that
+  // answers prompt + references straight from the dialogue cannot be corrected
+  // without throwing both away, and a user who dislikes the IDEA of the picture
+  // does not care yet which English prompt it would have been drawn from.
   //
-  // The answer is JSON the model has to produce — models wrap it in prose or a
-  // code fence, so it is extracted rather than parsed as-is, and a plan that
-  // cannot be read is reported as null so the caller can fall back to something
-  // sensible instead of failing the user's request.
-  async composeImagePrompt(
+  // Naming people is allowed here (unlike in a generator prompt): this is the
+  // human's sentence, and the second stage is the one that has to turn a name
+  // into a face.
+  async composePictureDescription(
     model: Model,
     input: {
       scene: string;
-      images: ImageBrief[];
       cast?: ImageCastMember[];
-      // How many reference images the generator can take — the planner is told
-      // so it does not ask for more than the picture can carry.
-      maxRefs?: number;
+      images: ImageBrief[];
+      // How many pictures of the conversation did not fit the list (the budget
+      // of the catalogue) — the model is told, so it does not reach for a
+      // picture it was never shown.
+      omittedPictures?: number;
+      // The name of the language the sentence is written in — "Russian";
+      // English when nothing is given.
+      language?: string;
       // The look every picture of this chat shares (the chat's style setting).
       style?: string;
-      // The name of the language the plan's DESCRIPTION (the card's caption) is
-      // written in — "Russian"; English when nothing is given. The name, the
-      // prompt and the subject phrases stay English: the generator reads the
-      // prompt, and the file name is an English slug.
-      language?: string;
       signal?: AbortSignal;
       sampling?: ChatSampling;
     },
-  ): Promise<ImagePromptPlan | null> {
-    const castRefs = new Set((input.cast ?? []).map((c) => c.ref));
-    const maxRefs = input.maxRefs ?? 2;
+  ): Promise<string> {
     const language = input.language?.trim() || "English";
-    const list = TextGenerationService.renderPictures(input.images);
-    const people = TextGenerationService.renderCast(input.cast ?? []);
-
     const answer = await this.requestCompletion(
       model,
       [
         {
           role: "system",
           content:
-            "You plan one picture for the next message of the user in a roleplay chat. " +
-            "Look at the conversation and decide what the user would want to show right now.\n" +
-            "The picture is drawn by an image generator that has NEVER heard the names of these people: " +
-            "it understands only a visual description and the reference images it is given.\n" +
-            "Answer with ONE JSON object and nothing else:\n" +
-            '{"name": "2-5 english words naming the picture", ' +
-            `"description": "one sentence saying what the finished picture shows, in ${language}", ` +
-            '"prompt": "the image generation prompt, in english, 1-3 sentences: subjects, action, setting, lighting, style", ' +
-            '"refs": [numbers of the pictures below to draw from], ' +
-            '"cast": [the ids of the people who appear in the picture], ' +
-            '"subjects": [{"id": "the cast id", "noun": "the 2-4 word english phrase the prompt uses for them"}]}\n' +
+            "You decide what picture the next message of the user in a roleplay chat should carry " +
+            `and say what it shows.\nAnswer with ONE sentence in ${language} — the caption of a ` +
+            "picture that has not been drawn yet: who or what is in it, what happens, where, the " +
+            "light. A person reads it first and another call turns it into the drawing prompt, so " +
+            "say what the picture SHOWS, not what the scene means.\n" +
             "Rules:\n" +
-            `- the name, the prompt and the subject phrases are in english; the description is in ${language};\n` +
-            "- the prompt describes a single concrete scene, not a story;\n" +
-            "- NEVER write a person's name in the prompt. Call a person by how they look " +
-            '(the "look" line of their cast entry: "the red-haired woman in a green coat") or by their ' +
-            'reference picture ("the woman from the first reference image");\n' +
-            "- for every person you show, put their cast id in cast and give the exact noun phrase you used;\n" +
-            `- refs: at most ${maxRefs} numbers from the list below. Use a look reference for every person you ` +
-            "show, and a conversation picture when the new one must keep its place or its style;\n" +
-            "- keep the picture in the same style as the pictures of this conversation." +
-            (input.style ? `\n- the pictures of this chat share one style: ${input.style}` : ""),
+            "- one concrete moment of the conversation, not a summary of it;\n" +
+            "- the people of this chat may be named here — this sentence is not the generator's prompt;\n" +
+            "- keep it consistent with the pictures the conversation already has" +
+            (input.style ? ` and with the style they share: ${input.style}` : "") + ".\n" +
+            "No preamble, no quotes, nothing but the sentence.",
         },
         {
           role: "user",
           content:
-            `${input.scene}\n\nPeople in this conversation:\n${people}\n\n` +
-            `Pictures to draw from:\n${list}`,
+            `${input.scene}\n\nPeople in this conversation:\n` +
+            `${TextGenerationService.renderCast(input.cast ?? [])}\n\n` +
+            `Pictures the conversation already has:\n` +
+            `${TextGenerationService.renderPictures(input.images, input.omittedPictures)}`,
         },
       ],
       input.signal,
       input.sampling,
     );
-
-    const plan = TextGenerationService.parseJsonPlan(answer);
-    if (!plan) return null;
-    return TextGenerationService.readPlan(plan, castRefs, input.images.length);
+    return answer.trim().replace(/^["“]+|["”]+$/g, "");
   }
 
-  // ---- planning the picture somebody asked for in their own words ----
+  // ---- stage two: a description of one picture becomes prompt + references ----
 
-  // Turns a hand-written request for one picture into what the generator needs:
-  // the request may be in any language and may name the people of this roleplay
-  // chat, and it is a description of a still image ("Alice at the window in the
-  // morning"), not a drawing prompt. The planner therefore does two jobs the
-  // plain translation does not: it writes the prompt the generator reads best,
-  // and it says WHICH pictures to draw from, because a request naming a person
-  // is exactly the case where the generator needs a face to copy rather than a
-  // name it has never heard (see the no-names rule).
+  // Turns a description of one picture into what the generator needs. The
+  // description reaches it from three places — the user's own words (the 🎨
+  // dialog, written in any language and free to name the people of the story), a
+  // character's [IMAGE_BY_PROMPT] marker, and the first stage above — and none of
+  // them is a drawing prompt: it is a sentence about a still image ("Alice at the
+  // window in the morning"). The call therefore does the two jobs a plain
+  // translation does not: it writes the prompt the generator reads best, and it
+  // says WHICH pictures to draw from, because a description naming a person is
+  // exactly the case where the generator needs a face to copy rather than a name
+  // it has never heard (see the no-names rule).
   //
-  // Unlike the picture of the user's turn, the subject here is given — the model
-  // is not asked to invent what to show, only how. And it answers with no
-  // description: the card's caption is the request itself, the user's own words,
-  // which is why the JSON schema below has no description field.
-  async composeImagePromptFromRequest(
+  // The subject is given here — the model is not asked to invent what to show,
+  // only how. And it answers with no description: the caption is the sentence
+  // this call was handed, which is why the JSON schema below has no description
+  // field.
+  //
+  // The answer is JSON the model has to produce — models wrap it in prose or a
+  // code fence, so it is extracted rather than parsed as-is, and a plan that
+  // cannot be read is reported as null so the caller can fall back to something
+  // sensible instead of failing the user's request.
+  async composeImagePromptFromDescription(
     model: Model,
     input: {
       // What the picture should show, as it was written (any language, may name
       // the characters and personas of the chat).
-      request: string;
-      // The dialogue around the request — who is here and what just happened —
-      // so a request like "show them the harbour" lands on the right scene.
+      description: string;
+      // The dialogue around it — who is here and what just happened — so a
+      // sentence like "show them the harbour" lands on the right scene.
       context?: string;
       images: ImageBrief[];
       cast?: ImageCastMember[];
+      // How many reference images the generator can take — the planner is told
+      // so it does not ask for more than the picture can carry.
       maxRefs?: number;
+      // How many pictures of the conversation did not fit the list.
+      omittedPictures?: number;
       style?: string;
       signal?: AbortSignal;
       sampling?: ChatSampling;
@@ -586,10 +582,10 @@ export class TextGenerationService {
         {
           role: "system",
           content:
-            "You turn a hand-written request for one picture into what an image generator needs.\n" +
-            "The request is written by hand and may be in any language; it describes the picture " +
-            "in words and may name people of a roleplay chat. The generator has NEVER heard those " +
-            "names: it understands only a visual description and the reference images it is given.\n" +
+            "You turn a description of one picture into what an image generator needs.\n" +
+            "The description may be in any language; it says what the picture shows and may name " +
+            "people of a roleplay chat. The generator has NEVER heard those names: it understands " +
+            "only a visual description and the reference images it is given.\n" +
             "Answer with ONE JSON object and nothing else:\n" +
             '{"name": "2-5 english words naming the picture", ' +
             '"prompt": "the image generation prompt, in english, 1-3 sentences: subjects, action, setting, lighting, style", ' +
@@ -597,27 +593,30 @@ export class TextGenerationService {
             '"cast": [the ids of the people who appear in the picture], ' +
             '"subjects": [{"id": "the cast id", "noun": "the 2-4 word english phrase the prompt uses for them"}]}\n' +
             "Rules:\n" +
-            "- keep everything the request asks for; add only what a picture needs (framing, light, " +
-            "style) and never a person, an event or an object the request does not imply;\n" +
+            "- keep everything the description asks for; add only what a picture needs (framing, " +
+            "light, style) and never a person, an event or an object it does not imply;\n" +
             "- the name, the prompt and the subject phrases are in english;\n" +
             "- the prompt describes a single concrete scene, not a story;\n" +
             "- NEVER write a person's name in the prompt. Call a person by how they look " +
             '(the "look" line of their cast entry: "the red-haired woman in a green coat") or by their ' +
             'reference picture ("the woman from the first reference image");\n' +
             "- for every person you show, put their cast id in cast and give the exact noun phrase you used;\n" +
-            `- refs: at most ${maxRefs} numbers from the list below. Use a look reference for every person ` +
-            "you show, and a conversation picture when the new one must keep its place or its style;\n" +
-            "- when the request is about ONE person (their own photo, what they are doing right now), " +
+            `- refs: at most ${maxRefs} numbers from the list below. Every person you show must get their ` +
+            "face from a picture: a conversation picture whose \"shows:\" line names that person is the " +
+            "best reference for them — it carries the face and the look this conversation already uses — " +
+            "and their look reference otherwise; add a conversation picture when the new one must keep " +
+            "its place or its style;\n" +
+            "- when the picture is about ONE person (their own photo, what they are doing right now), " +
             "that person's look reference goes first." +
             (input.style ? `\n- the pictures of this chat share one style: ${input.style}` : ""),
         },
         {
           role: "user",
           content:
-            `The picture to make, as it was asked for:\n${input.request}\n\n` +
+            `The picture to make, in words:\n${input.description}\n\n` +
             (input.context ? `${input.context}\n\n` : "") +
             `People in this conversation:\n${TextGenerationService.renderCast(input.cast ?? [])}\n\n` +
-            `Pictures to draw from:\n${TextGenerationService.renderPictures(input.images)}`,
+            `Pictures to draw from:\n${TextGenerationService.renderPictures(input.images, input.omittedPictures)}`,
         },
       ],
       input.signal,
@@ -630,13 +629,15 @@ export class TextGenerationService {
   }
 
   // The numbered picture list of a planning prompt — what each offered reference
-  // is worth and where it came from. Both planners show the same catalogue, so
+  // is worth and where it came from. Both stages show the same catalogue, so
   // there is one place that decides what a model is told about a picture.
-  private static renderPictures(images: ImageBrief[]): string {
+  // `omitted` is how many pictures the budget left out: the model is told the
+  // number so an old scene is not invented as a reference.
+  private static renderPictures(images: ImageBrief[], omitted = 0): string {
     if (images.length === 0) {
       return "There are no pictures to draw from, so the picture must come from the text alone.";
     }
-    return images
+    const list = images
       .map((img, i) => {
         const bits = [
           img.role === "look"
@@ -650,6 +651,7 @@ export class TextGenerationService {
         return `#${i + 1} — ${bits.join("; ")}`;
       })
       .join("\n");
+    return omitted > 0 ? `${list}\n(${omitted} older pictures are not listed)` : list;
   }
 
   // The cast of a planning prompt: who is in the story, what they look like, and

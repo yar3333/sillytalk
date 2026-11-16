@@ -9,8 +9,9 @@ import { ImageGenerationService } from "./ImageGenerationService";
 
 // The /image routes: the availability flag (it decides whether the picture
 // buttons of the input bar are shown) and the helpers of the picture-editor
-// dialog: the three LLM calls ("From the chat", "Make it English", "Describe the
-// picture") and the caption of an attached card. Drawing itself lives with the
+// dialog: the LLM calls of its two fields — the description ("From the chat",
+// "Describe the picture") and the prompt ("Prompt and references", "Make it
+// English") — and the caption of an attached card. Drawing itself lives with the
 // chat it happens in — /chats/:id/picture-request, /auto-image, /picture-file —
 // because a picture of this app is always a message of one conversation.
 export function createImageRouter(
@@ -48,25 +49,63 @@ export function createImageRouter(
   // browser's own route: GET /api/pictures — one list of the data folder, with
   // the row of the images table that belongs to each picture)
 
-  // The prompt for a card, planned by the model from the dialogue (the "From
-  // the chat" button). The answer is the finished prompt, the description the
-  // plan suggests and the reference pictures it was built around — the three
-  // belong together, since the prompt says what each of those images is for.
-  // 502 — the model gave nothing usable (it never fails the request with an
-  // exception: a missing model is the same as an unreadable answer).
-  router.post("/prompt", async (req, res) => {
+  // What the next picture of this chat should show, in one sentence (the "From
+  // the chat" button of the DESCRIPTION field — stage one). The answer is a
+  // caption, not a prompt: the user reads it, may rewrite it, and only then asks
+  // for the drawing prompt. 502 — the model gave nothing usable.
+  router.post("/describe-from-chat", async (req, res) => {
     try {
       const { chatId, messageId } = req.body ?? {};
+      if (messageId !== undefined && typeof messageId !== "string") {
+        res.status(400).json({ error: "Expected messageId (string)" });
+        return;
+      }
       const chat = typeof chatId === "string" ? chats.get(chatId) : null;
       if (!chat) {
         res.status(404).json({ error: "Chat not found" });
+        return;
+      }
+      const description = await reply.describePictureFromChat(
+        chat.id,
+        typeof messageId === "string" ? messageId : undefined,
+      );
+      if (!description) {
+        res.status(502).json({ error: "The model did not describe a picture" });
+        return;
+      }
+      res.json({ description });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // The prompt and the reference pictures of one picture, planned from its
+  // description (the "Prompt and references" button — stage two). The
+  // description may be in any language and may name the people of the chat; the
+  // prompt never does. The references come back WITH it: the prompt says what
+  // each of those images is for, so saving one without the others would redraw
+  // something else. 502 — the model gave nothing usable.
+  router.post("/prompt-from-description", async (req, res) => {
+    try {
+      const { chatId, description, messageId } = req.body ?? {};
+      const chat = typeof chatId === "string" ? chats.get(chatId) : null;
+      if (!chat) {
+        res.status(404).json({ error: "Chat not found" });
+        return;
+      }
+      if (typeof description !== "string" || !description.trim()) {
+        res.status(400).json({ error: "Write what the picture should show first" });
         return;
       }
       if (messageId !== undefined && typeof messageId !== "string") {
         res.status(400).json({ error: "Expected messageId (string)" });
         return;
       }
-      const plan = await reply.planPicturePrompt(chat.id, typeof messageId === "string" ? messageId : undefined);
+      const plan = await reply.planPictureFromDescription(
+        chat.id,
+        description.trim(),
+        typeof messageId === "string" ? messageId : undefined,
+      );
       if (!plan) {
         res.status(502).json({ error: "The model did not describe a picture to draw" });
         return;

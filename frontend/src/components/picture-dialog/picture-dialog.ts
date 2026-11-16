@@ -1,7 +1,6 @@
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { ApiService, ChatMessage } from '../../services/api';
 import { ChatStore } from '../../services/chat-store';
-import { ConfigStore } from '../../services/config-store';
 import { ImageStore } from '../../services/image-store';
 import { UiStore } from '../../services/ui-store';
 
@@ -10,12 +9,15 @@ import { UiStore } from '../../services/ui-store';
 // (ImageStore.pictureEdit) and edits that picture's row, not the line. A picture
 // is one of two things:
 //   "generated" — a picture drawn by the app: the prompt it is redrawn from
-//                 (with two LLM helpers: plan it from the dialogue, or
-//                 translate + tune the typed text for the generator);
+//                 (with two LLM helpers: turn the description into a prompt plus
+//                 the reference set, or translate + tune the typed text);
 //   "from a file" — a picture of the data folder (picked by its id from the
 //                 catalog) or a file from disk; it has no prompt.
-// Both kinds carry a description (what is on the picture), which the model can
-// also write from the picture itself.
+// Both kinds carry a description (what is on the picture), written by the user or
+// by one of two model calls: from the conversation, or from the picture itself.
+// The two fields are the two stages a picture is planned in and they read in that
+// order — the description first, because it is the idea the user corrects, and the
+// prompt below it, because that is what the generator is handed.
 //
 // The dialog only EDITS the picture: saving never generates anything — redrawing
 // is the ↻ button of the picture, as before. The target comes from
@@ -63,6 +65,45 @@ function sameList(a: string[], b: string[]): boolean {
           </label>
         </div>
 
+        <!-- The description comes first: it is what the picture says about itself
+             (the caption under it, the sentence a model without vision is told
+             about it) and the input of the prompt below — the generator never
+             reads this text, it reads what this text is turned into. -->
+        <label class="field col">
+          <span>Description</span>
+          <textarea
+            rows="3"
+            data-testid="picture-description"
+            placeholder="What is on the picture (the caption under it)…"
+            [value]="description()"
+            (input)="setDescription($event)"
+          ></textarea>
+        </label>
+        <div class="row-actions">
+          <button
+            class="btn"
+            data-testid="picture-description-from-chat"
+            [disabled]="busy() !== null"
+            (click)="descriptionFromChat()"
+            title="Let the model say what the next picture of this conversation should show"
+          >
+            {{ busy() === 'describeChat' ? 'Thinking…' : 'From the chat' }}
+          </button>
+          <button
+            class="btn"
+            data-testid="picture-describe"
+            [disabled]="busy() !== null"
+            (click)="describe()"
+            title="Let the model look at this picture and say what is on it"
+          >
+            {{ busy() === 'describeImage' ? 'Looking…' : 'Describe the picture' }}
+          </button>
+        </div>
+        <div class="dialog-hint">
+          "From the chat" writes the idea of the picture from the conversation; "Describe the
+          picture" looks at the picture itself. Both only fill this field — Save is still the write.
+        </div>
+
         @if (kind() === 'generated') {
           <label class="field col">
             <span>Prompt</span>
@@ -77,12 +118,12 @@ function sameList(a: string[], b: string[]): boolean {
           <div class="row-actions">
             <button
               class="btn"
-              data-testid="picture-prompt-from-chat"
-              [disabled]="busy() !== null"
-              (click)="promptFromChat()"
-              title="Let the model write the prompt from the conversation"
+              data-testid="picture-prompt-from-description"
+              [disabled]="busy() !== null || !description().trim()"
+              (click)="promptFromDescription()"
+              title="Turn the description into the generator's prompt and the pictures it draws the faces and places from"
             >
-              {{ busy() === 'prompt' ? 'Thinking…' : 'From the chat' }}
+              {{ busy() === 'prompt' ? 'Thinking…' : 'Prompt and references' }}
             </button>
             <button
               class="btn"
@@ -136,51 +177,6 @@ function sameList(a: string[], b: string[]): boolean {
           </div>
         }
 
-        <label class="field col">
-          <span>Description</span>
-          <textarea
-            rows="3"
-            data-testid="picture-description"
-            placeholder="What is on the picture (the caption under it)…"
-            [value]="description()"
-            (input)="setDescription($event)"
-          ></textarea>
-        </label>
-        <div class="row-actions">
-          <button
-            class="btn"
-            data-testid="picture-describe"
-            [disabled]="busy() !== null"
-            (click)="describe()"
-            title="Let the model say what is on this picture"
-          >
-            {{ busy() === 'describe' ? 'Looking…' : 'Describe the picture' }}
-          </button>
-        </div>
-
-        @if (people().length) {
-          <div class="field col">
-            <span>Who is on this picture</span>
-            <div class="chips">
-              @for (p of people(); track p.ref) {
-                <button
-                  type="button"
-                  class="chip"
-                  [class.on]="depicts().includes(p.ref)"
-                  data-testid="picture-depicts"
-                  (click)="toggleDepicts(p.ref)"
-                >
-                  {{ p.name }}
-                </button>
-              }
-            </div>
-          </div>
-          <div class="dialog-hint">
-            The generator is never told these names — the note is for the picture planner, so the next
-            picture of this chat can put the same person in it.
-          </div>
-        }
-
         <div class="dialog-actions">
           <span class="spacer"></span>
           <button class="btn" data-testid="picture-cancel" (click)="cancel()">Cancel</button>
@@ -199,7 +195,6 @@ export class PictureDialog implements OnInit {
   private api = inject(ApiService);
   private chatStore = inject(ChatStore);
   private imageStore = inject(ImageStore);
-  private configStore = inject(ConfigStore);
   private ui = inject(UiStore);
 
   // The card being edited (null — it disappeared while the dialog was open).
@@ -212,30 +207,9 @@ export class PictureDialog implements OnInit {
   // …"). They belong to the prompt: saving one without the rest would redraw
   // something else, so "From the chat" fills them and Save writes them back.
   readonly refs = signal<string[]>([]);
-  // Who is ON this picture, as the chat knows its people ("char:alice"). The
-  // picture planner reads it to draw the same person again.
-  readonly depicts = signal<string[]>([]);
   // What the card said when the dialog opened — Save compares against it, so a
-  // dialog nobody touched does not rewrite these two fields of the card.
+  // dialog nobody touched does not rewrite this field of the card.
   private initialRefs: string[] = [];
-  private initialDepicts: string[] = [];
-  // The people of this chat: its characters and every persona that ever spoke
-  // here — the chips under "Who is on this picture".
-  readonly people = computed<{ ref: string; name: string }[]>(() => {
-    const chat = this.chatStore.chat();
-    if (!chat) return [];
-    const out: { ref: string; name: string }[] = chat.characterIds.map((id) => ({
-      ref: 'char:' + id,
-      name: this.configStore.characters().find((c) => c.id === id)?.name ?? id,
-    }));
-    const personas = new Set<string>([chat.userId]);
-    for (const m of chat.messages) if (m.userId) personas.add(m.userId);
-    for (const id of personas) {
-      if (!id) continue;
-      out.push({ ref: 'user:' + id, name: this.configStore.users().find((u) => u.id === id)?.name ?? id });
-    }
-    return out;
-  });
   // The pictures of the data folder (the "from a file" pick) and the id chosen
   // there; a file picked from disk is kept as its data URL until the save.
   readonly catalog = signal<string[]>([]);
@@ -245,7 +219,7 @@ export class PictureDialog implements OnInit {
   readonly pickedName = signal('');
   // Which LLM helper is running (the buttons say what they are doing) and the
   // save in flight.
-  readonly busy = signal<'prompt' | 'tune' | 'describe' | null>(null);
+  readonly busy = signal<'describeChat' | 'describeImage' | 'prompt' | 'tune' | null>(null);
   readonly saving = signal(false);
 
   // The options of the id pick: the catalog, with the card's own picture first
@@ -270,9 +244,7 @@ export class PictureDialog implements OnInit {
     this.kind.set(generated ? 'generated' : 'file');
     this.prompt.set(generation?.prompt ?? '');
     this.refs.set(generation?.refs ?? []);
-    this.depicts.set(facts?.depicts ?? []);
     this.initialRefs = [...this.refs()];
-    this.initialDepicts = [...this.depicts()];
     this.description.set(facts?.description ?? '');
     this.chosenId.set(target.image);
     this.api
@@ -313,10 +285,6 @@ export class PictureDialog implements OnInit {
   thumb(id: string): string {
     return this.api.mediaUrl(id);
   }
-  toggleDepicts(ref: string): void {
-    const cur = this.depicts();
-    this.depicts.set(cur.includes(ref) ? cur.filter((x) => x !== ref) : [...cur, ref]);
-  }
 
   // A file from disk: kept as a data URL (the preview and the describe button
   // work on it) and saved into the chat's folder on Save (the server reuses a
@@ -339,21 +307,39 @@ export class PictureDialog implements OnInit {
     this.pickedName.set('');
   }
 
-  // "From the chat": the model plans the prompt from the dialogue (the card
-  // itself is left out of what it reads) and the pictures to draw it from —
-  // the prompt names them in that order, so both fields are filled together.
-  // A card with no description yet gets the one the plan suggests.
-  promptFromChat(): void {
+  // "From the chat" (the description field): the model reads the conversation and
+  // says what the next picture should show — the idea, in the language the
+  // picture descriptions are written in, not a drawing prompt. The card being
+  // edited is left out of what the model reads; what it writes lands here and
+  // waits for the user, who may rewrite it before asking for the prompt.
+  descriptionFromChat(): void {
     const chat = this.chatStore.chat();
     const target = this.imageStore.pictureEdit();
     if (!chat || !target) return;
+    this.busy.set('describeChat');
+    this.api
+      .describePictureFromChat(chat.id, target.messageId)
+      .then((res) => this.description.set(res.description))
+      .catch((e) => this.ui.error.set(String((e as Error).message)))
+      .finally(() => this.busy.set(null));
+  }
+
+  // "Prompt and references": the description becomes the generator's prompt AND
+  // the pictures it is drawn from — the two are one thing, because the prompt
+  // says what each of those images is for, so saving one without the other would
+  // redraw something else. The description may name the people of the story; the
+  // answer never does, it binds them to their own pictures instead.
+  promptFromDescription(): void {
+    const chat = this.chatStore.chat();
+    const target = this.imageStore.pictureEdit();
+    const text = this.description().trim();
+    if (!chat || !target || !text) return;
     this.busy.set('prompt');
     this.api
-      .composePicturePrompt(chat.id, target.messageId)
+      .composePromptFromDescription(chat.id, text, target.messageId)
       .then((res) => {
         this.prompt.set(res.prompt);
         this.refs.set(res.refs ?? []);
-        if (!this.description().trim() && res.description) this.description.set(res.description);
       })
       .catch((e) => this.ui.error.set(String((e as Error).message)))
       .finally(() => this.busy.set(null));
@@ -384,7 +370,7 @@ export class PictureDialog implements OnInit {
       this.ui.error.set('Choose a picture first');
       return;
     }
-    this.busy.set('describe');
+    this.busy.set('describeImage');
     this.api
       .describePicture(chat.id, data ? { data } : { image })
       .then((res) => this.description.set(res.description))
@@ -403,11 +389,10 @@ export class PictureDialog implements OnInit {
         prompt: this.prompt(),
         imageId: this.chosenId(),
         data: this.pickedData() || undefined,
-        // The two cast fields travel only when the dialog actually changed them
-        // — a patch that repeats what the card says would rewrite the row
-        // for nothing (and an empty list of them IS an edit: it clears).
+        // The references travel only when the dialog actually changed them — a
+        // patch that repeats what the picture says would rewrite the row for
+        // nothing (and an empty list IS an edit: it clears them).
         refs: sameList(this.refs(), this.initialRefs) ? undefined : this.refs(),
-        depicts: sameList(this.depicts(), this.initialDepicts) ? undefined : this.depicts(),
       })
       .then((ok) => {
         this.saving.set(false);

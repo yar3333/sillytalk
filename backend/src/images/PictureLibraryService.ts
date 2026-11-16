@@ -167,7 +167,6 @@ export class PictureLibraryService {
       description?: string;
       prompt?: string;
       refs?: string[];
-      depicts?: string[];
     },
   ): PictureEntry | null {
     const file = PictureLibraryService.fileOf(id);
@@ -177,7 +176,6 @@ export class PictureLibraryService {
     if (patch.description !== undefined) meta.description = patch.description.trim();
     if (patch.prompt !== undefined) meta.prompt = patch.prompt.trim();
     if (patch.refs !== undefined) meta.refs = patch.refs.length > 0 ? patch.refs : undefined;
-    if (patch.depicts !== undefined) meta.depicts = patch.depicts.length > 0 ? patch.depicts : undefined;
     this.meta.set(id, meta);
     return this.get(id);
   }
@@ -236,11 +234,12 @@ export class PictureLibraryService {
     return this.get(newId);
   }
 
-  // Drops the record of a picture whose file is gone — the one delete the
-  // browser offers, so an orphan row (what is left of a picture the user removed
-  // outside the app) does not have to live forever. A picture whose file is still
-  // there is NOT deleted from here: the app does not remove pictures, and losing
-  // a caption because the wrong row was clicked is worse than a stray row.
+  // Drops the record of a picture whose file is gone — so an orphan row (what is
+  // left of a picture the user removed outside the app, or one whose file he
+  // removed with `deleteFile` here) does not have to live forever. A picture
+  // whose file is still there is NOT cleared from here: losing a caption because
+  // the wrong row was clicked is worse than a stray row, and removing the picture
+  // itself is the other button's job (`deleteFile`).
   //
   // Returns whether there was a record to drop.
   forget(id: string): boolean {
@@ -249,6 +248,32 @@ export class PictureLibraryService {
       throw new Error("The file is still there — delete it in its folder, or rename the picture");
     }
     this.meta.remove(id);
+    return true;
+  }
+
+  // Removes the FILE of a picture and keeps its record — the other half of what
+  // the browser can delete. `forget` clears the memory of a picture whose file
+  // the user already removed; this removes the file of a picture whose memory the
+  // user wants to keep: the description, the prompt and the reference set stay in
+  // the table, and the row becomes an orphan the browser shows dimmed, so the
+  // words can be attached to another file later (Rename onto a picture that is
+  // already there) or cleared with `forget`.
+  //
+  // The file facts stay in the row on purpose. They are how a record finds its
+  // file again, and a picture the user deleted from one folder is the same bytes
+  // in another — the sync that follows a hand-renamed file follows these too.
+  //
+  // A picture whose draw is still running waits: the job writes to exactly this
+  // path and would leave a file behind the user just removed.
+  //
+  // Returns whether there was a file to remove.
+  deleteFile(id: string): boolean {
+    const file = PictureLibraryService.fileOf(id);
+    if (!file) return false;
+    if (this.chats.hasPendingImage(id)) {
+      throw new Error("This picture is still being generated — wait for it or cancel it first");
+    }
+    fs.rmSync(file);
     return true;
   }
 

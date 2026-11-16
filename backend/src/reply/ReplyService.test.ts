@@ -75,9 +75,10 @@ class StubConfigurationService extends ConfigurationService {
 
 // The model client stubbed: answers with a canned text and records the history
 // it was called with. `modelGate` lets a test park the "model call" (the gate
-// promise) and apply a concurrent change in the meantime. The picture-planning
-// call is stubbed the same way (plan / planGate) and records what the model was
-// told about the conversation.
+// promise) and apply a concurrent change in the meantime. The two stages of
+// planning a picture are stubbed the same way — stage one answers with a sentence
+// (`stageOneText`) and stage two with a plan (`plan`) — each recording what the
+// model was told about the conversation.
 class StubTextGeneration extends TextGenerationService {
   replyText = "Hello from the stub.";
   lastHistory: ChatMessage[] = [];
@@ -87,6 +88,11 @@ class StubTextGeneration extends TextGenerationService {
   lastSystem = "";
   modelGate: Promise<void> = Promise.resolve();
 
+  // Stage two's answer. The SAME plan answers the 📷 flow and a picture somebody
+  // asked for in their own words, description included ON PURPOSE: the app must
+  // ignore it and keep the caption it already had (the stage-one sentence or the
+  // requester's own words), and a stub answering with an empty one could not
+  // prove that.
   plan: ImagePromptPlan | null = {
     name: "a red boat at dusk",
     description: "a red boat on a calm lake at dusk",
@@ -95,32 +101,31 @@ class StubTextGeneration extends TextGenerationService {
     cast: [],
     subjects: [],
   };
-  planInput: {
-    scene: string;
-    images: ImageBrief[];
-    cast: ImageCastMember[];
-    maxRefs: number;
-    style?: string;
-    language?: string;
-  } | null = null;
   planCalls = 0;
-  planGate: Promise<void> = Promise.resolve();
-
-  // The planner of a picture somebody asked for in their own words (the 🎨
-  // dialog, a character's [IMAGE_BY_PROMPT]). It answers with the same plan
-  // ON PURPOSE, description included: the app must ignore that description and
-  // keep the requester's own words as the card's caption, and a stub that
-  // answered with an empty one could not prove it.
-  requestPlanCalls = 0;
-  requestPlanInput: {
-    request: string;
+  planInput: {
+    description: string;
     context?: string;
     images: ImageBrief[];
     cast: ImageCastMember[];
     maxRefs: number;
+    omittedPictures: number;
     style?: string;
   } | null = null;
-  requestPlanGate: Promise<void> = Promise.resolve();
+  planGate: Promise<void> = Promise.resolve();
+
+  // Stage one's answer: the sentence saying what the next picture shows — the
+  // caption the card carries before a single pixel exists.
+  stageOneText = "a red boat on a calm lake at dusk";
+  stageOneInput: {
+    scene: string;
+    images: ImageBrief[];
+    cast: ImageCastMember[];
+    omittedPictures: number;
+    style?: string;
+    language?: string;
+  } | null = null;
+  stageOneCalls = 0;
+  stageOneGate: Promise<void> = Promise.resolve();
 
   constructor() {
     super(new StubConfigurationService());
@@ -133,51 +138,53 @@ class StubTextGeneration extends TextGenerationService {
     return this.replyText;
   }
 
-  async composeImagePrompt(
+  async composePictureDescription(
     _model: Model,
     input: {
       scene: string;
       images: ImageBrief[];
       cast?: ImageCastMember[];
-      maxRefs?: number;
+      omittedPictures?: number;
       style?: string;
       language?: string;
     },
-  ): Promise<ImagePromptPlan | null> {
-    this.planCalls++;
-    this.planInput = {
+  ): Promise<string> {
+    this.stageOneCalls++;
+    this.stageOneInput = {
       scene: input.scene,
       images: input.images,
       cast: input.cast ?? [],
-      maxRefs: input.maxRefs ?? 0,
+      omittedPictures: input.omittedPictures ?? 0,
       ...(input.style !== undefined ? { style: input.style } : {}),
       ...(input.language !== undefined ? { language: input.language } : {}),
     };
-    await this.planGate;
-    return this.plan;
+    await this.stageOneGate;
+    return this.stageOneText;
   }
 
-  async composeImagePromptFromRequest(
+  async composeImagePromptFromDescription(
     _model: Model,
     input: {
-      request: string;
+      description: string;
       context?: string;
       images: ImageBrief[];
       cast?: ImageCastMember[];
       maxRefs?: number;
+      omittedPictures?: number;
       style?: string;
     },
   ): Promise<ImagePromptPlan | null> {
-    this.requestPlanCalls++;
-    this.requestPlanInput = {
-      request: input.request,
+    this.planCalls++;
+    this.planInput = {
+      description: input.description,
       ...(input.context !== undefined ? { context: input.context } : {}),
       images: input.images,
       cast: input.cast ?? [],
       maxRefs: input.maxRefs ?? 0,
+      omittedPictures: input.omittedPictures ?? 0,
       ...(input.style !== undefined ? { style: input.style } : {}),
     };
-    await this.requestPlanGate;
+    await this.planGate;
     return this.plan;
   }
 
@@ -521,7 +528,7 @@ describe("appendAssistantReply", () => {
       // browser reads when it decides whether to show the prompt for editing.
       expect(line.pictures?.[id]?.generation).toMatchObject({ source: "auto" });
       // the words were handed to the planner as they were written
-      expect(textGeneration.requestPlanInput?.request).toBe("рыжая лиса в снегу");
+      expect(textGeneration.planInput?.description).toBe("рыжая лиса в снегу");
 
       await flushJobs();
       const after = chats.get(chat.id)!.messages[1];
@@ -796,7 +803,7 @@ describe("requestPicture (a picture the user asked for in their own words)", () 
   it("saves the pending card at once, with the request as its caption", async () => {
     const chat = newChat();
     const g = gate();
-    textGeneration.requestPlanGate = g.promise; // the planning call "thinks"
+    textGeneration.planGate = g.promise; // the planning call "thinks"
     const result = reply.requestPicture(chat.id, "рыжая лиса в снегу у калитки")!;
     g.release();
     expect(result).not.toBeNull();
@@ -831,11 +838,11 @@ describe("requestPicture (a picture the user asked for in their own words)", () 
     // What the planner was asked with: the request as it was written, the
     // dialogue around it, and the cast — so "Алиса" can be matched to the
     // picture of her face instead of a name the generator has never heard.
-    expect(textGeneration.requestPlanCalls).toBe(1);
-    expect(textGeneration.requestPlanInput?.request).toBe("Алиса у калитки в снегу");
-    expect(textGeneration.requestPlanInput?.context).toContain("Hi");
-    expect(textGeneration.requestPlanInput?.cast.map((c) => c.ref)).toEqual(["char:alice", "user:me"]);
-    expect(textGeneration.requestPlanInput?.maxRefs).toBe(2);
+    expect(textGeneration.planCalls).toBe(1);
+    expect(textGeneration.planInput?.description).toBe("Алиса у калитки в снегу");
+    expect(textGeneration.planInput?.context).toContain("Hi");
+    expect(textGeneration.planInput?.cast.map((c) => c.ref)).toEqual(["char:alice", "user:me"]);
+    expect(textGeneration.planInput?.maxRefs).toBe(2);
 
     const saved = chats.get(chat.id)!.messages.find((m) => m.id === message.id)!;
     const id = saved.images[0];
@@ -882,9 +889,9 @@ describe("requestPicture (a picture the user asked for in their own words)", () 
     expect(job.refs).toEqual(["characters/alice/photo1.jpg"]);
     expect(job.prompt).toContain("the first reference image shows the red-haired woman");
     expect(job.prompt).toContain("Style: watercolour");
-    // the people on the picture are recorded, which is what offers this picture
-    // as Alice's anchor for the next one
-    expect(saved.pictures?.[saved.images[0]]?.depicts).toEqual(["char:alice"]);
+    // the caption of the picture stays the user's own words — the request is
+    // what the card says it shows, and that is all the app records about it
+    expect(saved.pictures?.[saved.images[0]]?.description).toBe("Алиса у калитки");
   });
 
   it("shows the planner only the tail of a long dialogue", async () => {
@@ -899,7 +906,7 @@ describe("requestPicture (a picture the user asked for in their own words)", () 
     reply.requestPicture(chat.id, "a red fox");
     await flushJobs();
 
-    const context = textGeneration.requestPlanInput?.context ?? "";
+    const context = textGeneration.planInput?.context ?? "";
     // the newest message is the one the picture has to follow
     expect(context).toContain("line-40");
     // the oldest ones are gone, and the brief says so instead of pretending
@@ -914,7 +921,7 @@ describe("requestPicture (a picture the user asked for in their own words)", () 
     reply.requestPicture(chat.id, "a red fox");
     await flushJobs();
 
-    const context = textGeneration.requestPlanInput?.context ?? "";
+    const context = textGeneration.planInput?.context ?? "";
     expect(context).toContain("…");
     expect(context.length).toBeLessThan(2000);
   });
@@ -963,7 +970,7 @@ describe("requestPicture (a picture the user asked for in their own words)", () 
   it("leaves a card the user cancelled while the model was thinking", async () => {
     const chat = newChat();
     const g = gate();
-    textGeneration.requestPlanGate = g.promise;
+    textGeneration.planGate = g.promise;
     const { message } = reply.requestPicture(chat.id, "a red fox")!;
     const placeholder = message.images[0];
     await tick();
@@ -1023,7 +1030,7 @@ describe("requestUserTurnImage (the picture of the user's turn)", () => {
   it("puts a pending placeholder card in the chat and returns at once", async () => {
     const chat = newChat();
     const g = gate();
-    textGeneration.planGate = g.promise; // the planning call "thinks"
+    textGeneration.stageOneGate = g.promise; // the planning call "thinks"
     const saved = reply.requestUserTurnImage(chat.id)!;
     const card = saved.messages[saved.messages.length - 1];
     expect(card.kind).toBe("image");
@@ -1039,7 +1046,7 @@ describe("requestUserTurnImage (the picture of the user's turn)", () => {
   it("does not block the user: a message sent meanwhile survives the background run", async () => {
     const chat = newChat();
     const g = gate();
-    textGeneration.planGate = g.promise;
+    textGeneration.stageOneGate = g.promise;
     reply.requestUserTurnImage(chat.id);
     await tick();
     // the user keeps typing and sends their own line while the picture is planned
@@ -1085,9 +1092,13 @@ describe("requestUserTurnImage (the picture of the user's turn)", () => {
     const chat = newChat();
     const photo = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=", { nameHint: "a harbour" });
     chats.addImageMessage(chats.get(chat.id)!, photo, { description: "a harbour at dusk" });
+    // Stage one writes the caption; stage two (whose stub answers with a
+    // description of its own ON PURPOSE) does not — the picture is captioned by
+    // the sentence the user can read and correct, not by a plan's side note.
+    textGeneration.stageOneText = "the harbour under the moon";
     textGeneration.plan = {
       name: "the same harbour by moonlight",
-      description: "the harbour under the moon",
+      description: "a description the plan wrote and the app ignores",
       prompt: "the same harbour at night, moonlight",
       refs: [1],
       cast: [],
@@ -1096,20 +1107,20 @@ describe("requestUserTurnImage (the picture of the user's turn)", () => {
     reply.requestUserTurnImage(chat.id);
     await flushJobs();
 
-    expect(textGeneration.planInput?.scene).toContain("Characters: Alice");
-    expect(textGeneration.planInput?.scene).toContain("Me: Hi");
+    expect(textGeneration.stageOneInput?.scene).toContain("Characters: Alice");
+    expect(textGeneration.stageOneInput?.scene).toContain("Me: Hi");
     // A neutral card has no author, so the brief of the dialogue says only that a
     // picture is there and what it shows. Who is IN it reaches the planner
     // through the catalogue below (by name, with their look), which is the form
     // it answers with; who a picture belongs to is written in its path and is not
     // something a drawing ever needs, so it is never said.
-    expect(textGeneration.planInput?.scene).toContain("[a picture shows: a harbour at dusk]");
-    expect(textGeneration.planInput?.scene).not.toContain("shared by");
+    expect(textGeneration.stageOneInput?.scene).toContain("[a picture shows: a harbour at dusk]");
+    expect(textGeneration.stageOneInput?.scene).not.toContain("shared by");
     // the only card in the text is the one that exists — the empty placeholder
     // the app just made is not part of the dialogue
-    expect(textGeneration.planInput?.scene.match(/\[a picture shows/g)).toHaveLength(1);
-    expect(textGeneration.planInput?.images).toHaveLength(1);
-    expect(textGeneration.planInput?.images[0]).toMatchObject({
+    expect(textGeneration.stageOneInput?.scene.match(/\[a picture shows/g)).toHaveLength(1);
+    expect(textGeneration.stageOneInput?.images).toHaveLength(1);
+    expect(textGeneration.stageOneInput?.images[0]).toMatchObject({
       id: photo,
       description: "a harbour at dusk",
       origin: "uploaded",
@@ -1137,7 +1148,7 @@ describe("requestUserTurnImage (the picture of the user's turn)", () => {
     const chat = newChat();
     reply.requestUserTurnImage(chat.id);
     await flushJobs();
-    expect(textGeneration.planInput?.images).toEqual([]);
+    expect(textGeneration.stageOneInput?.images).toEqual([]);
   });
 
   it("a picture whose file is gone is left out of the catalogue", async () => {
@@ -1146,7 +1157,67 @@ describe("requestUserTurnImage (the picture of the user's turn)", () => {
     chats.addImageMessage(chats.get(chat.id)!, missing, { description: "what it showed" });
     reply.requestUserTurnImage(chat.id);
     await flushJobs();
-    expect(textGeneration.planInput?.images).toEqual([]);
+    expect(textGeneration.stageOneInput?.images).toEqual([]);
+  });
+
+  it("offers the planner the pictures of the PEOPLE, not only the chat's", async () => {
+    // The catalogue a plan reads is everything it can draw from: the conversation
+    // AND the photo set of every character AND the persona's own face. A scene
+    // with three people is built from three familiar pictures, not from three
+    // invented strangers.
+    characters.save({ id: "bob", name: "Bob", description: "A broad man." });
+    const aliceOne = path.join(PathHelper.characterDir("alice"), "one.jpg");
+    const aliceTwo = path.join(PathHelper.characterDir("alice"), "two.jpg");
+    fs.writeFileSync(aliceOne, "a");
+    fs.writeFileSync(aliceTwo, "b");
+    const bobOne = path.join(PathHelper.characterDir("bob"), "one.jpg");
+    fs.mkdirSync(path.dirname(bobOne), { recursive: true });
+    fs.writeFileSync(bobOne, "c");
+    const mine = persons.storePicture("me", "data:image/png;base64,aGVsbG8=", "my face");
+    persons.setAvatarImage("me", { imageId: mine });
+
+    const chat = chats.create(["alice", "bob"], "me");
+    chat.messages.push({ id: "u1", role: "user", userId: "me", kind: "text", text: "Hi", images: [], timestamp: 1 });
+    chats.save(chat);
+    reply.requestUserTurnImage(chat.id);
+    await flushJobs();
+
+    const expected = expect.arrayContaining([
+      PathHelper.imageIdOf(aliceOne),
+      PathHelper.imageIdOf(aliceTwo),
+      PathHelper.imageIdOf(bobOne),
+      mine,
+    ]);
+    expect((textGeneration.stageOneInput?.images ?? []).map((b) => b.id)).toEqual(expected);
+    // Stage two reads the SAME catalogue: the description alone cannot say which
+    // picture to borrow, so the second call is not shown a shorter list.
+    expect(textGeneration.planInput?.images.map((b) => b.id)).toEqual(expected);
+    // The anchors stay inside the reference budget however many pictures a person
+    // owns — the rest only say what they can look like.
+    for (const member of textGeneration.stageOneInput?.cast ?? []) {
+      expect(member.anchors.length).toBeLessThanOrEqual(2);
+    }
+  });
+
+  it("counts the pictures the catalogue had to leave out", async () => {
+    // A library is bigger than a prompt. The list is cut, and the cut is SAID, so
+    // the model does not describe a picture it was never shown as if it had seen
+    // the whole conversation.
+    const chat = newChat();
+    for (let i = 0; i < 14; i++) {
+      // distinct bytes: saveImage de-duplicates a picture whose bytes it already
+      // holds, and eleven copies of one file are one picture, not eleven.
+      const photo = chats.saveImage(chat.id, `data:image/png;base64,${Buffer.from(`picture-${i}`).toString("base64")}`, {
+        nameHint: `picture-${i}`,
+      });
+      chats.addImageMessage(chats.get(chat.id)!, photo, { description: `picture number ${i}` });
+    }
+    reply.requestUserTurnImage(chat.id);
+    await flushJobs();
+
+    expect(textGeneration.stageOneInput?.images.length).toBeLessThan(14);
+    expect(textGeneration.stageOneInput?.omittedPictures).toBeGreaterThan(0);
+    expect(textGeneration.planInput?.omittedPictures).toBeGreaterThan(0);
   });
 
   it("draws a person from their own photo and never sends their name", async () => {
@@ -1175,7 +1246,7 @@ describe("requestUserTurnImage (the picture of the user's turn)", () => {
 
     // the planner was told what she looks like (the card text is the visual
     // line of her cast entry) and which picture shows her
-    expect(textGeneration.planInput?.cast.find((c) => c.ref === "char:alice")).toEqual({
+    expect(textGeneration.stageOneInput?.cast.find((c) => c.ref === "char:alice")).toEqual({
       ref: "char:alice",
       name: "Alice",
       look: "A tall woman with short red hair, always in a green coat.",
@@ -1189,45 +1260,49 @@ describe("requestUserTurnImage (the picture of the user's turn)", () => {
     expect(job.prompt).toContain(
       "the first reference image shows the red-haired woman — draw them with exactly the same face, hair and outfit",
     );
-    // the card says who is on it, in its picture row, so the next
-    // picture of her can be drawn from this one
+    // the row keeps the words the picture was drawn from; nothing separate
+    // records who is on it — the caption and the folder the id names do that
     const card = chats.get(chat.id)!.messages[1];
-    expect(card.pictures?.[card.images[0]]?.depicts).toEqual(["char:alice"]);
-    expect(rowOf(card.images[0])).toMatchObject({
-      depicts: ["char:alice"],
-    });
+    expect(rowOf(card.images[0]).prompt).toContain("the red-haired woman");
+    expect(rowOf(card.images[0])).not.toHaveProperty("depicts");
   });
 
-  it("prefers a face this chat already drew over the character's own photo", async () => {
-    // The conversation's own picture of her is the better anchor: it is the same
-    // person AND the same technique, which is what makes two pictures of one
-    // chat read as one story.
+  it("offers a picture this chat already drew by what its description says", async () => {
+    // Nothing records who stands in a picture of the conversation, so the chat's
+    // own card is no longer an anchor of a face. It IS still in the catalogue,
+    // with the sentence its row carries — and a plan that reads "Alice at the
+    // bar" there can ask for it. The app stopped guessing; the model reads.
     const photo = path.join(PathHelper.characterDir("alice"), "photo1.jpg");
     fs.writeFileSync(photo, "x");
+    const photoId = PathHelper.imageIdOf(photo);
     const chat = newChat();
     const drawn = chats.saveImage(chat.id, "data:image/png;base64,aGVsbG8=", { nameHint: "alice at the bar" });
     const withCard = chats.get(chat.id)!;
-    chats.addImageMessage(withCard, drawn, { description: "Alice at the bar", depicts: ["char:alice"] });
+    chats.addImageMessage(withCard, drawn, { description: "Alice at the bar" });
     textGeneration.plan = {
       name: "the same woman outside",
       description: "the same woman in the street",
       prompt: "the red-haired woman in the street",
-      refs: [],
+      // the planner picked the chat's own picture out of the catalogue
+      refs: [1],
       cast: ["char:alice"],
       subjects: [{ ref: "char:alice", noun: "the red-haired woman" }],
     };
     reply.requestUserTurnImage(chat.id);
     await flushJobs();
 
-    // the chat's own picture leads (same person AND same technique), the studio
-    // photo rides along as the second view of the same face while there is room
-    const photoId = PathHelper.imageIdOf(photo);
-    expect(textGeneration.planInput?.cast.find((c) => c.ref === "char:alice")?.anchors).toEqual([1, 2]);
-    expect(fake.started[0].refs).toEqual([drawn, photoId]);
-    // and both of them are named in the prompt by their order, so the generator
-    // knows which image is whose
+    // the catalogue holds both: the card of the dialogue first, the studio photo
+    // after it, and only the studio photo is offered as her face
+    const listed = textGeneration.stageOneInput?.images ?? [];
+    expect(listed.map((b) => b.id)).toEqual([drawn, photoId]);
+    expect(listed.find((b) => b.id === drawn)?.description).toBe("Alice at the bar");
+    expect(textGeneration.stageOneInput?.cast.find((c) => c.ref === "char:alice")?.anchors).toEqual([2]);
+    // the face goes first (the app's rule) and the picture the plan chose follows
+    expect(fake.started[0].refs).toEqual([photoId, drawn]);
     expect(fake.started[0].prompt).toContain("the first reference image shows the red-haired woman");
-    expect(fake.started[0].prompt).toContain("the second reference image shows the red-haired woman");
+    expect(fake.started[0].prompt).toContain(
+      "the second reference image is a picture from this conversation — keep its art style",
+    );
   });
 
   it("keeps the face when the generator has room for one reference only", async () => {
@@ -1324,7 +1399,7 @@ describe("requestUserTurnImage (the picture of the user's turn)", () => {
     chats.save(chat);
     reply.requestUserTurnImage(chat.id);
     await flushJobs();
-    expect(textGeneration.planInput?.style).toBe("watercolour, soft edges");
+    expect(textGeneration.stageOneInput?.style).toBe("watercolour, soft edges");
     expect(fake.started[0].prompt).toBe(
       "a red boat on a calm lake, the sky orange, low evening light Style: watercolour, soft edges",
     );
@@ -1346,7 +1421,7 @@ describe("requestUserTurnImage (the picture of the user's turn)", () => {
   it("a card the user cancelled while the model thought stays cancelled and is never drawn", async () => {
     const chat = newChat();
     const g = gate();
-    textGeneration.planGate = g.promise;
+    textGeneration.stageOneGate = g.promise;
     const saved = reply.requestUserTurnImage(chat.id)!;
     const card = saved.messages[1];
     await tick();
@@ -1362,7 +1437,7 @@ describe("requestUserTurnImage (the picture of the user's turn)", () => {
   it("a deleted card is not resurrected by the background run", async () => {
     const chat = newChat();
     const g = gate();
-    textGeneration.planGate = g.promise;
+    textGeneration.stageOneGate = g.promise;
     const saved = reply.requestUserTurnImage(chat.id)!;
     const card = saved.messages[1];
     await tick();
@@ -1540,27 +1615,42 @@ describe("editPicture", () => {
   });
 });
 
-// The three LLM helpers of the picture-editor dialog. The model client is the
-// stub: what matters here is what the reply service hands it and what it
-// answers with.
+// The LLM helpers of the picture-editor dialog — the two stages of a picture,
+// one button each. The model client is the stub: what matters here is what the
+// reply service hands it and what it answers with.
 describe("the picture editor's LLM helpers", () => {
-  it("plans the prompt of a card from the dialogue, leaving the card itself out", async () => {
+  it("writes the description of a picture from the dialogue, leaving the card itself out", async () => {
     const { chat, message } = chatWithCard({ prompt: "a red fox" });
-    const plan = await reply.planPicturePrompt(chat.id, message.id);
-    expect(plan?.prompt).toBe("a red boat on a calm lake, the sky orange, low evening light");
-    expect(plan?.description).toBe("a red boat on a calm lake at dusk");
+    expect(await reply.describePictureFromChat(chat.id, message.id)).toBe(
+      "a red boat on a calm lake at dusk",
+    );
     // the dialogue the model read is the user's line only — the card being
     // planned is not part of the conversation it is planned into
-    expect(textGeneration.planInput?.scene).toContain("Hi");
-    expect(textGeneration.planInput?.scene).not.toContain("a red fox in the snow");
+    expect(textGeneration.stageOneInput?.scene).toContain("Hi");
+    expect(textGeneration.stageOneInput?.scene).not.toContain("a red fox in the snow");
+    expect(textGeneration.stageOneInput?.images).toEqual([]);
+  });
+
+  it("turns a description into the prompt and the references that belong to it", async () => {
+    const { chat, message } = chatWithCard({ prompt: "a red fox" });
+    const plan = await reply.planPictureFromDescription(chat.id, "Алиса у калитки", message.id);
+    expect(plan?.prompt).toBe("a red boat on a calm lake, the sky orange, low evening light");
+    expect(plan?.name).toBe("a red boat at dusk");
+    expect(plan?.refs).toEqual([]);
+    // the description is what stage two was handed, and the dialogue around it
+    // comes along so a "her house" can be resolved
+    expect(textGeneration.planInput?.description).toBe("Алиса у калитки");
+    expect(textGeneration.planInput?.context).toContain("Hi");
+    // the card being planned is left out of the catalogue it may pick from
     expect(textGeneration.planInput?.images).toEqual([]);
   });
 
-  it("returns null when the chat is gone and when the model cannot plan", async () => {
-    expect(await reply.planPicturePrompt("nope")).toBeNull();
+  it("refuses a chat that is gone and answers null when the model cannot plan", async () => {
+    await expect(reply.describePictureFromChat("nope")).rejects.toThrow(/Chat not found/);
+    await expect(reply.planPictureFromDescription("nope", "a fox")).rejects.toThrow(/Chat not found/);
     textGeneration.plan = null;
     const { chat, message } = chatWithCard();
-    expect(await reply.planPicturePrompt(chat.id, message.id)).toBeNull();
+    expect(await reply.planPictureFromDescription(chat.id, "a fox", message.id)).toBeNull();
   });
 
   it("tunes a prompt for the generator with the chat's model", async () => {
@@ -1612,9 +1702,9 @@ describe("the picture editor's LLM helpers", () => {
     await reply.captionPicture(upload.chat.id, upload.message.id, upload.image);
     expect(textGeneration.describeInput?.language).toBe("Russian");
 
-    // ...and so does the description of the 📷 plan
-    await reply.planPicturePrompt(chat.id);
-    expect(textGeneration.planInput?.language).toBe("Russian");
+    // ...and so does the description of the 📷 picture (stage one)
+    await reply.describePictureFromChat(chat.id);
+    expect(textGeneration.stageOneInput?.language).toBe("Russian");
 
     // a code the app does not know is not a language: English
     configuration.pictureLanguage = "klingon";

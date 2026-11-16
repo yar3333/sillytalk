@@ -28,6 +28,12 @@ type PictureTarget =
   | { folder: "person"; personId: string }
   | { folder: "character"; characterId: string };
 
+// What a planning call is given about the conversation: the numbered catalogue
+// of pictures to draw from, the cast expressed IN that numbering, and how many
+// pictures the budget left out of the list (so the model is not silently shown a
+// part of the library and told it is all of it).
+type PictureMaterial = { images: ImageBrief[]; cast: ImageCastMember[]; omitted: number };
+
 // The top-level reply service: the orchestration of an AI reply (the system
 // prompt, the history, the model call, the [SILENT] parsing, saving the
 // message) and of the pictures of a conversation — attaching them to a line,
@@ -354,7 +360,7 @@ export class ReplyService {
   // ---- a picture somebody asked for in their own words ----
 
   // The user pressed 🎨, wrote what they want to see (any language, a character's
-  // name in it is allowed and welcome — see composeImagePromptFromRequest) and
+  // name in it is allowed and welcome — see composeImagePromptFromDescription) and
   // pressed OK. The request becomes a line of THEIR OWN carrying a pending
   // picture, and the answer comes back at once: the plan and the drawing run in
   // the background and the client's polling shows the placeholder becoming the
@@ -479,12 +485,13 @@ export class ReplyService {
       }
       const maxRefs = this.imageGeneration.maxReferenceCount();
       const material = this.pictureMaterial(chat, messageId, maxRefs);
-      const plan = await this.textGeneration.composeImagePromptFromRequest(model, {
-        request,
+      const plan = await this.textGeneration.composeImagePromptFromDescription(model, {
+        description: request,
         context: this.conversationBrief(chat, messageId),
         images: material.images,
         cast: material.cast,
         maxRefs,
+        omittedPictures: material.omitted,
         ...(chat.stylePrompt ? { style: chat.stylePrompt } : {}),
         sampling: chat.sampling,
       });
@@ -513,8 +520,7 @@ export class ReplyService {
         model: model.name,
         createdAt: new Date().toISOString(),
       };
-      if (done.depicts.length > 0) this.chats.setMessageDepicts(chatId, messageId, id, done.depicts);
-      this.chats.writeImageMeta(id, request, generation, done.depicts);
+      this.chats.writeImageMeta(id, request, generation);
       this.startChatImageJob(id, done.prompt, done.refs, chatId, {
         prompt: done.prompt,
         refs: done.refs,
@@ -552,11 +558,16 @@ export class ReplyService {
     return fresh;
   }
 
-  // The background half of requestUserTurnImage: ask the model what to draw and
-  // from which references, rename the placeholder to the name it chose, then
-  // run the generation. Each step re-reads the card — the user may have
-  // cancelled or deleted it while the model was thinking, and a cancelled card
-  // stays cancelled.
+  // The background half of requestUserTurnImage, in the two stages every picture
+  // of this app is planned in: first the model says in one sentence what the
+  // next picture shows, then that sentence becomes the generator's prompt and its
+  // reference set. The split is what the user sees — the card stops being an
+  // anonymous spinner the moment the first call answers and reads as the idea it
+  // is going to draw, and the same sentence is what he can correct afterwards in
+  // the picture editor.
+  //
+  // Each step re-reads the card — the user may have cancelled or deleted it while
+  // the model was thinking, and a cancelled card stays cancelled.
   private async runUserTurnImage(chatId: string, messageId: string, placeholder: string): Promise<void> {
     const giveUp = (error: string): void => {
       this.chats.setMessageImageStatus(chatId, messageId, placeholder, "failed", error);
@@ -571,12 +582,34 @@ export class ReplyService {
       }
       const maxRefs = this.imageGeneration.maxReferenceCount();
       const material = this.pictureMaterial(chat, messageId, maxRefs);
-      const plan = await this.textGeneration.composeImagePrompt(model, {
+      const description = await this.textGeneration.composePictureDescription(model, {
         scene: this.dialogueForImage(chat, messageId),
+        cast: material.cast,
+        images: material.images,
+        omittedPictures: material.omitted,
+        language: this.resolvePictureLanguage(),
+        ...(chat.stylePrompt ? { style: chat.stylePrompt } : {}),
+        sampling: chat.sampling,
+      });
+      if (!description) {
+        giveUp("The model did not describe a picture to draw");
+        return;
+      }
+      // Cancelled or deleted while the model was thinking — leave it as the
+      // user left it.
+      if (!this.pictureIsPending(chatId, messageId, placeholder)) return;
+      // The idea goes onto the card before the drawing exists: the caption is the
+      // picture's row, so the user reads what the picture is going to be while it
+      // is still only a placeholder.
+      this.chats.writeImageMeta(placeholder, description);
+      this.chats.setMessageText(chatId, messageId, description);
+      const plan = await this.textGeneration.composeImagePromptFromDescription(model, {
+        description,
+        context: this.conversationBrief(chat, messageId),
         images: material.images,
         cast: material.cast,
         maxRefs,
-        language: this.resolvePictureLanguage(),
+        omittedPictures: material.omitted,
         ...(chat.stylePrompt ? { style: chat.stylePrompt } : {}),
         sampling: chat.sampling,
       });
@@ -602,11 +635,11 @@ export class ReplyService {
         model: model.name,
         createdAt: new Date().toISOString(),
       };
-      // Who is on the picture goes in before the caption: both writes go to the
-      // same row of the images table, and the row must already know the cast.
-      if (done.depicts.length > 0) this.chats.setMessageDepicts(chatId, messageId, id, done.depicts);
-      this.chats.writeImageMeta(id, done.description, generation, done.depicts);
-      if (done.description) this.chats.setMessageText(chatId, messageId, done.description);
+      // The caption of the finished picture is the stage-one sentence (the plan
+      // of a description answers no description of its own — the sentence it was
+      // handed is the caption).
+      this.chats.writeImageMeta(id, description, generation);
+      this.chats.setMessageText(chatId, messageId, description);
       this.startChatImageJob(id, done.prompt, done.refs, chatId, {
         prompt: done.prompt,
         refs: done.refs,
@@ -693,61 +726,73 @@ export class ReplyService {
   // a person's entry says "shown on picture 3", and picture 3 is one of the
   // briefs below.
   //
-  // The pictures come from two places, and the second one is the whole point:
-  // besides what already appeared in the chat, every person brings their own
-  // look references — the character's photo set, their avatar, and the earlier
-  // pictures this chat already drew of them. Without that the generator gets a
-  // name it has never heard and invents a new face on every roll.
+  // The catalogue is EVERY picture the conversation can draw from — what already
+  // appeared in it, plus every picture of every person in it (their avatar,
+  // their photo set, the earlier pictures of this chat that show them). Without
+  // the second half the generator gets a name it has never heard and invents a
+  // new face on every roll; with it, a request naming a person can be answered
+  // with that person's own photo.
+  //
+  // "Every" still has a budget: a picture is one line of text the model has to
+  // read before it picks two, and a library of a year does not fit a planning
+  // prompt. What the cut keeps is the conversation first and then the pictures
+  // of the people round-robin — the first of every person before anybody gets a
+  // second — so a long folder of one character cannot push another character's
+  // face out of the list before the model ever sees it. What the cut drops is
+  // counted and said (`omitted`), so the model knows the list is not everything.
+  private static readonly CATALOGUE_LIMIT = 60;
+  // How many pictures of ONE person the catalogue can hold. The reference budget
+  // is smaller than that (finishPlan cuts to it), so the extra ones only say
+  // what this person can look like.
+  private static readonly PERSON_PICTURE_LIMIT = 6;
+
   private pictureMaterial(
     chat: Chat,
     exceptMessageId?: string,
     maxRefs = 0,
-  ): { images: ImageBrief[]; cast: ImageCastMember[] } {
-    const images = this.chatPictureBriefs(chat, exceptMessageId);
+  ): PictureMaterial {
+    const { briefs: images, dropped } = this.chatPictureBriefs(chat, exceptMessageId);
     const anchorsOf = Math.max(0, Math.min(2, maxRefs));
-    const cast: ImageCastMember[] = [];
-    for (const person of this.pictureCast(chat)) {
-      // The chat's own pictures of this person, newest first — they are worth
-      // more than a studio photo: the same person AND the same look as the rest
-      // of the conversation. Then their own photo set, then the avatar.
-      const drawn = this.personChatPictureIds(chat, person.ref, exceptMessageId);
-      const anchors = [...drawn, ...this.lookPhotoIds(person).filter((id) => !drawn.includes(id))];
+    // The pictures each person brings: their own photo set, the avatar first.
+    // A picture of THIS chat is not offered as anybody's face here — nothing
+    // says who stands in it; the model reads its description in the catalogue
+    // below and picks it as a reference when that description names the person
+    // the new scene needs.
+    const ofPerson = this.pictureCast(chat).map((person) => ({
+      person,
+      ids: this.lookPhotoIds(person),
+    }));
+    const seen = new Set(images.map((b) => b.id));
+    const extras: ImageBrief[] = [];
+    const deepest = ofPerson.reduce((max, p) => Math.max(max, p.ids.length), 0);
+    for (let round = 0; round < deepest; round++) {
+      for (const { person, ids } of ofPerson) {
+        const id = ids[round];
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        extras.push({ id, role: "look", ofWho: person.ref, shows: person.name });
+      }
+    }
+    const room = Math.max(0, ReplyService.CATALOGUE_LIMIT - images.length);
+    images.push(...extras.slice(0, room));
+    const cast: ImageCastMember[] = ofPerson.map(({ person, ids }) => {
       const member: ImageCastMember = {
         ref: person.ref,
         name: person.name,
         ...(person.look ? { look: person.look } : {}),
         anchors: [],
       };
-      if (anchorsOf > 0) {
-        for (const id of anchors.slice(0, anchorsOf)) {
-          let number = images.findIndex((b) => b.id === id) + 1;
-          if (number === 0) {
-            images.push({ id, role: "look", ofWho: person.ref, shows: person.name });
-            number = images.length;
-          }
-          member.anchors.push(number);
-        }
+      // The anchors are the person's preferred pictures that DID make the list;
+      // one the budget cut is not an anchor, and the plan cannot pick a picture
+      // it was never shown.
+      for (const id of ids) {
+        if (member.anchors.length >= anchorsOf) break;
+        const number = images.findIndex((b) => b.id === id) + 1;
+        if (number > 0 && !member.anchors.includes(number)) member.anchors.push(number);
       }
-      cast.push(member);
-    }
-    return { images, cast };
-  }
-
-  // The pictures of this chat that say who this person is (any line that shows
-  // one and whose row names them, newest first), so the next scene is drawn from
-  // a face the conversation already uses. A picture whose file is gone cannot be
-  // drawn from and is not offered.
-  private personChatPictureIds(chat: Chat, ref: string, exceptMessageId?: string): string[] {
-    const ids: string[] = [];
-    for (const m of chat.messages) {
-      if (m.id === exceptMessageId) continue;
-      for (const id of m.images) {
-        if (!(m.pictures?.[id]?.depicts ?? []).includes(ref)) continue;
-        const file = PathHelper.resolveImageId(id);
-        if (file !== null && fs.existsSync(file)) ids.push(id);
-      }
-    }
-    return ids.reverse();
+      return member;
+    });
+    return { images, cast, omitted: dropped + (extras.length - Math.min(room, extras.length)) };
   }
 
   // ---- the picture cast ----
@@ -797,9 +842,6 @@ export class ReplyService {
       person.kind === "char" ? this.characters.getAvatarId(person.id) : this.persons.getAvatarId(person.id);
     if (avatar) ids.push(avatar);
     if (person.kind === "char") ids.push(...this.characters.pictureIdsOf(person.id));
-    // Two is plenty for one person and the reference budget is smaller than the
-    // number of people in a group chat — every slot a spare photo takes is a
-    // face another character does not get.
     const seen = new Set<string>();
     return ids
       .filter((id) => (seen.has(id) ? false : (seen.add(id), true)))
@@ -807,20 +849,28 @@ export class ReplyService {
         const file = PathHelper.resolvePictureId(id);
         return file !== null && fs.existsSync(file);
       })
-      .slice(0, 2);
+      .slice(0, ReplyService.PERSON_PICTURE_LIMIT);
   }
 
   // The pictures this conversation has, in the order of the dialogue: what each
-  // shows, how it got there, and who stands in it — from whichever line shows it
-  // and from its row. Whose picture it is needs no extra word: the id the model
-  // is given is the path, so "characters/alice/…", "users/carol/…" and
-  // "chats/<id>/…" already say it.
+  // shows and how it got there. Whose picture it is needs no extra word: the id
+  // the model is given is the path, so "characters/alice/…", "users/carol/…" and
+  // "chats/<id>/…" already say it — and who stands in it is what the picture's
+  // own description says, which is the line the model reads here.
   // A picture whose file is gone is left out, so the model is never offered a
   // reference it cannot draw from; only the most recent pictures are offered at
-  // all — an old one is unlikely to be what the next scene needs.
-  private chatPictureBriefs(chat: Chat, exceptMessageId?: string, limit = 8): ImageBrief[] {
+  // all — an old one is unlikely to be what the next scene needs — and the ones
+  // the limit dropped are counted in `dropped`, because a model that is shown
+  // half a conversation should not claim to have seen the rest of it.
+  private static readonly CHAT_PICTURE_LIMIT = 12;
+
+  private chatPictureBriefs(
+    chat: Chat,
+    exceptMessageId?: string,
+    limit = ReplyService.CHAT_PICTURE_LIMIT,
+  ): { briefs: ImageBrief[]; dropped: number } {
     const total = chat.messages.length;
-    const rows: Array<{ brief: ImageBrief; depicts: string[] }> = [];
+    const briefs: ImageBrief[] = [];
     chat.messages.forEach((m, index) => {
       if (m.id === exceptMessageId) return;
       const fromEnd = total - 1 - index;
@@ -828,39 +878,18 @@ export class ReplyService {
         const file = PathHelper.resolveImageId(id);
         if (!file || !fs.existsSync(file)) return;
         const facts = m.pictures?.[id];
-        rows.push({
-          brief: {
-            id,
-            role: "chat",
-            description: facts?.description?.trim() || undefined,
-            prompt: facts?.generation?.prompt,
-            age: fromEnd === 0 ? "the last message" : `${fromEnd} messages ago`,
-            origin: facts?.generation?.prompt ? "generated" : "uploaded",
-          },
-          depicts: facts?.depicts ?? [],
+        briefs.push({
+          id,
+          role: "chat",
+          description: facts?.description?.trim() || undefined,
+          prompt: facts?.generation?.prompt,
+          age: fromEnd === 0 ? "the last message" : `${fromEnd} messages ago`,
+          origin: facts?.generation?.prompt ? "generated" : "uploaded",
         });
       }
     });
-    return rows
-      .slice(Math.max(0, rows.length - limit))
-      .map(({ brief, depicts }) => {
-        const shows = this.castNameOfRefs(depicts);
-        return shows ? { ...brief, shows } : brief;
-      });
-  }
-
-  // The display names of cast refs, for a picture's "shows:" line. The names
-  // live in the planning prompt only — the generator never sees them.
-  private castNameOfRefs(refs: string[]): string {
-    const names = refs
-      .map((ref) => {
-        const [kind, id] = [ref.slice(0, ref.indexOf(":")), ref.slice(ref.indexOf(":") + 1)];
-        if (kind === "char") return this.characters.get(id)?.name;
-        if (kind === "user") return this.persons.get(id)?.name;
-        return undefined;
-      })
-      .filter((n): n is string => !!n);
-    return names.join(" and ");
+    const kept = briefs.slice(Math.max(0, briefs.length - limit));
+    return { briefs: kept, dropped: briefs.length - kept.length };
   }
 
   // ---- what the plan becomes: the prompt and the references of one picture ----
@@ -888,8 +917,8 @@ export class ReplyService {
   private async finishPlan(
     chat: Chat,
     plan: ImagePromptPlan,
-    material: { images: ImageBrief[]; cast: ImageCastMember[] },
-  ): Promise<{ name: string; description: string; prompt: string; refs: string[]; depicts: string[] }> {
+    material: PictureMaterial,
+  ): Promise<{ name: string; description: string; prompt: string; refs: string[] }> {
     const maxRefs = this.imageGeneration.maxReferenceCount();
     const refs: string[] = [];
     const addRef = (number: number | undefined): void => {
@@ -917,7 +946,7 @@ export class ReplyService {
           .trim(),
       ),
     );
-    return { name: plan.name, description: plan.description, prompt, refs: chosen, depicts: [...plan.cast] };
+    return { name: plan.name, description: plan.description, prompt, refs: chosen };
   }
 
   // Which person each offered picture was chosen as the face OF. The cast's
@@ -943,10 +972,7 @@ export class ReplyService {
   // rewritten to the phrase the plan itself used for her ("the red-haired
   // woman"). Only for the people the plan actually shows, and only when it
   // found a phrase — an invented substitution would change the scene.
-  private describePeople(
-    plan: ImagePromptPlan,
-    material: { images: ImageBrief[]; cast: ImageCastMember[] },
-  ): string {
+  private describePeople(plan: ImagePromptPlan, material: PictureMaterial): string {
     let text = plan.prompt;
     for (const subject of plan.subjects) {
       const name = material.cast.find((c) => c.ref === subject.ref)?.name?.trim();
@@ -1132,8 +1158,6 @@ export class ReplyService {
       // generator gets them — the "From the chat" button saves them together
       // with the prompt that refers to them.
       refs?: string[];
-      // Who the user says is on the picture (cast refs); [] clears the claim.
-      depicts?: string[];
     },
   ): Chat | null {
     const fresh = this.chats.get(chat.id);
@@ -1168,7 +1192,6 @@ export class ReplyService {
     }
     this.chats.editPictureOf(fresh, fmsg, target, {
       ...(patch.description !== undefined ? { description: patch.description } : {}),
-      ...(patch.depicts !== undefined ? { depicts: patch.depicts } : {}),
       ...(generation !== undefined ? { generation } : {}),
     });
     return fresh;
@@ -1176,37 +1199,70 @@ export class ReplyService {
 
   // ---- the LLM helpers of the picture editor ----
 
-  // The prompt for one picture card, planned by the model from the dialogue —
-  // the "From the chat" button: what the user wants to show right now, with the
-  // card being edited left out of the dialogue and of the picture catalogue (it
-  // is what is being planned). The answer is what the generator would be given:
-  // the finished prompt AND the reference pictures the plan picked, so the
-  // editor saves a pair that belongs together — a prompt talking about "the
-  // first reference image" without that reference would redraw something else.
-  // Returns null when the chat is gone and when the model cannot produce a
-  // readable plan.
-  async planPicturePrompt(
-    chatId: string,
-    messageId?: string,
-  ): Promise<{ prompt: string; description: string; refs: string[] } | null> {
+  // The two stages of a picture, exposed to the editor as two buttons, because
+  // they answer two different questions and the user usually only dislikes one
+  // of them: "what should this picture show" (the description — the sentence he
+  // reads under the picture and what a blind model is told about it) and "how do
+  // I tell a generator to draw it" (the English prompt plus the pictures it has
+  // to copy faces and places from). Running the second is what needs the whole
+  // catalogue of available pictures; the first only needs the dialogue.
+
+  // Stage one for the editor: what the next picture of this chat could show,
+  // written by the model from the dialogue — the "From the chat" button of the
+  // description field. The card being edited is left out of what the model reads
+  // (it is the picture being planned). Returns the sentence, empty when the model
+  // said nothing readable.
+  async describePictureFromChat(chatId: string, messageId?: string): Promise<string> {
     const chat = this.chats.get(chatId);
-    if (!chat) return null;
+    if (!chat) throw new Error("Chat not found");
     const model = this.resolveImagePromptModel();
-    if (!model) return null;
+    if (!model) throw new Error("No model configured for the chat");
+    const material = this.pictureMaterial(chat, messageId, this.imageGeneration.maxReferenceCount());
+    return this.textGeneration.composePictureDescription(model, {
+      scene: this.dialogueForImage(chat, messageId),
+      cast: material.cast,
+      images: material.images,
+      omittedPictures: material.omitted,
+      language: this.resolvePictureLanguage(),
+      ...(chat.stylePrompt ? { style: chat.stylePrompt } : {}),
+      sampling: chat.sampling,
+    });
+  }
+
+  // Stage two for the editor: the description field becomes the generator's
+  // prompt AND the reference pictures it was built around — the "Prompt and
+  // references" button. The two come back together because they are one thing: a
+  // prompt that says "the first reference image shows the woman in the green
+  // coat" is only true together with that picture, and saving one without the
+  // other would redraw something else.
+  //
+  // The description may be in any language and may name the people of the story;
+  // the answer never does (see finishPlan). Returns null when the model gave
+  // nothing readable.
+  async planPictureFromDescription(
+    chatId: string,
+    description: string,
+    messageId?: string,
+  ): Promise<{ prompt: string; refs: string[]; name: string } | null> {
+    const chat = this.chats.get(chatId);
+    if (!chat) throw new Error("Chat not found");
+    const model = this.resolveImagePromptModel();
+    if (!model) throw new Error("No model configured for the chat");
     const maxRefs = this.imageGeneration.maxReferenceCount();
     const material = this.pictureMaterial(chat, messageId, maxRefs);
-    const plan = await this.textGeneration.composeImagePrompt(model, {
-      scene: this.dialogueForImage(chat, messageId),
+    const plan = await this.textGeneration.composeImagePromptFromDescription(model, {
+      description,
+      context: this.conversationBrief(chat, messageId),
       images: material.images,
       cast: material.cast,
       maxRefs,
-      language: this.resolvePictureLanguage(),
+      omittedPictures: material.omitted,
       ...(chat.stylePrompt ? { style: chat.stylePrompt } : {}),
       sampling: chat.sampling,
     });
     if (!plan) return null;
     const done = await this.finishPlan(chat, plan, material);
-    return { prompt: done.prompt, description: done.description, refs: done.refs };
+    return { prompt: done.prompt, refs: done.refs, name: done.name };
   }
 
   // Rewrites a typed prompt for the generator — English + tuned (the "Make it

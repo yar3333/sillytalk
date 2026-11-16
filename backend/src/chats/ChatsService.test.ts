@@ -561,9 +561,9 @@ describe("the message primitives", () => {
     const described = chats.get(legacyId)!.messages[0];
     expect(described.text).toBe("a fox in the snow");
     expect(described.pictures?.[image]?.generation?.prompt).toBe("a fox at dawn");
-    // the cast the old blob named is still not read: the row says nothing about
-    // who is on the picture, so the card claims nobody
-    expect(described.pictures?.[image]?.depicts).toBeUndefined();
+    // the cast the old blob named is still not read: what a picture claims is
+    // only what its row says
+    expect(described.pictures?.[image]).not.toHaveProperty("depicts");
   });
 
   it("editPictureOf edits the description and the prompt of one picture", () => {
