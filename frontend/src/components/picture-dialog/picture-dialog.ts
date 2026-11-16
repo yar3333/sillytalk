@@ -1,5 +1,5 @@
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
-import { ApiService, ChatMessage } from '../../services/api';
+import { ApiService, ChatMessage, Picture } from '../../services/api';
 import { ChatStore } from '../../services/chat-store';
 import { ImageStore } from '../../services/image-store';
 import { UiStore } from '../../services/ui-store';
@@ -18,6 +18,12 @@ import { UiStore } from '../../services/ui-store';
 // The two fields are the two stages a picture is planned in and they read in that
 // order — the description first, because it is the idea the user corrects, and the
 // prompt below it, because that is what the generator is handed.
+//
+// Under the prompt sits the reference set that prompt names, and it is edited
+// here like the two fields are: the model picks it, but a pick is not always the
+// set the user wants — a face that came out wrong is taken out, another picture
+// (one of the data folder, or a file of the disk the app files first) goes in.
+// An edit of the set is an edit of what the prompt says, so it saves with it.
 //
 // The dialog only EDITS the picture: saving never generates anything — redrawing
 // is the ↻ button of the picture, as before. The target comes from
@@ -139,18 +145,61 @@ function sameList(a: string[], b: string[]): boolean {
             The picture is redrawn from this prompt by the ↻ button on the card, and again
             afterwards whenever the card is regenerated.
           </div>
-          @if (refs().length) {
+          <!-- The reference set is the prompt's own: the prompt counts these
+               pictures ("the first reference image shows …"), so editing them is
+               an edit of what the prompt means and it saves together with it.
+               Removing one drops it from THIS picture's set only — the file and
+               every other picture that names it are untouched. A picture of the
+               data folder is picked from the same catalog the "from a file" kind
+               shows; a file from disk is filed into this conversation's folder
+               first (the app reuses a picture it already holds byte for byte)
+               and only then joins the set, because a prompt can only name a
+               picture that really has an id. -->
+          <div class="field col">
+            <span>Drawn from</span>
             <div class="refs">
-              <span class="refs-label">Drawn from</span>
-              @for (id of refs(); track id) {
-                <img class="ref-thumb" [src]="thumb(id)" [alt]="id" [title]="id" />
+              @for (id of refs(); track $index) {
+                <span class="ref" [title]="id">
+                  <img class="ref-thumb" [src]="thumb(id)" [alt]="id" loading="lazy" />
+                  <span class="ref-name">{{ baseName(id) }}</span>
+                  <button
+                    class="ref-x"
+                    data-testid="picture-ref-remove"
+                    title="Take this picture out of the reference set (the file itself stays)"
+                    (click)="removeRef($index)"
+                  >
+                    ✕
+                  </button>
+                </span>
+              } @empty {
+                <span class="refs-none">Nothing — this prompt draws from no picture.</span>
               }
             </div>
-            <div class="dialog-hint">
-              The prompt names these pictures in this order (the first reference image, the second…),
-              so they are saved with it — a redraw keeps the same faces.
+            <div class="ref-tools">
+              <select class="ref-add" data-testid="picture-ref-add" (change)="addRef($event)">
+                <option value="" [selected]="true">Add a picture of the data folder…</option>
+                @for (option of refOptions(); track option.id) {
+                  <option [value]="option.id">{{ option.id }}</option>
+                }
+              </select>
+              <label class="btn file-pick" title="A picture from your disk, added to this conversation">
+                {{ refBusy() ? 'Adding…' : 'From disk…' }}
+                <input
+                  type="file"
+                  hidden
+                  accept="image/*"
+                  data-testid="picture-ref-file"
+                  (change)="addRefFromFile($event)"
+                />
+              </label>
             </div>
-          }
+          </div>
+          <div class="dialog-hint">
+            The prompt names these pictures in this order (the first reference image, the second…),
+            so they are saved with it — a redraw keeps the same faces. Taking one out changes only
+            this picture; a picture added from disk is saved into this chat's folder and reused
+            when you already have exactly that one.
+          </div>
         } @else {
           <label class="field">
             <span>Picture</span>
@@ -205,18 +254,23 @@ export class PictureDialog implements OnInit {
   readonly description = signal('');
   // The pictures the prompt names in order ("the first reference image shows
   // …"). They belong to the prompt: saving one without the rest would redraw
-  // something else, so "From the chat" fills them and Save writes them back.
+  // something else, so "Prompt and references" fills them, the user edits them
+  // here, and Save writes them back with the prompt.
   readonly refs = signal<string[]>([]);
   // What the card said when the dialog opened — Save compares against it, so a
   // dialog nobody touched does not rewrite this field of the card.
   private initialRefs: string[] = [];
-  // The pictures of the data folder (the "from a file" pick) and the id chosen
-  // there; a file picked from disk is kept as its data URL until the save.
-  readonly catalog = signal<string[]>([]);
+  // The pictures of the data folder (the "from a file" pick and the reference
+  // pick) and the id chosen there; a file picked from disk is kept as its data
+  // URL until the save.
+  readonly catalog = signal<Picture[]>([]);
   readonly catalogLoading = signal(true);
   readonly chosenId = signal('');
   readonly pickedData = signal('');
   readonly pickedName = signal('');
+  // A reference file from disk is uploaded before it joins the set (it needs an
+  // id of the data folder to be named by a prompt), so the button says so.
+  readonly refBusy = signal(false);
   // Which LLM helper is running (the buttons say what they are doing) and the
   // save in flight.
   readonly busy = signal<'describeChat' | 'describeImage' | 'prompt' | 'tune' | null>(null);
@@ -226,8 +280,17 @@ export class PictureDialog implements OnInit {
   // when it is not in it (a picture the walk did not reach, for instance).
   readonly idOptions = computed<string[]>(() => {
     const current = this.chosenId();
-    const ids = this.catalog();
+    const ids = this.catalog().map((p) => p.id);
     return current && !ids.includes(current) ? [current, ...ids] : ids;
+  });
+
+  // What may still be added to the reference set: the pictures whose file is
+  // really there (a job cannot read an orphan row), never the card's own
+  // picture, never one the set already names.
+  readonly refOptions = computed<Picture[]>(() => {
+    const taken = new Set(this.refs());
+    const own = this.imageId();
+    return this.catalog().filter((p) => p.exists && p.id !== own && !taken.has(p.id));
   });
 
   ngOnInit(): void {
@@ -247,9 +310,17 @@ export class PictureDialog implements OnInit {
     this.initialRefs = [...this.refs()];
     this.description.set(facts?.description ?? '');
     this.chosenId.set(target.image);
+    this.readCatalog();
+  }
+
+  // The catalog of the data folder, for both picks (the picture a "from a file"
+  // card points at, the pictures the reference set may name). Re-read after a
+  // picture was filed from disk, so a reference the user just added is in the
+  // list like any other picture of the folder.
+  private readCatalog(): void {
     this.api
       .listPictures()
-      .then((res) => this.catalog.set(res.pictures.map((p) => p.id)))
+      .then((res) => this.catalog.set(res.pictures))
       .catch((e) => this.ui.error.set(String((e as Error).message)))
       .finally(() => this.catalogLoading.set(false));
   }
@@ -305,6 +376,56 @@ export class PictureDialog implements OnInit {
   clearPick(): void {
     this.pickedData.set('');
     this.pickedName.set('');
+  }
+
+  baseName(id: string): string {
+    return id.slice(id.lastIndexOf('/') + 1);
+  }
+
+  // The reference set, edited by hand. Taking a picture out of it says only that
+  // THIS prompt no longer draws from it — the file stays, and so does every
+  // other picture that names it.
+  removeRef(index: number): void {
+    this.refs.update((list) => list.filter((_, i) => i !== index));
+  }
+
+  addRef(e: Event): void {
+    const select = e.target as HTMLSelectElement;
+    const id = select.value;
+    select.value = '';
+    if (!id || this.refs().includes(id)) return;
+    this.refs.update((list) => [...list, id]);
+  }
+
+  // A reference from disk. A prompt can only name a picture that has an id, so
+  // the bytes are filed into this conversation's folder first (the server hands
+  // back the id of an identical picture the app already owns rather than writing
+  // a copy) and the id the answer carries joins the set. The picture is not
+  // shown in any line — it is an ingredient, which is why it lives with the
+  // conversation rather than with a person.
+  addRefFromFile(e: Event): void {
+    const chat = this.chatStore.chat();
+    const input = e.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!chat || !file || this.refBusy()) return;
+    this.refBusy.set(true);
+    const reader = new FileReader();
+    reader.onload = () => {
+      this.api
+        .importPicture(chat.id, String(reader.result), file.name)
+        .then((res) => {
+          if (!this.refs().includes(res.id)) this.refs.update((list) => [...list, res.id]);
+          this.readCatalog();
+        })
+        .catch((err) => this.ui.error.set(String((err as Error).message)))
+        .finally(() => this.refBusy.set(false));
+    };
+    reader.onerror = () => {
+      this.refBusy.set(false);
+      this.ui.error.set('Could not read the file');
+    };
+    reader.readAsDataURL(file);
   }
 
   // "From the chat" (the description field): the model reads the conversation and

@@ -1502,6 +1502,87 @@ test('UX 21: a character shares a picture of its own — by id and by request', 
   expect((comfy?.uploads() ?? []).length).toBeGreaterThan(0);
 });
 
+// The reference set belongs to the prompt, but the planner is not the only one
+// allowed to write it: the picture's own dialog takes a picture out of the set,
+// puts one of the data folder in, and files a file of the disk so a prompt can
+// name it. What the redraw then sends is that set, not the model's guess.
+test('UX 22: the reference set of a picture is edited in its own dialog', async ({ page }) => {
+  await setDelay(150);
+  await openApp(page);
+  await page.getByTestId('input').fill('Hello Alice');
+  await page.getByTestId('send').click();
+  await expect(assistantMsgs(page).first()).toBeVisible({ timeout: 15000 });
+
+  // Two pictures: the second one's plan names the first as its reference, which
+  // is the set this dialog edits.
+  await setPlan({ name: 'the first', description: 'A red circle', prompt: 'a red circle', refs: [] });
+  await askForPicture(page, 'a red circle');
+  await expect(linePicImages(page).first()).toBeVisible({ timeout: 30000 });
+  await setPlan({
+    name: 'the second',
+    description: 'The same circle again',
+    prompt: 'the same circle, the first reference image shows it',
+    refs: [1],
+  });
+  await askForPicture(page, 'the same circle again');
+  await expect(linePicImages(page).last()).toBeVisible({ timeout: 30000 });
+
+  const line = linePicRows(page).last();
+  await line.hover();
+  await line.locator('[data-testid=picture-edit]').click();
+  const dialog = page.getByTestId('picture-dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator('.refs .ref-thumb')).toHaveCount(1);
+
+  // Taken out of the set. The file is nobody's to delete here — the row of the
+  // picture that is left saying nothing is what changes.
+  await dialog.getByTestId('picture-ref-remove').click();
+  await expect(dialog.locator('.refs .ref')).toHaveCount(0);
+  await expect(dialog.locator('.refs-none')).toBeVisible();
+
+  // A picture the app already owns goes in, picked from the same catalog the
+  // "from a file" kind shows.
+  await dialog.getByTestId('picture-ref-add').selectOption('characters/alice/photo1.png');
+  await expect(dialog.locator('.refs .ref')).toHaveCount(1);
+
+  // And a file of the disk: it becomes a picture of this conversation first (a
+  // prompt can only name a picture that has an id), then joins the set.
+  const file = path.join(ASSETS, 'ux-22-reference.png');
+  fs.writeFileSync(file, makePng(200, 200, 210, 40, 40));
+  await dialog.locator('[data-testid=picture-ref-file]').setInputFiles(file);
+  await expect(dialog.locator('.refs .ref')).toHaveCount(2);
+  await page.screenshot({ path: `${SHOTS}/ux-22-reference-set.png` });
+  await dialog.getByTestId('picture-save').click();
+  await expect(dialog).toBeHidden();
+
+  // What the row holds now, in the order the prompt counts the pictures.
+  const src = await line.locator('[data-testid=line-picture] img').getAttribute('src');
+  const editedId = decodeURIComponent(new URL(src ?? '', 'http://x').searchParams.get('path') ?? '');
+  expect(editedId).not.toBe('');
+  const listing = (await api('/pictures')) as {
+    pictures: Array<{ id: string; exists: boolean; refs?: string[] }>;
+  };
+  const rows = listing.pictures;
+  const row = rows.find((p) => p.id === editedId);
+  const added = (row?.refs ?? []).find((r) => r.startsWith('chats/')) ?? '';
+  expect(row?.refs ?? []).toEqual(['characters/alice/photo1.png', added]);
+  expect(added).toMatch(/^chats\/[^/]+\/ux-22-reference-png-[0-9a-f]{6}\.png$/);
+  // The imported bytes really became a picture of the data folder, not a temp
+  // file the dialog forgot about.
+  expect(rows.find((p) => p.id === added)?.exists).toBe(true);
+
+  // The redraw draws from the edited set: both references arrive at the
+  // generator, the new one under the name the app gave its file.
+  const uploadsBefore = (comfy?.uploads() ?? []).length;
+  await line.hover();
+  await line.locator('[data-testid=img-regenerate]').click();
+  await expect(line.locator('[data-testid=img-pending]')).toBeVisible({ timeout: 15000 });
+  await expect(line.locator('[data-testid=line-picture] img')).toBeVisible({ timeout: 30000 });
+  const sent = (comfy?.uploads() ?? []).slice(uploadsBefore);
+  expect(sent).toHaveLength(2);
+  expect(sent.some((name) => /^ux-22-reference-png-[0-9a-f]{6}\.png$/.test(name))).toBe(true);
+});
+
 // The collected issues are attached to every test run as a JSON artifact.
 test.afterEach(async ({ page }, testInfo) => {
   if (issues.length > 0) {

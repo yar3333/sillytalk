@@ -147,25 +147,73 @@ textarea {
     position: relative;
   }
 
-  /* the pictures the prompt names in order — the set the card is redrawn from */
+  /* the pictures the prompt names in order — the set the card is redrawn from,
+     edited here: a chip carries its own ✕, and the two controls under the list
+     put another picture in the set (one of the data folder, or a file of the
+     disk that becomes one of this conversation's pictures first) */
   .refs {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+
+    .ref {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 6px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel-2);
+      font-size: 11px;
+      max-width: 100%;
+    }
+
+    .ref-thumb {
+      width: 40px;
+      height: 40px;
+      object-fit: cover;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      background: rgba(0, 0, 0, 0.3);
+    }
+
+    .ref-name {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 160px;
+    }
+
+    .ref-x {
+      background: transparent;
+      border: none;
+      color: var(--fg-dim, #999);
+      cursor: pointer;
+      padding: 0 2px;
+      font-size: 12px;
+
+      &:hover {
+        color: var(--danger, #e55);
+      }
+    }
+  }
+
+  .refs-none {
+    color: var(--fg-dim, #888);
+    font-size: 12px;
+  }
+
+  .ref-tools {
     display: flex;
     align-items: center;
     gap: 8px;
     flex-wrap: wrap;
 
-    .refs-label {
-      color: var(--fg-dim, #aaa);
-      font-size: 13px;
-    }
-
-    .ref-thumb {
-      width: 54px;
-      height: 54px;
-      object-fit: cover;
-      border-radius: 6px;
-      border: 1px solid var(--border);
-      background: rgba(0, 0, 0, 0.3);
+    select.ref-add {
+      flex: 1;
+      min-width: 0;
+      font-size: 12px;
     }
   }
 

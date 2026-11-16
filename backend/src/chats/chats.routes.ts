@@ -325,6 +325,36 @@ export function createChatsRouter(
     res.json({ chat: result.chat, message: result.message });
   });
 
+  // A file from disk that joins the conversation as a REFERENCE picture — the
+  // picture editor adds it to the set a prompt draws faces and places from,
+  // without putting it into anybody's line. Nothing shows it, so the
+  // conversation owns it exactly as it owns a 🖼 card: the bytes go to the CHAT's
+  // folder, and a picture the app already holds byte for byte gives its existing
+  // id back instead of being copied. The answer is the id alone — the chat does
+  // not change; where the picture goes (a prompt's reference set) is the
+  // caller's next request.
+  router.post("/:id/picture-import", (req, res) => {
+    const data = req.body?.data;
+    if (typeof data !== "string" || !data.startsWith("data:image/")) {
+      res.status(400).json({ error: "Expected a picture data URL (data field)" });
+      return;
+    }
+    if (!chats.get(req.params.id)) {
+      res.status(404).json({ error: "Chat not found" });
+      return;
+    }
+    const name = typeof req.body?.name === "string" ? req.body.name : undefined;
+    try {
+      const id = chats.saveImage(req.params.id, data, {
+        ...(name ? { nameHint: name } : {}),
+        meta: { source: "upload" },
+      });
+      res.json({ id });
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
   // ---- one message ----
 
   // Edits the text of a message: the line of a text message, the description

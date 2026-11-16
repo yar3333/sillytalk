@@ -297,7 +297,9 @@ backend/               Express API; also serves the built frontend
                        (the chat CRUD + the clone (POST /:id/clone) + the ID
                        rename (POST /:id/rename), the
                        messages, the reply queue, the
-                       picture of the user's turn (POST /:id/auto-image), the
+                       picture of the user's turn (POST /:id/auto-image), a file
+                       of the disk filed as a REFERENCE picture of the
+                       conversation (POST /:id/picture-import → its id), the
                        per-picture edit (PATCH /:id/messages/:id/picture) and the
                        per-image generation controls — every one of them names
                        the picture it means with `image` in the body);
@@ -958,6 +960,12 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   it with the person; 🖼 + 📷 hand it to the conversation and file it with the chat. A picture the
   editor later swaps for a file (`ReplyService.replaceImage`) follows the same rule through
   `storePictureFor` — it is filed where the line it joins keeps its pictures.
+  **A fifth way writes bytes without showing a picture**: `POST /api/chats/:id/picture-import`
+  (body `{ data, name? }` → `{ id }`) files a file of the disk into the CHAT's folder so a prompt can
+  name it — the picture editor's "From disk…" of the reference set. Nothing appears in the chat: the
+  picture is an ingredient, not a line, which is why the conversation owns it and no author rule
+  applies. The de-dup is the usual one (`ChatsService.saveImage` — size + sha256), so importing a
+  picture the app already holds gives that id back.
   **Attaching a picture is only a warning when the picture will really arrive undescribed**
   (`ChatStore.onImagesAdded`). The old banner judged by the CHAT model alone ("The model "x" does
   not support images — the photos will not be passed") and was wrong twice: a text-only chat model
@@ -1616,9 +1624,17 @@ that needs the databases resolves them here — the one place allowed to.
   "From the chat", which lets the model say what the next picture of this conversation should show,
   and "Describe the picture", a vision call). **The dialog has no "who is on this picture" control
   at all** — nothing in the app stores that: it reads off the picture itself, the folder its id names
-  and what its description says (see the cast bullet). A generated picture also shows the **reference set** its
-  prompt names, in order (`.refs` / `.ref-thumb`) — "Prompt and references" fills the prompt and those
-  pictures together and Save writes both, because a prompt that says "the first reference image
+  and what its description says (see the cast bullet). A generated picture also carries the
+  **reference set** its prompt names, in order (`.refs` / `.ref` chips) — and the set is **edited
+  here**, not only written by the model: each chip has its own ✕ (`picture-ref-remove`), another
+  picture of the data folder is picked from the same catalog (`picture-ref-add`), and a file of the
+  disk goes in through `picture-ref-file`, which POSTs `/api/chats/:id/picture-import` first, because
+  a prompt can only name a picture that really has an id (the bytes land in the CHAT's folder — an
+  ingredient of the conversation, shown in no line, so nobody's own picture; a byte-identical
+  picture the app already holds gives its existing id back rather than a copy). Taking one out says
+  only that THIS prompt no longer draws from it — the file and every other picture naming it are
+  untouched. "Prompt and references" fills the prompt and those pictures together and Save writes
+  both, because a prompt that says "the first reference image
   shows the woman in the green coat" is only true with its pictures.
   **The two fields are in the order of the two stages**: the description first — it is the idea, the
   picture's caption (readable and correctable only here, since the chat prints nothing under a
@@ -2052,9 +2068,11 @@ that needs the databases resolves them here — the one place allowed to.
   call) under the description, `picture-prompt-from-description` (stage two — "Prompt and
   references", disabled while the description is empty) and
   `picture-prompt-english`, `picture-id` (the catalog
-  `<select>`), `picture-file` (the disk pick), the reference set the prompt names (`.refs` /
-  `.ref-thumb`, no testid — it is
-  read-only) and `picture-save` / `picture-cancel`. The picture BROWSER (the ⋮ menu → `picture-library`
+  `<select>`), `picture-file` (the disk pick), the reference set the prompt names
+  (`.refs` / `.ref` chips, each with `picture-ref-remove`) with its two ways to add
+  (`picture-ref-add` — the catalog `<select>` — and `picture-ref-file` — the disk pick; the same
+  two testids the picture BROWSER uses, and the two dialogs are never open at once) —
+  and `picture-save` / `picture-cancel`. The picture BROWSER (the ⋮ menu → `picture-library`
   opens the `picture-library` modal, closed by `picture-library-close`): `picture-filter` (the search),
   `picture-sort` (the order pick: `newest` / `id`),
   `picture-row` (one picture in the list, `.on` = selected, `.gone` = its file is gone, with a

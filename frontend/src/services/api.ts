@@ -675,6 +675,17 @@ export class ApiService {
     });
   }
 
+  // A file from disk that becomes a REFERENCE picture of the conversation: the
+  // bytes are filed in the chat's own folder (an identical picture the app
+  // already holds gives its id back rather than a copy) and only the id comes
+  // back — no line shows this picture, it is an ingredient a prompt names.
+  importPicture(chatId: string, data: string, name?: string): Promise<{ id: string }> {
+    return this.req<{ id: string }>(`/chats/${chatId}/picture-import`, {
+      method: 'POST',
+      body: JSON.stringify({ data, ...(name ? { name } : {}) }),
+    });
+  }
+
   // The picture of the user's turn: the model plans it from the dialogue and
   // the generator draws it, both in the background. The answer comes back with
   // the placeholder card already in the chat, so the user can go on writing.

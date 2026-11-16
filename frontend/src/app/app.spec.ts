@@ -1250,6 +1250,7 @@ describe('PictureDialog — the picture editor', () => {
   let tuned: Array<{ chatId: string; prompt: string }>;
   let planned: Array<{ chatId: string; description: string; messageId?: string }>;
   let fromChat: Array<{ chatId: string; messageId?: string }>;
+  let imported: Array<{ chatId: string; data: string; name?: string }>;
   let chat: Chat;
 
   // A line whose one picture is the editor's target. The words the dialog edits
@@ -1319,6 +1320,12 @@ describe('PictureDialog — the picture editor', () => {
         replaced.push({ chatId, messageId, image, data });
         return Promise.resolve({ chat });
       },
+      // A reference file of the disk becomes a picture of the conversation
+      // first — the server answers with the id the prompt can name.
+      importPicture: (chatId: string, data: string, name?: string) => {
+        imported.push({ chatId, data, name });
+        return Promise.resolve({ id: 'chat-1/a-face-on-disk-0a1b2c.png' });
+      },
       getConfig: () => Promise.resolve({ llmModels: {} }),
       imageStatus: () => Promise.resolve({ available: false }),
       getCharacters: () => Promise.resolve([]),
@@ -1361,6 +1368,7 @@ describe('PictureDialog — the picture editor', () => {
     tuned = [];
     planned = [];
     fromChat = [];
+    imported = [];
   });
 
   it('a generated card opens in "generated" with its prompt and description, and Save keeps it generated', async () => {
@@ -1485,6 +1493,58 @@ describe('PictureDialog — the picture editor', () => {
         },
       },
     ]);
+  });
+
+  // The planner is not the only one allowed to write the reference set: the
+  // dialog takes a picture out of it and puts another in — one the app already
+  // owns, or a file of the disk, which the server files first because a prompt
+  // can only name a picture that has an id.
+  it('the reference set is edited here: a chip goes out, the folder and the disk put pictures in', async () => {
+    const { fixture, el } = await render(
+      card({ generation: { prompt: 'a red fox', source: 'manual', refs: [otherImage] } }),
+    );
+    fixture.detectChanges();
+    expect(el.querySelectorAll('.refs .ref')).toHaveLength(1);
+
+    // Out of the set. The file is not this dialog's to delete, and every other
+    // picture that names it keeps naming it.
+    (el.querySelector('[data-testid=picture-ref-remove]') as HTMLButtonElement).click();
+    fixture.detectChanges();
+    expect(el.querySelectorAll('.refs .ref')).toHaveLength(0);
+    expect(el.querySelector('.refs-none')).not.toBeNull();
+
+    // In, from the data folder. The card's own picture is not offered (a picture
+    // is never its own reference) and a picture the set already names is not
+    // offered twice.
+    const add = () => el.querySelector('[data-testid=picture-ref-add]') as HTMLSelectElement;
+    expect(Array.from(add().options).map((o) => o.value)).toEqual(['', otherImage]);
+    add().value = otherImage;
+    add().dispatchEvent(new Event('change'));
+    fixture.detectChanges();
+    expect(el.querySelectorAll('.refs .ref')).toHaveLength(1);
+    expect(Array.from(add().options).map((o) => o.value)).toEqual(['']);
+
+    // In, from disk: the bytes are filed first and the id they came back with
+    // joins the set.
+    const input = el.querySelector('[data-testid=picture-ref-file]') as HTMLInputElement;
+    const file = new File([new Uint8Array([1, 2, 3])], 'face.png', { type: 'image/png' });
+    Object.defineProperty(input, 'files', { value: [file], configurable: true });
+    input.dispatchEvent(new Event('change'));
+    for (let i = 0; i < 50; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+      fixture.detectChanges();
+      if (el.querySelectorAll('.refs .ref').length === 2) break;
+    }
+    expect(el.querySelectorAll('.refs .ref')).toHaveLength(2);
+    expect(imported).toHaveLength(1);
+    expect(imported[0].chatId).toBe('chat-1');
+    expect(imported[0].name).toBe('face.png');
+    expect(imported[0].data.startsWith('data:image/png')).toBe(true);
+
+    (el.querySelector('[data-testid=picture-save]') as HTMLButtonElement).click();
+    await tick();
+    // the edited set travels with the prompt it belongs to, in the new order
+    expect(patched[0]?.patch['refs']).toEqual([otherImage, 'chat-1/a-face-on-disk-0a1b2c.png']);
   });
 
   it('the dialog offers no "who is on this picture" control — the picture says it itself', async () => {
