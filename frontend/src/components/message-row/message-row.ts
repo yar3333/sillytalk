@@ -11,9 +11,10 @@ import { avatarLetter, imageHintFor, splitNarration as splitNarrationParts } fro
 // its own. The other shape is the NEUTRAL picture card: nothing but one picture
 // and no author, which only the two controls that hand a picture to the chat
 // produce (the 🖼 disk pick and the 📷 picture of the turn).
-// Every picture brings with it what its row of the images table says: the
-// caption (what is on it), the prompt it was drawn from, how many references it
-// used, plus the quick redraw (↻) and the ✎ of the picture editor.
+// Nothing about a picture is printed under it: its caption and the prompt it was
+// drawn from live in the hover hint and in the ✎ of the picture editor, because
+// the picture is its own statement and a paragraph under it only repeats what it
+// shows. What the line gives is the picture, the quick redraw (↻) and that ✎.
 // Chat actions (edit / delete / regenerate the reply) — ChatStore; image
 // actions (cancel / regenerate / open the editor) — ImageStore.
 @Component({
@@ -75,10 +76,13 @@ import { avatarLetter, imageHintFor, splitNarration as splitNarrationParts } fro
         </button>
         <div class="msg-sender" data-testid="msg-sender">{{ senderName() }}</div>
 
-        <!-- A neutral card has no words of its own (its caption is written under
-             the picture), and a line that was nothing but picture markers has no
-             text either — in both cases there is nothing to print here. -->
-        @if (message().text.trim()) {
+        <!-- A neutral card prints no words: the server mirrors its picture's
+             caption into the message's "text" because that is where every reader
+             of a line looks for its words (a model without vision is told that
+             sentence), but on screen the card IS its picture, and the sentence
+             above it only repeats what the picture shows. A line that was
+             nothing but picture markers has no text either. -->
+        @if (!isCard() && message().text.trim()) {
           <div class="msg-text">
             @for (p of splitNarration(message().text); track $index) {
               <span [class.narration]="p.narration">{{ p.text }}</span>
@@ -172,17 +176,6 @@ import { avatarLetter, imageHintFor, splitNarration as splitNarrationParts } fro
                     </span>
                   }
                 }
-                @if (captionOf(img)) {
-                  <div class="card-caption" data-testid="card-caption">{{ captionOf(img) }}</div>
-                }
-                @if (promptOf(img)) {
-                  <div class="card-prompt" data-testid="card-prompt" [title]="promptOf(img)">
-                    {{ promptOf(img) }}
-                  </div>
-                }
-                @if (refsOf(img)) {
-                  <div class="card-refs" data-testid="card-refs">{{ refsOf(img) }}</div>
-                }
               </div>
             }
           </div>
@@ -211,22 +204,17 @@ export class MessageRow implements OnDestroy {
     return (this.message().images?.length ?? 0) > 0;
   }
   // What one picture of this line is said to show — its row of the images
-  // table, the same sentence a model without vision is given in its place. (For
-  // a neutral card the server also writes it into the message's `text`, which is
-  // why the card has no text block of its own above the picture.)
+  // table. Nothing prints it: the picture is its own statement, and the sentence
+  // is the alt text here, the ✎ its editor. (The same sentence is what a model
+  // without vision is given in its place.)
   captionOf(img: string): string {
     return this.message().pictures?.[img]?.description?.trim() ?? '';
   }
-  // What the picture was drawn from — shown under it so the user can see and
-  // reuse it. Empty for a file somebody brought, which has no prompt.
+  // What the picture was drawn from — not printed either (the hover hint of the
+  // image carries it), but it is what decides whether there is anything to
+  // redraw: a file somebody brought has no prompt.
   promptOf(img: string): string {
     return this.message().pictures?.[img]?.generation?.prompt?.trim() ?? '';
-  }
-  // How many reference pictures it was drawn from (their file names would only
-  // be noise here — the hover hint of the image lists them).
-  refsOf(img: string): string {
-    const n = this.message().pictures?.[img]?.generation?.refs?.length ?? 0;
-    return n > 0 ? `references: ${n}` : '';
   }
   // A picture can be redrawn only when there is a prompt to draw from — an
   // uploaded photo has none until the user writes one.

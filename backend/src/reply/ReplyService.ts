@@ -833,15 +833,21 @@ export class ReplyService {
 
   // The person's own pictures — the faces the generator should copy instead of
   // inventing. Their avatar first (the one picture the user picked to BE their
-  // face), then the rest of their folder; a persona has only the avatar. The
-  // ids are data-root-relative picture ids, so they reach the generator the
-  // same way as any reference.
+  // face), then the rest of their folder. A persona's folder counts too: the
+  // photos in users/<id>/ are the ones this person showed here, and without them
+  // a persona whose avatar is unset has no face at all, so every picture of her
+  // gets a new one. The ids are data-root-relative picture ids, so they reach
+  // the generator the same way as any reference.
   private lookPhotoIds(person: { id: string; kind: "char" | "user" }): string[] {
     const ids: string[] = [];
     const avatar =
       person.kind === "char" ? this.characters.getAvatarId(person.id) : this.persons.getAvatarId(person.id);
     if (avatar) ids.push(avatar);
-    if (person.kind === "char") ids.push(...this.characters.pictureIdsOf(person.id));
+    ids.push(
+      ...(person.kind === "char"
+        ? this.characters.pictureIdsOf(person.id)
+        : this.persons.pictureIdsOf(person.id)),
+    );
     const seen = new Set<string>();
     return ids
       .filter((id) => (seen.has(id) ? false : (seen.add(id), true)))

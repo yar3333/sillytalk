@@ -1006,7 +1006,7 @@ describe('MessageRow — the pictures of a line', () => {
     return { fixture, el: fixture.nativeElement as HTMLElement };
   }
 
-  it('a neutral card shows the picture by its id, its description, the prompt it was drawn from and its references', () => {
+  it('a neutral card shows the picture alone — no caption, no prompt, no reference count', () => {
     const { el } = renderMessage({
       id: 'card-1',
       role: 'user',
@@ -1027,11 +1027,15 @@ describe('MessageRow — the pictures of a line', () => {
 
     const img = el.querySelector('.card-body img') as HTMLImageElement;
     expect(img.getAttribute('src')).toBe(mediaUrl(cardImage));
-    expect(el.querySelector('[data-testid=card-caption]')?.textContent?.trim()).toBe(
-      'a red boat on a calm lake at dusk',
-    );
-    expect(el.querySelector('[data-testid=card-prompt]')?.textContent?.trim()).toBe('a red boat, the sky orange');
-    expect(el.querySelector('[data-testid=card-refs]')?.textContent).toContain('references: 1');
+    // The picture is its own statement: the sentence and the prompt are not
+    // printed (they live in the hover hint and in the ✎), and the mirrored
+    // caption is not printed as the card's words either.
+    expect(el.querySelector('[data-testid=card-caption]')).toBeNull();
+    expect(el.querySelector('[data-testid=card-prompt]')).toBeNull();
+    expect(el.querySelector('[data-testid=card-refs]')).toBeNull();
+    expect(el.querySelector('.msg-text')).toBeNull();
+    // what the picture is said to show still reaches the DOM — as its alt text
+    expect(img.getAttribute('alt')).toBe('a red boat on a calm lake at dusk');
     // a drawn picture can be redrawn; everything else about it (the prompt,
     // the description, the file) lives in the picture editor dialog
     expect(el.querySelector('[data-testid=img-regenerate]')).toBeTruthy();
@@ -1041,7 +1045,7 @@ describe('MessageRow — the pictures of a line', () => {
     expect(el.querySelector('[data-testid=img-replace]')).toBeNull();
   });
 
-  it('a text line shows its words ABOVE its pictures, each with its own caption', () => {
+  it('a text line shows its words ABOVE its pictures, which carry no captions', () => {
     const boat = 'users/me/a-boat-1a2b3c.png';
     const fox = 'users/me/a-fox-4d5e6f.png';
     const { el } = renderMessage({
@@ -1064,8 +1068,11 @@ describe('MessageRow — the pictures of a line', () => {
     expect(pictures).toHaveLength(2);
     expect(pictures[0].querySelector('img')?.getAttribute('src')).toBe(mediaUrl(boat));
     expect(pictures[1].querySelector('img')?.getAttribute('src')).toBe(mediaUrl(fox));
-    expect(pictures[0].querySelector('[data-testid=card-caption]')?.textContent?.trim()).toBe('a red boat');
-    expect(pictures[1].querySelector('[data-testid=card-caption]')?.textContent?.trim()).toBe('a fox in the snow');
+    expect(pictures[0].querySelector('[data-testid=card-caption]')).toBeNull();
+    expect(pictures[1].querySelector('[data-testid=card-caption]')).toBeNull();
+    // each picture still says what it shows — in its alt text, not on screen
+    expect(pictures[0].querySelector('img')?.getAttribute('alt')).toBe('a red boat');
+    expect(pictures[1].querySelector('img')?.getAttribute('alt')).toBe('a fox in the snow');
     // only the picture with a prompt can be redrawn, and each picture of a line
     // carries its own ✎: the editor edits one picture, not the whole line
     expect(pictures[0].querySelector('[data-testid=img-regenerate]')).toBeTruthy();
@@ -1108,7 +1115,7 @@ describe('MessageRow — the pictures of a line', () => {
     // an empty bubble in front of a picture would be the only thing on screen
     expect(el.querySelector('.msg-text')).toBeNull();
     expect(el.querySelector('[data-testid=line-picture] img')).toBeTruthy();
-    expect(el.querySelector('[data-testid=card-caption]')?.textContent?.trim()).toBe('Alice at the harbour');
+    expect(el.querySelector('[data-testid=card-caption]')).toBeNull();
   });
 
   it('the ✎ of a card opens the picture editor for that card', () => {
@@ -1156,8 +1163,8 @@ describe('MessageRow — the pictures of a line', () => {
       pictures: { [photo]: { description: 'my own photo', generation: { source: 'upload' } } },
       timestamp: 3,
     });
-    expect(el.querySelector('[data-testid=card-prompt]')).toBeNull();
-    expect(el.querySelector('[data-testid=card-refs]')).toBeNull();
+    // Nothing is printed under a picture at all, so what a file without a prompt
+    // loses is the redraw — there is nothing stored to draw from.
     expect(el.querySelector('[data-testid=img-regenerate]')).toBeNull();
     expect(el.querySelector('[data-testid=img-edit-prompt]')).toBeNull();
     expect(el.querySelector('[data-testid=img-replace]')).toBeNull();
@@ -1178,8 +1185,9 @@ describe('MessageRow — the pictures of a line', () => {
     expect(el.querySelector('[data-testid=img-pending]')).toBeTruthy();
     expect(el.querySelector('.img-placeholder-label')?.textContent).toContain('Planning and drawing');
     expect(el.querySelector('[data-testid=img-cancel]')).toBeTruthy();
-    // no caption yet — nothing was agreed about the picture
-    expect(el.querySelector('[data-testid=card-caption]')).toBeNull();
+    // nothing is agreed about the picture yet — and nothing is printed about it
+    // either: the placeholder is the whole line
+    expect(el.querySelectorAll('.card-caption, .card-prompt, .card-refs')).toHaveLength(0);
   });
 
   it('a manual pending picture is just "generating", and a failed one offers a redraw', () => {

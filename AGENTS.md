@@ -504,14 +504,19 @@ frontend/              Angular app
     message-list/      history: empty state, messages, typing indicator
     message-row/       one message: avatar, its words, then the PICTURES OF THE LINE
                        under them (one `.picture` block per id of message().images:
-                       the picture with its caption, prompt and reference count, the
-                       pending/broken/cancelled placeholders, the ↻ quick
+                       the picture ALONE — nothing is printed under it: its caption
+                       and its prompt live in the hover hint and in the ✎, because
+                       a paragraph under a picture only repeats what it shows —
+                       plus the pending/broken/cancelled placeholders, the ↻ quick
                        redraw) + the hover buttons (image actions via
                        ImageStore, a ✎ per picture = the editor of THAT picture,
                        because one line can show several of them).
                        A NEUTRAL card (kind 'image' — the 🖼 / 📷 picture) is the
                        one line with no author: its sender line says "A picture",
-                       its letter tile is 🖼 and its words are only the caption
+                       its letter tile is 🖼 and it prints no words at all (its
+                       caption is still mirrored into the message's `text` for the
+                       readers of a line — a model without vision is told that
+                       sentence — it is only not painted on the screen)
     picture-dialog/    the picture editor, opened by the ✎ of ONE picture — the
                        kind (generated / from a file), then the TWO fields in
                        the order of the two stages a picture is planned in: the
@@ -844,7 +849,8 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   `ChatStore.send` calls `POST /api/image/caption` `{ chatId, messageId, image }` for every 📎 picture
   of the line that has no caption (`ReplyService.captionPicture`), which writes the vision model's
   sentence into the
-  picture's row (`description` — what the picture shows as its caption under it); an empty caption, a config with nothing that can see and a model that
+  picture's row (`description` — its caption: the sentence a model without vision is told and the
+  image's `alt` text; the chat prints no line under the picture); an empty caption, a config with nothing that can see and a model that
   failed all leave the picture as it is (a FAILED caption is never a banner — an unlabelled picture is
   a normal state; the only banner near this path is the attach-time one that says the picture will
   arrive undescribed, see "A picture rides in the line of the person who shows it" below).
@@ -889,9 +895,10 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   the turn): such a message is nothing but one picture, has `role: 'user'` and **no `userId` /
   `characterId`** (`ChatsService.addImageMessage`), and its file lives in the CHAT's folder — which
   is what its id says out loud. The UI prints `A picture` where a sender name would stand (with a 🖼
-  letter tile) and nothing above the picture, because the card has no words of its own: its caption
-  (the row's `description`) is written under the picture and is mirrored into the card's `text` by
-  the read, so every reader of a line finds its words in one place.
+  letter tile) and nothing else, because the card has no words of its own: its caption
+  (the row's `description`) is mirrored into the card's `text` by the read, so every reader of a line
+  finds its words in one place — and the screen prints none of them, since a sentence above a picture
+  only repeats what the picture shows (it is the image's `alt` text).
   **There are no ownership fields anywhere.** Whose a picture is, is the folder inside its id
   (`characters/<id>/…` hers, `users/<id>/…` theirs, `chats/<id>/…` the conversation's) — so no
   message, row or prompt ever repeats it (`ImageBrief.owner` and the planner's `shared by …` line are
@@ -1034,8 +1041,12 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
     `description`, which is where the user writes the appearance ("tall, short red hair, always in a
     green coat") together with the personality, capped at 400 characters by
     `ReplyService.visualLine` so one long card cannot eat the planning prompt — and, as **anchors**,
-    up to two of their own pictures: the pictures of `characters/<id>/` with the avatar leading (the
-    avatar is itself one of those pictures, so it leads the list); a persona has only the avatar.
+    up to two of their own pictures, **of either kind**: the pictures of `characters/<id>/` or of
+    `users/<id>/`, with the avatar leading (the avatar is itself one of those pictures, so it leads
+    the list). A persona's folder counts exactly like a character's — the photos she showed here are
+    her face set — because otherwise a persona whose avatar was never picked arrives at the planner
+    with **no face at all**, and every picture of her is drawn from her card text alone, i.e. a
+    different stranger each time.
     The planner is told `char:alice — Alice: <look>
     (shown on picture 2)` and answers with the cast ids the picture shows plus the 2–4 word noun
     phrase it used for each (`subjects`). The anchors are what really carries a face; the look line
@@ -1580,12 +1591,16 @@ that needs the databases resolves them here — the one place allowed to.
   row width via the `has-images` class — and capped at two thirds of the viewport height
   (`width:100%; max-height:2/3vh; object-fit:contain`); when the height cap kicks in and the image
   ends up narrower than the row, `object-fit:contain` centers it. Everything is block-level and in
-  order: the words of the line, then, per picture, the picture, its caption (`card-caption`), the
-  prompt it was drawn from (`card-prompt`) and how many references it used (`card-refs`) — the text
-  of a message is above and below the images, never beside. Where a sender name would stand a neutral
-  card says **`A picture`** and its letter tile is 🖼 (`MessageRow.senderName` / `letter`): the
-  conversation owns that picture, so there is no author to print. Every other line is printed with
-  its real author, and `MessageRow` renders no words at all when the line has none (a line that is
+  order: the words of the line, then, per picture, **the picture and nothing under it** — no caption,
+  no prompt, no reference count is printed (`card-caption` / `card-prompt` / `card-refs` are gone):
+  a picture is its own statement, and repeating what it shows in two paragraphs pushes the dialogue
+  down for no information. What the picture is said to show is its `alt` text, and the hover hint
+  (`helpers.imageHintFor`) carries the generator and the prompt; the ✎ is where both are read and
+  edited. So the words of a message are ABOVE its images, never beside. Where a sender name would
+  stand a neutral card says **`A picture`** and its letter tile is 🖼 (`MessageRow.senderName` /
+  `letter`): the conversation owns that picture, so there is no author to print — and a card prints
+  no words either, because its only "text" is the caption the server mirrored out of its row.
+  `MessageRow` renders no words at all when the line has none (a line that is
   nothing but pictures is a picture with a name over it, not an empty bubble).
 - **The picture editor is the ONE place a picture is edited** (the ✎ of one picture opens the
   `picture-dialog` for THAT picture — a line can show several and the dialog edits one of them; the
@@ -1606,7 +1621,8 @@ that needs the databases resolves them here — the one place allowed to.
   pictures together and Save writes both, because a prompt that says "the first reference image
   shows the woman in the green coat" is only true with its pictures.
   **The two fields are in the order of the two stages**: the description first — it is the idea, the
-  caption under the picture and the input of the prompt below — and the prompt under it, because that
+  picture's caption (readable and correctable only here, since the chat prints nothing under a
+  picture) and the input of the prompt below — and the prompt under it, because that
   is what the machine reads. "Prompt and references" is therefore disabled while the description is
   empty: there is nothing to turn into a prompt, and a button that guesses is worse than one that
   waits. Save sends only the fields the
@@ -1646,7 +1662,8 @@ that needs the databases resolves them here — the one place allowed to.
   its **description** and **prompt**
   (Save
   writes them to the images table, which is the SAME row every line showing that picture reads — so a
-  caption written here is what the chat shows, and the current chat is re-read after the save), the
+  caption written here is what a model without vision is told about the picture and what its `alt`
+  text says (the chat itself prints neither), and the current chat is re-read after the save), the
   **reference list** the prompt names (added from the catalog, minus the picture itself and minus any
   row whose file is gone), and its **ID** with a separate **Rename** action sitting right of the ID
   field (`.id-row`), not at the bottom of the dialog — a rename is the field's own action. The
@@ -2019,7 +2036,10 @@ that needs the databases resolves them here — the one place allowed to.
   so a test that wants those filters `getByTestId('message')` by `has: <testid>` rather
   than starting from the picture (`ux-explore.spec.ts` keeps `cardRows()` /
   `linePicRows()` for exactly that, and `blockOrder()` to assert the words come ABOVE the
-  pictures). Inside a picture: `card-caption`, `card-prompt`, `card-refs`, the state
+  pictures). Inside a picture there is nothing to select but the image itself — `card-caption`,
+  `card-prompt` and `card-refs` are gone, so a test reads what the picture carries from its `alt`
+  (the caption) and its `title` (the hover hint: the generator and the prompt) rather than from a
+  printed line. What remains: the state
   placeholders `img-pending` (+ `img-cancel`), `img-cancelled` / `img-broken`
   (+ `img-regen`, `img-error-text`), the ready picture's quick redraw `img-regenerate`,
   and — for a picture that lives inside a line — its own ✎ `picture-edit` (a line can

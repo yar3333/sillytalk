@@ -505,10 +505,14 @@ test('UX 09: attachments — preview, remove, the picture inside the user messag
   // the same photo shown in another chat tomorrow is the same picture.
   await expect(line.locator('img')).toHaveAttribute('src', /path=users%2Fcarol%2F/);
   // The vision model captions the picture by itself: that sentence is what a
-  // chat model that cannot see is told about it in the history.
-  await expect(line.getByTestId('card-caption')).toContainText('described by the mock model', {
-    timeout: 15000,
-  });
+  // chat model that cannot see is told about it in the history. Nothing prints
+  // it under the picture any more, so the test reads it where the UI keeps it —
+  // the alt text of the image.
+  await expect(line.locator('[data-testid=line-picture] img').first()).toHaveAttribute(
+    'alt',
+    /described by the mock model/,
+    { timeout: 15000 },
+  );
   await page.screenshot({ path: `${SHOTS}/ux-09b-image-sent.png` });
   await expect(assistantMsgs(page).first()).toBeVisible({ timeout: 15000 });
   await expect(page.getByTestId('typing')).toBeHidden({ timeout: 15000 });
@@ -569,9 +573,11 @@ test('UX 10: asking for a picture — the dialog, pending, ready; cancel -> brok
   // The line keeps BOTH halves of the picture: the caption is the user's own
   // sentence, kept exactly as it was written (it is the description of the
   // picture, not a prompt), while the drawing prompt is the English plan the
-  // model built from it.
-  await expect(line.getByTestId('card-caption')).toHaveText(request);
-  await expect(line.getByTestId('card-prompt')).toContainText('a red circle on a white background');
+  // model built from it. Neither is printed under the picture — the caption is
+  // the image's alt text, the prompt its hover hint.
+  const pic = line.locator('[data-testid=line-picture] img');
+  await expect(pic).toHaveAttribute('alt', request);
+  await expect(pic).toHaveAttribute('title', /a red circle on a white background/);
   // What the generator saw was the plan, never the user's sentence.
   const sent = comfy?.prompts() ?? [];
   expect(sent[sent.length - 1] ?? '').toContain('red circle');
@@ -655,7 +661,10 @@ test('UX 10a: a picture from disk joins the chat as its own neutral card', async
   // The caption of the picture is mirrored into the card's words, so a reader of
   // the line finds its words in one place (here: there are none).
   expect(image.text).toBe('');
-  await expect(card.getByTestId('card-prompt')).toHaveCount(0);
+  // A file somebody brought has no prompt, so its hover hint is nothing but the
+  // click note — and the card prints no words of its own.
+  await expect(card.locator('img')).toHaveAttribute('title', 'Click — open the picture');
+  await expect(card.locator('.msg-text')).toHaveCount(0);
   await page.screenshot({ path: `${SHOTS}/ux-10a2-from-disk.png` });
 });
 
@@ -667,8 +676,12 @@ test('UX 10b: the picture editor — the prompt, the description, the file kind'
   await expect(linePicImages(page).first()).toBeVisible({ timeout: 25000 });
   const line = linePicRows(page).last();
   // The picture's prompt is the plan the model wrote from the request, not the
-  // request itself (which is the caption).
-  await expect(line.getByTestId('card-prompt')).toContainText('a red circle on a white background');
+  // request itself (which is the caption). It is not printed under the picture —
+  // this reads the hover hint the image carries.
+  await expect(line.locator('[data-testid=line-picture] img')).toHaveAttribute(
+    'title',
+    /a red circle on a white background/,
+  );
 
   // The ✎ of the PICTURE opens the editor (not the bottom edit field): a line
   // can show several pictures, so the editor belongs to one of them.
@@ -721,8 +734,11 @@ test('UX 10b: the picture editor — the prompt, the description, the file kind'
 
   await page.getByTestId('picture-save').click();
   await expect(dialog).toBeHidden();
-  await expect(line.getByTestId('card-prompt')).toContainText('a red circle on a white background');
-  await expect(line.getByTestId('card-caption')).toContainText('described by the mock model');
+  // The save reached the line: the picture's hover hint carries the prompt and
+  // its alt text carries the new description.
+  const savedPic = line.locator('[data-testid=line-picture] img');
+  await expect(savedPic).toHaveAttribute('title', /a red circle on a white background/);
+  await expect(savedPic).toHaveAttribute('alt', /described by the mock model/);
   await page.screenshot({ path: `${SHOTS}/ux-10b-saved.png` });
 
   // "From a file": pick the character picture of the data folder — the picture
@@ -740,7 +756,11 @@ test('UX 10b: the picture editor — the prompt, the description, the file kind'
     'src',
     /photo1\.png/,
   );
-  await expect(line.getByTestId('card-prompt')).toHaveCount(0);
+  // The picture stopped claiming a generation, so its hover hint lost the prompt.
+  await expect(line.locator('[data-testid=line-picture] img')).toHaveAttribute(
+    'title',
+    'Click — open the picture',
+  );
   await expect(line.getByTestId('img-regenerate')).toHaveCount(0);
   await page.screenshot({ path: `${SHOTS}/ux-10b-file.png` });
 });
@@ -777,8 +797,13 @@ test('UX 11: the picture of the user turn (the 📷 button)', async ({ page }) =
   // stage two turned that sentence into for the generator.
   await expect(page.getByTestId('img-pending')).toBeHidden({ timeout: 25000 });
   await expect(cardImages(page).first()).toBeVisible();
-  await expect(page.getByTestId('card-caption')).toContainText('Alice holds up a red circle');
-  await expect(page.getByTestId('card-prompt')).toContainText('a red circle on a white background');
+  // Neither is printed under the picture any more: the caption is the image's
+  // alt text, the prompt its hover hint.
+  await expect(cardImages(page).first()).toHaveAttribute('alt', /Alice holds up a red circle/);
+  await expect(cardImages(page).first()).toHaveAttribute(
+    'title',
+    /a red circle on a white background/,
+  );
   // and the two calls really were two: the second one read the first answer
   expect(llm?.lastDescriptionRequest()).not.toBeNull();
   expect(llm?.lastPlanRequest()?.text ?? '').toContain('Alice holds up a red circle');
@@ -973,8 +998,9 @@ test('UX 16: a picture opens the lightbox; its reference set is its own', async 
   await page.getByTestId('lightbox-close').click();
   await expect(page.getByTestId('lightbox')).toBeHidden();
 
-  // A second picture whose plan names the first one: the line says how many
-  // references it was drawn from, and the editor shows WHICH pictures those are.
+  // A second picture whose plan names the first one. Nothing under the picture
+  // counts its references any more — the editor is where the reference set is
+  // shown, and that is what this checks below.
   await setPlan({
     name: 'the circle again',
     description: 'The same red circle, kept from the first picture',
@@ -984,7 +1010,6 @@ test('UX 16: a picture opens the lightbox; its reference set is its own', async 
   await askForPicture(page, 'the same circle again');
   await expect(linePicImages(page).last()).toBeVisible({ timeout: 30000 });
   const last = linePicRows(page).last();
-  await expect(last.getByTestId('card-refs')).toContainText('references: 1');
   await last.hover();
   await last.locator('[data-testid=picture-edit]').click();
   const dialog = page.getByTestId('picture-dialog');
@@ -1440,9 +1465,10 @@ test('UX 21: a character shares a picture of its own — by id and by request', 
   expect(asked?.text ?? '').toContain(askedFor);
   expect(asked?.text ?? '').toContain('char:alice');
 
-  // Her sentence stayed the picture's caption; the file went into HER folder, so
-  // it is one of her starter pictures from now on.
-  await expect(drawn.getByTestId('card-caption')).toHaveText(askedFor);
+  // Her sentence stayed the picture's caption — the image's alt text, not a
+  // printed line; the file went into HER folder, so it is one of her starter
+  // pictures from now on.
+  await expect(drawn.locator('[data-testid=line-picture] img')).toHaveAttribute('alt', askedFor);
   const chatId = ((await api('/chats')) as Array<{ id: string }>)[0].id;
   const stored = (await api(`/chats/${chatId}`)) as {
     messages: Array<{

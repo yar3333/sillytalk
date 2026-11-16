@@ -1305,6 +1305,35 @@ describe("requestUserTurnImage (the picture of the user's turn)", () => {
     );
   });
 
+  it("offers a persona her own pictures even with no avatar set", async () => {
+    // The photos in users/<id>/ are the ones this person showed here, so one of
+    // them is as good a face as a character's studio photo. They were not offered
+    // at all before: a persona was represented by her avatar alone, so one whose
+    // avatar was never picked came to the planner with no face, and every picture
+    // of her was drawn from her card text — a different stranger each time.
+    const mine = persons.storePicture("me", "data:image/png;base64,aGVsbG8=", "my selfie");
+    expect(persons.getAvatarId("me")).toBeNull();
+    textGeneration.plan = {
+      name: "the man at his desk",
+      description: "the man at his desk",
+      prompt: "the skinny man at his desk",
+      refs: [],
+      cast: ["user:me"],
+      subjects: [{ ref: "user:me", noun: "the skinny man" }],
+    };
+    const chat = newChat();
+    reply.requestUserTurnImage(chat.id);
+    await flushJobs();
+
+    // Her folder is in the catalogue, and it is what the cast entry anchors on.
+    expect((textGeneration.stageOneInput?.images ?? []).map((b) => b.id)).toEqual([mine]);
+    expect(textGeneration.stageOneInput?.cast.find((c) => c.ref === "user:me")?.anchors).toEqual([1]);
+    // The plan named her and nothing else, so her own photo is what reaches the
+    // generator: the face comes from a picture, not from a sentence about her.
+    expect(fake.started[0].refs).toEqual([mine]);
+    expect(fake.started[0].prompt).toContain("the first reference image shows the skinny man");
+  });
+
   it("keeps the face when the generator has room for one reference only", async () => {
     fake.setMaxRefs(1);
     const photo = path.join(PathHelper.characterDir("alice"), "photo1.jpg");
