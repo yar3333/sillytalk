@@ -69,10 +69,21 @@ export interface ComfyUiLora {
   strength?: number;
 }
 
+// What the server says about one LoRA and one of its model files. It reads the
+// two safetensors headers: "no" is proof the LoRA would merge into nothing, and
+// "unknown" means the names did not line up with anything — allowed, but worth
+// saying. Absent for a pair the server could not read at all.
+export interface ComfyUiFit {
+  fits: 'yes' | 'no' | 'unknown';
+  reason?: string;
+}
+
 // One file of one of the server's model folders, as its catalogue lists it.
 export interface ComfyUiFileOption {
   name: string;
   mb?: number;
+  // A LoRA only: keyed by the model file it would be merged into.
+  fits?: Record<string, ComfyUiFit>;
 }
 
 // One model of a server's catalogue: what it is called, how many references it

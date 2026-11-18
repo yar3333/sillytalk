@@ -44,8 +44,9 @@ Stack: **Node.js / Express 5 / TypeScript** (backend) + **Angular 22 / SCSS** (f
     [`comfyui-sillytalk`](https://github.com/yar3333/comfyui-sillytalk) custom node: it owns the
     workflows, publishes the model list and picks the GPU. It also publishes what is in its
     `models/diffusion_models/` and `models/loras/`, so a derivative checkpoint or a LoRA you drop
-    there becomes a dropdown entry and a checkbox in **Settings** — with a strength slider per LoRA —
-    rather than a name to type;
+    there becomes a dropdown entry and a checkbox in **Settings** — with a strength slider per LoRA,
+    and greyed out with the reason when its headers say it would merge into nothing — rather than a
+    name to type;
   - **SD API (Stable Diffusion WebUI)** — via the API (`/sdapi/v1/txt2img`, `/sdapi/v1/img2img`).
   Generation always runs in the background: the chat stays usable, a spinner with Cancel shows
   while it runs and a failed picture keeps a Regenerate button. A click on a picture enlarges it
@@ -273,6 +274,15 @@ resolved by `resolveApiKey()`: `envKey` (an environment variable) takes priority
   ones you tick. Nothing is typed by hand: a file appears in the list as soon as the server can see
   it, and a workflow whose graph wired no LoRA slots says so instead of offering them. Ask for more
   LoRAs than its slots and the server answers before drawing anything.
+- **A LoRA that would do nothing is greyed out, with the reason.** The plugin reads the
+  safetensors headers of a LoRA and of each model file it could be merged into and reports the
+  verdict next to the file, so **Settings** can leave a LoRA of another model visible but
+  unclickable and say why — ComfyUI does not refuse such a LoRA, it skips every tensor of it and
+  draws the picture the model makes without it, from a job that reported itself a success. Pick the
+  file the LoRA was made for and the same row lights up. A LoRA whose layers the server could not
+  match to anything stays selectable, with a line saying so: not understanding a file is not proof
+  it will not work. Changing the model file drops a LoRA it cannot take, and the server refuses one
+  that arrives anyway.
 
 ## Data storage
 

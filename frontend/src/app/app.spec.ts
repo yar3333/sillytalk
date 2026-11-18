@@ -2933,13 +2933,42 @@ describe('Settings — a ComfyUI generator uses the files of its own server', ()
             { name: 'my-qwen-derivative.safetensors', mb: 20000 },
           ],
         },
-        // three files in the folder, room for two in its workflow
+        // three files in the folder, room for two in its workflow. The server
+        // read their headers, so each says per model file whether it merges:
+        // style-b is for another model, style-c names layers neither has.
         loras: {
           max: 2,
           options: [
-            { name: 'style-a.safetensors', mb: 200 },
-            { name: 'style-b.safetensors', mb: 200 },
-            { name: 'style-c.safetensors', mb: 200 },
+            {
+              name: 'style-a.safetensors',
+              mb: 200,
+              fits: {
+                'qwen_image_2.1_int8_convrot.safetensors': { fits: 'yes' },
+                'my-qwen-derivative.safetensors': { fits: 'yes' },
+              },
+            },
+            {
+              name: 'style-b.safetensors',
+              mb: 200,
+              fits: {
+                'qwen_image_2.1_int8_convrot.safetensors': {
+                  fits: 'no',
+                  reason: '720 of the layers it names are at a size this model does not have',
+                },
+                'my-qwen-derivative.safetensors': { fits: 'yes' },
+              },
+            },
+            {
+              name: 'style-c.safetensors',
+              mb: 200,
+              fits: {
+                'qwen_image_2.1_int8_convrot.safetensors': {
+                  fits: 'unknown',
+                  reason: 'none of its layer names occur in this model — it may be for another one',
+                },
+                'my-qwen-derivative.safetensors': { fits: 'yes' },
+              },
+            },
           ],
         },
       },
@@ -2992,6 +3021,8 @@ describe('Settings — a ComfyUI generator uses the files of its own server', ()
     el.querySelector(`[data-testid=${testid}]`) as HTMLSelectElement;
   const ticks = (el: HTMLElement): HTMLInputElement[] =>
     [...el.querySelectorAll<HTMLInputElement>('[data-testid=settings-comfy-lora]')];
+  const whys = (el: HTMLElement): string[] =>
+    [...el.querySelectorAll('[data-testid=settings-comfy-lora-why]')].map((d) => d.textContent?.trim() ?? '');
 
   const base: ComfyUiSettings = {
     kind: 'comfyui',
@@ -3044,7 +3075,12 @@ describe('Settings — a ComfyUI generator uses the files of its own server', ()
   });
 
   it('gives out no more LoRAs than the workflow of the model has slots for', async () => {
-    const { el, redraw } = await open({ ...base, loras: [{ name: 'style-a.safetensors', strength: 1 }] });
+    // on the file all three merge into, so only the slots decide what is tickable
+    const { el, redraw } = await open({
+      ...base,
+      modelFile: 'my-qwen-derivative.safetensors',
+      loras: [{ name: 'style-a.safetensors', strength: 1 }],
+    });
     // one of two slots is taken: the other two files are still tickable
     expect(ticks(el).map((c) => c.disabled)).toEqual([false, false, false]);
     ticks(el)[1].click();
@@ -3053,6 +3089,44 @@ describe('Settings — a ComfyUI generator uses the files of its own server', ()
     expect(ticks(el).map((c) => c.disabled)).toEqual([false, false, true]);
     const stored = await save(el);
     expect(stored.loras?.map((l) => l.name)).toEqual(['style-a.safetensors', 'style-b.safetensors']);
+  });
+
+  it('greys a LoRA that would merge into nothing, and says why', async () => {
+    const { el } = await open(base);
+    expect(ticks(el).map((c) => c.disabled)).toEqual([false, true, false]);
+    expect(whys(el).join(' |')).toContain('a size this model does not have');
+    expect(whys(el).join(' |')).toContain('may be for another one');
+    // the reason is not hidden behind a hover: it is the row's own line of text
+    expect(el.querySelectorAll('.row.dim')).toHaveLength(1);
+  });
+
+  it('lets that LoRA in when the file it was made for is the one loaded', async () => {
+    const { el, redraw } = await open(base);
+    const file = pick(el, 'settings-comfy-file');
+    file.value = 'my-qwen-derivative.safetensors';
+    file.dispatchEvent(new Event('change'));
+    redraw();
+    expect(ticks(el).map((c) => c.disabled)).toEqual([false, false, false]);
+    expect(whys(el)).toEqual([]);
+  });
+
+  it('unchecks a LoRA the newly picked file cannot take', async () => {
+    const { el, redraw } = await open({
+      ...base,
+      modelFile: 'my-qwen-derivative.safetensors',
+      loras: [{ name: 'style-b.safetensors', strength: 0.5 }],
+    });
+    expect(ticks(el)[1].checked).toBe(true);
+    const file = pick(el, 'settings-comfy-file');
+    file.value = '';
+    file.dispatchEvent(new Event('change'));
+    redraw();
+    // left visible and grey with its reason, but it is out of what gets sent:
+    // the server would answer the request with a refusal
+    expect(ticks(el)[1].checked).toBe(false);
+    expect(ticks(el)[1].disabled).toBe(true);
+    expect(whys(el).join(' |')).toContain('a size this model does not have');
+    expect(await save(el)).not.toHaveProperty('loras');
   });
 
   it('shows the file and the LoRAs the config already names', async () => {

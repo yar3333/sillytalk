@@ -10,6 +10,11 @@ import { IImageGeneratorDriver } from "../IImageGeneratorDriver";
 export type ComfyUiFileOption = {
   name: string;
   mb?: number;
+  // A LoRA only: keyed by the model file it would merge into, what the server's
+  // read of the two safetensors headers says. "no" is proof it would merge into
+  // nothing; "unknown" means the layer names did not line up with anything,
+  // which is allowed and worth saying. Absent for a pair it could not read.
+  fits?: Record<string, { fits: "yes" | "no" | "unknown"; reason?: string }>;
 };
 
 // What a ComfyUI server answers on `/sillytalk/models` for one model. The

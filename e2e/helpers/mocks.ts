@@ -377,8 +377,28 @@ export async function startMockComfy(model = 'qwen-image-2.1'): Promise<MockComf
                 loras: {
                   max: 5,
                   options: [
-                    { name: 'mock_style_a.safetensors', mb: 200 },
-                    { name: 'mock_style_b.safetensors', mb: 200 },
+                    // The mock reads headers it does not have, so it says what a
+                    // real server says: a.safetensors merges into either file,
+                    // b.safetensors is for another model and says so.
+                    {
+                      name: 'mock_style_a.safetensors',
+                      mb: 200,
+                      fits: {
+                        'mock_model.safetensors': { fits: 'yes' },
+                        'mock_model_derivative.safetensors': { fits: 'yes' },
+                      },
+                    },
+                    {
+                      name: 'mock_style_b.safetensors',
+                      mb: 200,
+                      fits: {
+                        'mock_model.safetensors': {
+                          fits: 'no',
+                          reason: '720 of the layers it names are at a size this model does not have',
+                        },
+                        'mock_model_derivative.safetensors': { fits: 'yes' },
+                      },
+                    },
                   ],
                 },
               },

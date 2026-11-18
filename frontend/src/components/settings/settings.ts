@@ -2,6 +2,7 @@ import { Component, OnInit, inject, signal } from '@angular/core';
 import {
   AppConfig,
   ComfyUiFileOption,
+  ComfyUiFit,
   ComfyUiOrientation,
   ComfyUiPluginModel,
   ComfyUiSettings,
@@ -132,13 +133,13 @@ const ORIENTATIONS: ComfyUiOrientation[] = ['square', 'portrait', 'landscape'];
                   {{ comfyLoras(g).length }} file(s) in models/loras/ of the server
                 </div>
                 @for (f of comfyLoras(g); track f.name) {
-                  <div class="row">
+                  <div class="row" [class.dim]="loraFit(g, f)?.fits === 'no'">
                     <label class="chk">
                       <input
                         type="checkbox"
                         data-testid="settings-comfy-lora"
                         [checked]="loraOn(g, f.name)"
-                        [disabled]="!loraOn(g, f.name) && (g.loras?.length ?? 0) >= comfySlots(g)"
+                        [disabled]="loraBlocked(g, f)"
                         (change)="toggleLora(i, f.name, $event)"
                       />
                       {{ f.name }}{{ f.mb ? ' · ' + f.mb + ' MB' : '' }}
@@ -158,6 +159,9 @@ const ORIENTATIONS: ComfyUiOrientation[] = ['square', 'portrait', 'landscape'];
                       </label>
                     }
                   </div>
+                  @if (loraReason(g, f); as why) {
+                    <div class="why" data-testid="settings-comfy-lora-why">{{ why }}</div>
+                  }
                 }
               }
               <div class="hint">
@@ -348,6 +352,30 @@ export class Settings implements OnInit {
     return this.comfyModel(g)?.loras?.max ?? 0;
   }
 
+  /** The file a run of this generator loads: the pick, or the one its workflow names. */
+  private comfyFileNow(g: ComfyUiSettings): string {
+    return g.modelFile || this.comfyModel(g)?.model_file || '';
+  }
+
+  /** What the server says about this LoRA and the file that would be loaded now. */
+  loraFit(g: ComfyUiSettings, f: ComfyUiFileOption): ComfyUiFit | undefined {
+    return f.fits?.[this.comfyFileNow(g)];
+  }
+
+  /** A LoRA the server proved would merge into nothing is not a choice to make;
+      a full set of slots is, for the LoRAs that are not already in it. */
+  loraBlocked(g: ComfyUiSettings, f: ComfyUiFileOption): boolean {
+    if (this.loraFit(g, f)?.fits === 'no') return true;
+    return !this.loraOn(g, f.name) && (g.loras?.length ?? 0) >= this.comfySlots(g);
+  }
+
+  /** Why a row is grey, or — for a LoRA the server could not place — why it may
+      do nothing. Empty when there is nothing to warn about. */
+  loraReason(g: ComfyUiSettings, f: ComfyUiFileOption): string {
+    const fit = this.loraFit(g, f);
+    return fit && fit.fits !== 'yes' ? (fit.reason ?? '') : '';
+  }
+
   loraOn(g: ComfyUiSettings, name: string): boolean {
     return (g.loras ?? []).some((l) => l.name === name);
   }
@@ -366,13 +394,24 @@ export class Settings implements OnInit {
     gen.model = (e.target as HTMLSelectElement).value;
     const model = this.comfyModel(gen);
     if (!model?.model_files?.options.some((f) => f.name === gen.modelFile)) delete gen.modelFile;
-    const loras = (gen.loras ?? []).filter((l) => model?.loras?.options.some((f) => f.name === l.name));
-    if (loras.length) gen.loras = loras.slice(0, model?.loras?.max ?? 0);
-    else delete gen.loras;
+    this.keepFittingLoras(gen);
     if (model?.sizes && !(gen.orientation in model.sizes)) {
       gen.orientation = model.orientation ?? 'square';
     }
     this.m.set({ ...c });
+  }
+
+  // A checked LoRA the file about to be loaded cannot take would be answered by a
+  // 400 from the server, so changing the file drops it the same way changing the
+  // model does. The row stays visible and grey with the reason, ready for the
+  // file it does fit.
+  private keepFittingLoras(gen: ComfyUiSettings): void {
+    const loras = (gen.loras ?? []).filter((l) => {
+      const option = this.comfyModel(gen)?.loras?.options.find((f) => f.name === l.name);
+      return option !== undefined && this.loraFit(gen, option)?.fits !== 'no';
+    });
+    if (loras.length) gen.loras = loras.slice(0, this.comfySlots(gen));
+    else delete gen.loras;
   }
 
   // "The workflow's own" is a real choice, not an empty field: the file stays
@@ -384,6 +423,7 @@ export class Settings implements OnInit {
     const name = (e.target as HTMLSelectElement).value;
     if (name) gen.modelFile = name;
     else delete gen.modelFile;
+    this.keepFittingLoras(gen);
     this.m.set({ ...c });
   }
 

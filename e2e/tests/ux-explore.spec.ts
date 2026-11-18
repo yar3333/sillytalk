@@ -1634,6 +1634,47 @@ test('UX 23: a model file and a LoRA of the server are picked in Settings and dr
   await page.screenshot({ path: `${SHOTS}/ux-23c-drawn-with-them.png` });
 });
 
+test('UX 24: a LoRA that would merge into nothing is grey with its reason, and the file decides', async ({
+  page,
+}) => {
+  await setDelay(0);
+  await openApp(page);
+  await page.getByTestId('menu').click();
+  await page.getByTestId('settings').click();
+  await expect(page.locator('.settings-body')).toBeVisible();
+
+  const file = page.getByTestId('settings-comfy-file');
+  const loras = page.getByTestId('settings-comfy-lora');
+  const why = page.getByTestId('settings-comfy-lora-why');
+  // The server read the two headers and said which of its LoRAs its own file
+  // cannot take. It stays in the list — grey, and saying why — rather than
+  // vanishing, because the file a person came for is the thing they need to see.
+  await expect(loras).toHaveCount(2);
+  await expect(loras.nth(1)).toBeDisabled();
+  await expect(why).toContainText('a size this model does not have');
+  await page.screenshot({ path: `${SHOTS}/ux-24a-lora-greyed.png` });
+
+  // The other file of the same server takes it, so the pick decides and nothing
+  // is hidden: the row lights up and stops explaining.
+  await file.selectOption('mock_model_derivative.safetensors');
+  await expect(loras.nth(1)).toBeEnabled();
+  await expect(why).toHaveCount(0);
+  await loras.nth(1).check();
+  await page.screenshot({ path: `${SHOTS}/ux-24b-lora-accepted.png` });
+
+  // Back to the workflow's own file and the tick is gone with it: leaving it on
+  // would only be answered by a refusal from the server.
+  await file.selectOption('');
+  await expect(loras.nth(1)).toBeDisabled();
+  await expect(loras.nth(1)).not.toBeChecked();
+  await page.locator('.settings-body .actions .btn.primary').click();
+  await expect(page.locator('.settings-body')).toBeHidden();
+
+  const cfg = (await api('/config')) as { imageGenerators: Array<{ modelFile?: string; loras?: unknown[] }> };
+  expect(cfg.imageGenerators[0]).not.toHaveProperty('modelFile');
+  expect(cfg.imageGenerators[0]).not.toHaveProperty('loras');
+});
+
 // The collected issues are attached to every test run as a JSON artifact.
 test.afterEach(async ({ page }, testInfo) => {
   if (issues.length > 0) {

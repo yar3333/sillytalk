@@ -809,8 +809,13 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   server COULD be pointed at, and two generators of one server read the same entry). A model entry
   carries more than its code: `sizes` per orientation, `model_file` with the whole
   `model_files.options` listing of the server's `models/diffusion_models/`, and `loras` — the
-  number of slots that model's workflow wired plus the files of its `models/loras/`. The Settings
-  dialog builds its picks from that and the frontend mirrors no names, no sizes and no file names;
+  number of slots that model's workflow wired plus the files of its `models/loras/`, each LoRA
+  carrying `fits`: keyed by model file, `{fits: yes|no|unknown, reason}` from the server's read of
+  the two safetensors headers. The Settings dialog builds its picks from that and the frontend
+  mirrors no names, no sizes and no file names — and judges nothing either: it greys a `no` against
+  the file that would be loaded now (`g.modelFile` or the model's own `model_file`) and prints the
+  server's reason, leaves `unknown` selectable with its line, and drops a ticked LoRA when the file
+  changes to one it cannot take;
   `pictureLanguages` is `PICTURE_LANGUAGES` (the codes and the names a picture's
   description can be written in — see the language bullet below), mirrored for the same
   reason. Config changes via `PUT /api/config` recompute the available
@@ -1606,9 +1611,14 @@ that needs the databases resolves them here — the one place allowed to.
   with the pixels it means on that server), the file pick is that folder's listing with "the
   workflow's own" as its first option, and the LoRA checkboxes are its `models/loras/` listing, each
   with a 0…1 strength slider that appears when it is ticked and stops being tickable once the
-  workflow's `loras.max` slots are used. A model the config names but no server answers with is kept
+  workflow's `loras.max` slots are used. A LoRA the server marked `no` for the file that would be
+  loaded now is grey and unclickable with its reason on the line below (`.why`), `unknown` is
+  selectable with its line, and a `yes` says nothing — the row is judged by `loraBlocked()` /
+  `loraReason()` against `g.modelFile || model.model_file`, so switching the file switches the
+  verdicts. A model the config names but no server answers with is kept
   in the pick as its own option — otherwise opening the dialog and saving would silently change the
-  generator. Picking another model drops the file and the LoRAs it cannot load, and an orientation it
+  generator. Picking another model or another file drops the LoRAs it cannot take
+  (`keepFittingLoras()`, because the server would answer the run with a 400) and an orientation it
   has no size for. The pick marks the current option
   with `[selected]` on the `<option>` — `[value]` on the `<select>` would be set before the `@for`
   options exist and silently fail (the same gotcha as the reasoning pick in the model dialog).

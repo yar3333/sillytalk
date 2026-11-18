@@ -129,6 +129,17 @@ select:focus {
   opacity: 0.7;
 }
 
+/* A LoRA the server proved would merge into nothing stays in the list — the file
+   a person came here for is visible, with the reason — but it is not clickable. */
+.row.dim > label {
+  opacity: 0.45;
+}
+.why {
+  font-size: 12px;
+  color: var(--muted);
+  margin: -4px 0 6px;
+}
+
 /* ---------- responsive ---------- */
 @media (max-width: 640px) {
   .field span,

@@ -395,9 +395,20 @@ export class ComfyUiSelfTestService {
       }
       const loras = model.loras?.options ?? [];
       const slots = model.loras?.max ?? 0;
+      const loaded = options.modelFile ?? model.model_file ?? "";
       for (const lora of options.loras ?? []) {
-        if (!loras.some((f) => f.name === lora.name)) {
+        const option = loras.find((f) => f.name === lora.name);
+        if (!option) {
           out.push(`${model.code}: '${lora.name}' is not in its models/loras/ (${loras.length} file(s) there)`);
+          continue;
+        }
+        // The server reads the two headers and says so in the catalogue: a LoRA
+        // marked "no" would be loaded and skipped tensor by tensor, drawing the
+        // picture this file makes without it. Better said here than after a run
+        // that reported itself a success.
+        const fit = option.fits?.[loaded];
+        if (fit?.fits === "no") {
+          out.push(`${model.code}: '${lora.name}' would not merge into '${loaded}' — ${fit.reason ?? "the server says it does not fit"}`);
         }
       }
       if ((options.loras?.length ?? 0) > slots) {

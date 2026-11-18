@@ -27,7 +27,10 @@ type MockModel = {
   sizes?: Record<string, [number, number]>;
   model_file?: string | null;
   model_files?: { folder: string; options: { name: string; mb?: number }[] };
-  loras?: { max: number; options: { name: string; mb?: number }[] };
+  loras?: {
+    max: number;
+    options: { name: string; mb?: number; fits?: Record<string, { fits: string; reason?: string }> }[];
+  };
 };
 
 const MOCK_SIZES: Record<string, [number, number]> = {
@@ -495,6 +498,43 @@ describe("ComfyUiSelfTestService", () => {
     expect(report.items).toEqual([]);
     expect(mock.hits.generate ?? 0).toBe(0);
     expect(lines.join("\n")).toMatch(/✗ .*ghost\.safetensors/);
+  }, 60_000);
+
+  it("refuses a LoRA the server says would merge into nothing, before drawing", async () => {
+    await replaceMock({
+      models: [
+        {
+          code: "jest-model",
+          max_refs: 2,
+          orientation: "square",
+          sizes: MOCK_SIZES,
+          model_file: MOCK_FILES[0].name,
+          model_files: { folder: "diffusion_models", options: MOCK_FILES },
+          loras: {
+            max: 5,
+            options: [
+              { name: "style.safetensors", mb: 200 },
+              {
+                name: "for-another-model.safetensors",
+                mb: 400,
+                fits: {
+                  "base.safetensors": {
+                    fits: "no",
+                    reason: "720 of the layers it names are at a size this model does not have",
+                  },
+                  "derivative.safetensors": { fits: "yes" },
+                },
+              },
+            ],
+          },
+        },
+      ],
+    });
+    const { report } = await runTest({ withRefs: false, loras: [{ name: "for-another-model.safetensors" }] });
+    expect(report.ok).toBe(false);
+    expect(report.problems.join("\n")).toMatch(/would not merge into 'base\.safetensors'/);
+    expect(report.problems.join("\n")).toMatch(/does not have/);
+    expect(mock.hits.generate ?? 0).toBe(0);
   }, 60_000);
 
   it("says so when more LoRAs were asked for than the workflow wired slots for", async () => {
