@@ -158,29 +158,60 @@ describe("the image generators of the config", () => {
   const gens = (imageGenerators: unknown[]) =>
     loadConfigWith(JSON.stringify({ listen: "127.0.0.1:3210", llmModels: {}, imageGenerators })).imageGenerators;
 
-  it("reads a ComfyUI generator and defaults its size", () => {
+  it("reads a ComfyUI generator and defaults its orientation", () => {
     expect(gens([{ kind: "comfyui", url: "http://127.0.0.1:4240", model: " qwen-image-2.1 " }])).toEqual([
       {
         kind: "comfyui",
         url: "http://127.0.0.1:4240",
         model: "qwen-image-2.1",
-        width: 1328,
-        height: 1328,
+        orientation: "square",
         enabled: true,
       },
     ]);
   });
 
-  it("keeps the size and the model a ComfyUI generator states", () => {
+  it("keeps the orientation, the model file and the LoRAs a ComfyUI generator states", () => {
     const [g] = gens([
-      { kind: "comfyui", url: "http://h:8188/", model: "qwen-image-2512", width: 1664, height: 928, enabled: false },
+      {
+        kind: "comfyui",
+        url: "http://h:8188/",
+        model: "qwen-image-2512",
+        orientation: "landscape",
+        modelFile: " my-qwen-derivative.safetensors ",
+        loras: ["style-a.safetensors", { name: "style-b.safetensors", strength: 0.4 }],
+        enabled: false,
+      },
     ]);
-    expect(g).toMatchObject({ width: 1664, height: 928, enabled: false });
+    expect(g).toMatchObject({
+      orientation: "landscape",
+      modelFile: "my-qwen-derivative.safetensors",
+      loras: [{ name: "style-a.safetensors" }, { name: "style-b.safetensors", strength: 0.4 }],
+      enabled: false,
+    });
   });
 
-  it("drops the device of a ComfyUI entry — the plugin on the server picks the cards", () => {
-    const [g] = gens([{ kind: "comfyui", url: "http://h:8188", model: "qwen-image-2.1", device: "cuda:3" }]);
+  it("drops the size and the device of a ComfyUI entry — the plugin on the server decides both", () => {
+    // Both were fields of an older config; the server owns the pixels behind an
+    // orientation and the cards behind a job, so neither is carried any more.
+    const [g] = gens([
+      { kind: "comfyui", url: "http://h:8188", model: "qwen-image-2.1", width: 1664, height: 928, device: "cuda:3" },
+    ]);
+    expect(g).not.toHaveProperty("width");
+    expect(g).not.toHaveProperty("height");
     expect(g).not.toHaveProperty("device");
+    expect(g).toMatchObject({ orientation: "square" });
+  });
+
+  it("keeps only the LoRAs of a ComfyUI entry that are really named", () => {
+    const [g] = gens([
+      {
+        kind: "comfyui",
+        url: "http://h:8188",
+        model: "m",
+        loras: ["", 7, { strength: 0.5 }, { name: "  ok.safetensors  ", strength: "x" }, { name: "two.safetensors" }],
+      },
+    ]);
+    expect(g).toMatchObject({ loras: [{ name: "ok.safetensors" }, { name: "two.safetensors" }] });
   });
 
   it("reads an SD API generator with its defaults", () => {

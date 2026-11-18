@@ -1,19 +1,44 @@
 import fs from "fs";
 import path from "path";
-import { ComfyUiSettings } from "../../configuration/ComfyUiSettings";
+import { ComfyUiLora, ComfyUiOrientation, ComfyUiSettings } from "../../configuration/ComfyUiSettings";
 import { ComfyUiObjectInfo, ComfyUiSystemStats } from "../comfyui/ComfyUiServerInfo";
 import { IImageGeneratorDriver } from "../IImageGeneratorDriver";
+
+// One file the server has in a folder a client may pick from. `mb` is its size,
+// which is what tells a user which of their three "qwen_image_fp8" files is the
+// 20 GB one before they find out by waiting for it.
+export type ComfyUiFileOption = {
+  name: string;
+  mb?: number;
+};
 
 // What a ComfyUI server answers on `/sillytalk/models` for one model. The
 // plugin describes its own catalogue, so the app holds no workflow file and no
 // list of what a model can do: `max_refs` is the server saying how many
-// reference pictures its graph has a place for.
+// reference pictures its graph has a place for, `sizes` the pixel numbers
+// behind each orientation, and the two option lists the contents of the
+// server's own model folders — which is why the settings dialog offers a pick
+// instead of a text field.
 export type ComfyUiPluginModel = {
   code: string;
   label?: string;
   max_refs: number;
-  width?: number;
-  height?: number;
+  orientation?: ComfyUiOrientation;
+  sizes?: Partial<Record<ComfyUiOrientation, [number, number]>>;
+  // The file the workflow loads when the client names none.
+  model_file?: string | null;
+  // Present only when the workflow can take another file at all.
+  model_files?: { folder?: string; options: ComfyUiFileOption[] };
+  // `max` is how many LoRA slots that model's graph wired (0 = no LoRAs).
+  loras?: { max?: number; options: ComfyUiFileOption[] };
+};
+
+// One ComfyUI server's catalogue as the settings dialog receives it: the app
+// never merges two servers' lists, because a file one box has is not a file the
+// other has, and a pick that mixes them is a job that fails on the wrong server.
+export type ComfyUiServerCatalogue = {
+  url: string;
+  models: ComfyUiPluginModel[];
 };
 
 // `/sillytalk/health`: the server's own account of what it can run on.
@@ -51,6 +76,9 @@ export type ComfyUiJob = {
   status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
   width?: number;
   height?: number;
+  orientation?: ComfyUiOrientation;
+  model_file?: string;
+  loras?: { name: string; strength: number; node?: string }[];
   seed?: number;
   seconds?: number;
   error?: string;
@@ -121,6 +149,11 @@ export class ComfyUiDriver implements IImageGeneratorDriver {
   // the work, which is the one thing a placement problem is read from.
   private lastPlacements: ComfyUiPlacement[] = [];
 
+  // The finished job of the last run, for the same reason: what the server says
+  // it drew with (its own default file or the one that was asked for, the LoRAs
+  // it merged) is the only account of it that cannot drift from what happened.
+  private lastJob: ComfyUiJob | null = null;
+
   constructor(private readonly cfg: ComfyUiSettings) {
     this.base = ComfyUiDriver.normalizeUrl(cfg.url ?? "");
     // Two generators on one server (one model each) are two generators…
@@ -144,6 +177,11 @@ export class ComfyUiDriver implements IImageGeneratorDriver {
     return this.catalogue.map((m) => m.code);
   }
 
+  /** Everything the server offered, files and LoRAs included (the settings pick). */
+  get offeredCatalogue(): ComfyUiPluginModel[] {
+    return this.catalogue;
+  }
+
   /** Why the last probe said no, or null when it did not. */
   get unavailableBecause(): string | null {
     return this.probeError;
@@ -152,6 +190,16 @@ export class ComfyUiDriver implements IImageGeneratorDriver {
   /** Where the loaders of the last run landed (empty before the first one). */
   get placements(): ComfyUiPlacement[] {
     return this.lastPlacements;
+  }
+
+  /** The file the last run loaded, as the server reported it. */
+  get lastModelFile(): string | undefined {
+    return this.lastJob?.model_file;
+  }
+
+  /** The LoRAs the last run merged, as the server reported them. */
+  get lastLoras(): { name: string; strength: number }[] {
+    return this.lastJob?.loras ?? [];
   }
 
   get maxRefs(): number {
@@ -292,8 +340,12 @@ export class ComfyUiDriver implements IImageGeneratorDriver {
     const form = new FormData();
     form.append("model", this.cfg.model);
     form.append("prompt", prompt);
-    if (this.cfg.width > 0) form.append("width", String(this.cfg.width));
-    if (this.cfg.height > 0) form.append("height", String(this.cfg.height));
+    // An orientation, not a size: the server knows the pixel numbers its model
+    // was trained at, and the job answers with the ones it used.
+    form.append("orientation", this.cfg.orientation || "square");
+    if (this.cfg.modelFile) form.append("model_file", this.cfg.modelFile);
+    const loras = ComfyUiDriver.lorasToSend(this.cfg.loras);
+    if (loras.length) form.append("loras", JSON.stringify(loras));
     for (const ref of refPaths) {
       form.append("image", new Blob([fs.readFileSync(ref)], { type: ComfyUiDriver.mimeOf(ref) }), path.basename(ref));
     }
@@ -310,8 +362,22 @@ export class ComfyUiDriver implements IImageGeneratorDriver {
     fs.writeFileSync(outPath, body);
     finished = true;
     this.lastPlacements = done.placements ?? [];
+    this.lastJob = done;
     const where = this.lastPlacements.map((p) => `${p.class}@${p.device}`).join(", ");
-    console.log(`[comfyui] ${this.cfg.model}: ${done.seconds ?? "?"}s on ${this.base}${where ? ` (${where})` : ""}`);
+    const file = done.model_file ? ` ${path.basename(done.model_file)}` : "";
+    const withLoras = (done.loras ?? []).length ? ` +${(done.loras ?? []).length} lora` : "";
+    console.log(
+      `[comfyui] ${this.cfg.model}${file}${withLoras}: ${done.seconds ?? "?"}s ` +
+        `${done.width ?? "?"}x${done.height ?? "?"} on ${this.base}${where ? ` (${where})` : ""}`,
+    );
+  }
+
+  // The LoRA list as the plugin wants it: a name is enough, a strength only when
+  // the user moved the slider off full.
+  private static lorasToSend(loras?: ComfyUiLora[]): { name: string; strength?: number }[] {
+    return (loras ?? [])
+      .filter((l) => l && l.name)
+      .map((l) => (l.strength === undefined ? { name: l.name } : { name: l.name, strength: l.strength }));
   }
 
   // ---- one request ----

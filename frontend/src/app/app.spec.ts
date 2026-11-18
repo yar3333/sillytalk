@@ -9,6 +9,8 @@ import {
   ChatMessage,
   Character,
   ChatSummary,
+  ComfyUiServerCatalogue,
+  ComfyUiSettings,
   Picture,
   PictureFacts,
   PictureLanguage,
@@ -2848,7 +2850,7 @@ describe('Settings — the language of the picture descriptions', () => {
       saved = cfg;
       return Promise.resolve(cfg);
     },
-    imageStatus: () => Promise.resolve({ available: false, comfyUiModels: [], pictureLanguages: languages }),
+    imageStatus: () => Promise.resolve({ available: false, comfyUi: [], pictureLanguages: languages }),
   };
 
   beforeEach(async () => {
@@ -2900,5 +2902,195 @@ describe('Settings — the language of the picture descriptions', () => {
       '[data-testid=settings-picture-language]',
     ) as HTMLSelectElement;
     expect(select.value).toBe('ja');
+  });
+});
+
+// The Settings dialog, the ComfyUI generator. Everything it can be pointed at —
+// the models, the file a model loads, the LoRAs it can merge — is a file of that
+// server, so the dialog lists what the server itself published and asks the user
+// to type nothing: they drop a file into models/diffusion_models/ or
+// models/loras/ and it appears. The pixel numbers are the server's as well, so
+// the config stores an orientation and the pick only shows what it means there.
+describe('Settings — a ComfyUI generator uses the files of its own server', () => {
+  let saved: AppConfig | undefined;
+  const server: ComfyUiServerCatalogue = {
+    url: 'http://comfy.test:8188',
+    models: [
+      {
+        code: 'qwen-image-2.1',
+        max_refs: 2,
+        orientation: 'square',
+        sizes: {
+          square: [1328, 1328],
+          portrait: [1140, 1472],
+          landscape: [1472, 1140],
+        },
+        model_file: 'qwen_image_2.1_int8_convrot.safetensors',
+        model_files: {
+          folder: 'diffusion_models',
+          options: [
+            { name: 'qwen_image_2.1_int8_convrot.safetensors', mb: 6919 },
+            { name: 'my-qwen-derivative.safetensors', mb: 20000 },
+          ],
+        },
+        // three files in the folder, room for two in its workflow
+        loras: {
+          max: 2,
+          options: [
+            { name: 'style-a.safetensors', mb: 200 },
+            { name: 'style-b.safetensors', mb: 200 },
+            { name: 'style-c.safetensors', mb: 200 },
+          ],
+        },
+      },
+      { code: 'plain-model', max_refs: 0 },
+    ],
+  };
+  const fakeApi = {
+    putConfig: (cfg: AppConfig) => {
+      saved = cfg;
+      return Promise.resolve(cfg);
+    },
+    imageStatus: () => Promise.resolve({ available: true, comfyUi: [server], pictureLanguages: [] }),
+  };
+
+  beforeEach(async () => {
+    saved = undefined;
+    await TestBed.resetTestingModule();
+    await TestBed.configureTestingModule({
+      imports: [Settings],
+      providers: [{ provide: ApiService, useValue: fakeApi }],
+    }).compileComponents();
+  });
+
+  // The fixture is handed back, not only its element: a click changes a signal
+  // and the lists that follow (which LoRA slots are left, whether a strength
+  // slider exists) only exist after change detection ran again.
+  async function open(generator: ComfyUiSettings): Promise<{ el: HTMLElement; redraw: () => void }> {
+    const store = TestBed.inject(ConfigStore);
+    store.config.set({ listen: '0.0.0.0:3210', llmModels: {}, imageGenerators: [{ ...generator }] });
+    store.comfyUi.set([server]);
+    store.openSettings();
+    const fixture = TestBed.createComponent(Settings);
+    fixture.detectChanges();
+    return {
+      el: fixture.nativeElement as HTMLElement,
+      redraw: () => {
+        fixture.detectChanges();
+        return fixture.nativeElement as HTMLElement;
+      },
+    };
+  }
+
+  async function save(el: HTMLElement): Promise<ComfyUiSettings> {
+    (el.querySelector('.actions .btn.primary') as HTMLButtonElement).click();
+    await new Promise((r) => setTimeout(r, 0));
+    return saved!.imageGenerators[0] as ComfyUiSettings;
+  }
+
+  const pick = (el: HTMLElement, testid: string): HTMLSelectElement =>
+    el.querySelector(`[data-testid=${testid}]`) as HTMLSelectElement;
+  const ticks = (el: HTMLElement): HTMLInputElement[] =>
+    [...el.querySelectorAll<HTMLInputElement>('[data-testid=settings-comfy-lora]')];
+
+  const base: ComfyUiSettings = {
+    kind: 'comfyui',
+    url: 'http://comfy.test:8188',
+    model: 'qwen-image-2.1',
+    orientation: 'square',
+  };
+
+  it('lists the models, shapes, files and LoRAs that server published', async () => {
+    const { el } = await open(base);
+    expect([...pick(el, 'settings-comfy-model').options].map((o) => o.value)).toEqual([
+      'qwen-image-2.1',
+      'plain-model',
+    ]);
+    // the shape pick carries the pixels of THIS server, so the numbers a model
+    // was trained at are read here and nowhere else
+    expect([...pick(el, 'settings-comfy-orientation').options].map((o) => o.textContent?.trim())).toEqual([
+      'square — 1328×1328',
+      'portrait — 1140×1472',
+      'landscape — 1472×1140',
+    ]);
+    // its own file is the default pick, the rest of the folder is what a
+    // derivative can be drawn with
+    expect([...pick(el, 'settings-comfy-file').options].map((o) => o.textContent?.trim())).toEqual([
+      "the workflow's own — qwen_image_2.1_int8_convrot.safetensors",
+      'my-qwen-derivative.safetensors · 20000 MB',
+    ]);
+    expect(ticks(el).map((c) => c.checked)).toEqual([false, false, false]);
+  });
+
+  it('saves the file, the LoRAs and their strengths as the server names them', async () => {
+    const { el, redraw } = await open(base);
+    const file = pick(el, 'settings-comfy-file');
+    file.value = 'my-qwen-derivative.safetensors';
+    file.dispatchEvent(new Event('change'));
+    ticks(el)[0].click();
+    redraw();
+    // a strength belongs to a LoRA that was ticked, and only appears with it
+    const slider = el.querySelector('input[type=range]') as HTMLInputElement;
+    slider.value = '0.35';
+    slider.dispatchEvent(new Event('input'));
+    ticks(el)[1].click();
+    expect(await save(el)).toMatchObject({
+      modelFile: 'my-qwen-derivative.safetensors',
+      loras: [
+        { name: 'style-a.safetensors', strength: 0.35 },
+        { name: 'style-b.safetensors', strength: 1 },
+      ],
+    });
+  });
+
+  it('gives out no more LoRAs than the workflow of the model has slots for', async () => {
+    const { el, redraw } = await open({ ...base, loras: [{ name: 'style-a.safetensors', strength: 1 }] });
+    // one of two slots is taken: the other two files are still tickable
+    expect(ticks(el).map((c) => c.disabled)).toEqual([false, false, false]);
+    ticks(el)[1].click();
+    redraw();
+    // …and the workflow is full, so the third file cannot be asked for
+    expect(ticks(el).map((c) => c.disabled)).toEqual([false, false, true]);
+    const stored = await save(el);
+    expect(stored.loras?.map((l) => l.name)).toEqual(['style-a.safetensors', 'style-b.safetensors']);
+  });
+
+  it('shows the file and the LoRAs the config already names', async () => {
+    const { el } = await open({
+      ...base,
+      orientation: 'portrait',
+      modelFile: 'my-qwen-derivative.safetensors',
+      loras: [{ name: 'style-b.safetensors', strength: 0.6 }],
+    });
+    expect(pick(el, 'settings-comfy-orientation').value).toBe('portrait');
+    expect(pick(el, 'settings-comfy-file').value).toBe('my-qwen-derivative.safetensors');
+    expect(ticks(el).map((c) => c.checked)).toEqual([false, true, false]);
+    expect((el.querySelector('input[type=range]') as HTMLInputElement).value).toBe('0.6');
+  });
+
+  it('drops what another model of the same server cannot load', async () => {
+    const { el, redraw } = await open({
+      ...base,
+      modelFile: 'my-qwen-derivative.safetensors',
+      loras: [{ name: 'style-a.safetensors', strength: 1 }],
+    });
+    const model = pick(el, 'settings-comfy-model');
+    model.value = 'plain-model';
+    model.dispatchEvent(new Event('change'));
+    redraw();
+    expect(el.querySelector('input[type=range]')).toBeNull();
+    const stored = await save(el);
+    expect(stored.model).toBe('plain-model');
+    expect(stored).not.toHaveProperty('modelFile');
+    expect(stored).not.toHaveProperty('loras');
+  });
+
+  it('keeps a model the server does not answer with instead of rewriting it', async () => {
+    // The server is down, or the address was only just typed: the pick still
+    // shows what the config says, and saving does not quietly change the model.
+    const { el } = await open({ ...base, model: 'gone-model' });
+    expect([...pick(el, 'settings-comfy-model').options].map((o) => o.value)[0]).toBe('gone-model');
+    expect(pick(el, 'settings-comfy-model').value).toBe('gone-model');
+    expect((await save(el)).model).toBe('gone-model');
   });
 });

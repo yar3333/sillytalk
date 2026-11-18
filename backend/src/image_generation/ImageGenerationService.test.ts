@@ -55,7 +55,30 @@ const PICTURE = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47]), Buffer.fro
 // One model of the mock plugin's catalogue. `max_refs` is what the app is told
 // a model takes, and the only place the app learns it — the app ships no
 // workflow files of its own any more.
-type MockModel = { code: string; max_refs: number; width: number; height: number };
+type MockModel = {
+  code: string;
+  max_refs: number;
+  orientation?: string;
+  sizes?: Record<string, [number, number]>;
+  model_file?: string | null;
+  model_files?: { folder: string; options: { name: string; mb?: number }[] };
+  loras?: { max: number; options: { name: string; mb?: number }[] };
+};
+
+// The two folders a client may pick from, as one of these mock servers has them.
+const MOCK_FILES = [
+  { name: "qwen_image_2.1_int8_convrot.safetensors", mb: 6919 },
+  { name: "my_qwen_derivative.safetensors", mb: 20000 },
+];
+const MOCK_LORAS = [
+  { name: "style-a.safetensors", mb: 200 },
+  { name: "style-b.safetensors", mb: 400 },
+];
+const MOCK_SIZES: Record<string, [number, number]> = {
+  square: [1328, 1328],
+  portrait: [1140, 1472],
+  landscape: [1472, 1140],
+};
 
 // The fields and the picture parts of a multipart request, read the crude way:
 // split on the boundary the client announced and look at each part's header.
@@ -84,10 +107,9 @@ interface MockJob {
   // what the app sent for this run
   model: string;
   prompt: string;
-  width: unknown;
-  height: unknown;
+  orientation: unknown;
   // every text field of the request, so a test can see what the app sent — and
-  // what it no longer sends (a workflow, a device, a seed)
+  // what it no longer sends (a workflow, a device, a seed, a pixel size)
   fields: Record<string, string>;
   // the file names the reference parts arrived under, and how big each was
   refs: string[];
@@ -129,9 +151,17 @@ function startMockComfy(): Promise<MockComfy> {
     reset: () => undefined,
     jobs: [],
     models: [
-      { code: "qwen-image-2.1", max_refs: 2, width: 1328, height: 1328 },
-      { code: "qwen-image-2512", max_refs: 2, width: 1328, height: 1328 },
-      { code: "text-only-model", max_refs: 0, width: 1024, height: 1024 },
+      {
+        code: "qwen-image-2.1",
+        max_refs: 2,
+        orientation: "square",
+        sizes: MOCK_SIZES,
+        model_file: MOCK_FILES[0].name,
+        model_files: { folder: "diffusion_models", options: MOCK_FILES },
+        loras: { max: 5, options: MOCK_LORAS },
+      },
+      { code: "qwen-image-2512", max_refs: 2, orientation: "square", sizes: MOCK_SIZES, model_file: null },
+      { code: "text-only-model", max_refs: 0, orientation: "square", sizes: { square: [1024, 1024] }, model_file: null },
     ],
     noPlugin: false,
     probes: 0,
@@ -196,8 +226,7 @@ function startMockComfy(): Promise<MockComfy> {
               id,
               model: fields.model,
               prompt: fields.prompt,
-              width: fields.width,
-              height: fields.height,
+              orientation: fields.orientation,
               fields,
               refs: files.map((f) => f.filename),
               refBytes: files.map((f) => f.bytes),
@@ -237,10 +266,18 @@ function startMockComfy(): Promise<MockComfy> {
             if (job.cancelled) return send(200, { job_id: id, status: "cancelled" });
             if (job.fails) return send(200, { job_id: id, status: "failed", error: "the mock server ran out of patience" });
             if (Date.now() < job.finishesAt) return send(200, { job_id: id, status: "running" });
+            // The size behind the orientation is the server's answer, not the
+            // app's — which is what the job's own width/height are for.
+            const size = MOCK_SIZES[job.fields.orientation ?? "square"] ?? MOCK_SIZES.square;
             return send(200, {
               job_id: id,
               status: "succeeded",
               seconds: 0.2,
+              orientation: job.fields.orientation,
+              width: size[0],
+              height: size[1],
+              model_file: job.fields.model_file || MOCK_FILES[0].name,
+              loras: job.fields.loras ? JSON.parse(job.fields.loras) : [],
               placements: [{ node: "1", class: "UNETLoaderMultiGPU", device: "cuda:0", mb: 12000 }],
             });
           }
@@ -276,8 +313,7 @@ function comfyGen(comfy: MockComfy, over: Partial<ComfyUiSettings> = {}): ComfyU
     kind: "comfyui",
     url: comfy.url,
     model: "qwen-image-2.1",
-    width: 1664,
-    height: 928,
+    orientation: "landscape",
     enabled: true,
     ...over,
   };
@@ -326,20 +362,43 @@ beforeEach(() => {
 
 // ------------------------------------------------------------------ the driver
 describe("ComfyUI generator", () => {
-  it("sends the prompt and the size, and writes the picture back", async () => {
+  it("sends the prompt and the orientation, and writes the picture back", async () => {
     const r = await oneShot(comfyGen(comfy), "a red boat at dusk", [], "substituted.png");
     expect(r.status).toBe("ok");
     const job = comfy.jobs[0];
     expect(job.model).toBe("qwen-image-2.1");
     expect(job.prompt).toBe("a red boat at dusk");
-    expect(job.width).toBe("1664");
-    expect(job.height).toBe("928");
+    expect(job.orientation).toBe("landscape");
     // …and that is the whole request. No graph (the plugin owns the workflows),
     // no device (the plugin picks the cards from the VRAM free when the job
-    // arrives), no seed (the plugin draws one and reports it with the job).
-    expect(Object.keys(job.fields).sort()).toEqual(["height", "model", "prompt", "width"]);
+    // arrives), no seed (the plugin draws one and reports it with the job) and
+    // no pixel size (the server answers an orientation with its own numbers).
+    expect(Object.keys(job.fields).sort()).toEqual(["model", "orientation", "prompt"]);
     // the bytes the server served are the bytes the chat shows
     expect(fs.readFileSync(imageFile(chatIdDefault, "substituted.png"))).toEqual(PICTURE);
+  }, 30000);
+
+  it("sends the model file and the LoRAs the generator was configured with", async () => {
+    const gen = comfyGen(comfy, {
+      modelFile: "my_qwen_derivative.safetensors",
+      loras: [{ name: "style-a.safetensors" }, { name: "style-b.safetensors", strength: 0.6 }],
+    });
+    const r = await oneShot(gen, "a red boat at dusk", [], "with-loras.png");
+    expect(r.status).toBe("ok");
+    const job = comfy.jobs[0];
+    expect(job.fields.model_file).toBe("my_qwen_derivative.safetensors");
+    expect(JSON.parse(job.fields.loras)).toEqual([
+      { name: "style-a.safetensors" },
+      { name: "style-b.safetensors", strength: 0.6 },
+    ]);
+  }, 30000);
+
+  it("sends neither a file nor LoRAs when the generator named none", async () => {
+    const r = await oneShot(comfyGen(comfy), "a red boat at dusk", [], "plain-defaults.png");
+    expect(r.status).toBe("ok");
+    const fields = comfy.jobs[0].fields;
+    expect(fields.model_file).toBeUndefined();
+    expect(fields.loras).toBeUndefined();
   }, 30000);
 
   it("sends the reference pictures with the job, in the order they were given", async () => {

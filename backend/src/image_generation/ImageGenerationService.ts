@@ -11,7 +11,7 @@ import { createToken } from "../di";
 import { ImageGenerator } from "../configuration/ImageGenerator";
 import { TextGenerationService } from "../text_generation/TextGenerationService";
 import { DriverFactory } from "./DriverFactory";
-import { ComfyUiDriver } from "./drivers/ComfyUiDriver";
+import { ComfyUiDriver, ComfyUiPluginModel, ComfyUiServerCatalogue } from "./drivers/ComfyUiDriver";
 import { ImageJobResult } from "./ImageJobResult";
 import { ImageJob } from "./ImageJob";
 import { IImageGeneratorDriver } from "./IImageGeneratorDriver";
@@ -102,16 +102,20 @@ export class ImageGenerationService {
     return this.availableDrivers.reduce((max, d) => Math.max(max, d.maxRefs), 0);
   }
 
-  // The model codes the configured ComfyUI servers offered, collected across
-  // probes and kept between them: the Settings dialog fills its pick from here,
-  // and a server that happens to be down while settings are saved must not
-  // empty a list the user just filled in. It is the servers' catalogue now —
-  // the app ships no workflow files, so it cannot know the names any other way.
-  comfyUiModels(): string[] {
-    return [...ImageGenerationService.comfyUiCatalogue].sort();
+  // What the configured ComfyUI servers offered, per server, collected across
+  // probes and kept between them: the Settings dialog fills its picks from here
+  // — model codes, the sizes behind each orientation, the files of the server's
+  // diffusion folder and its LoRAs — and a server that happens to be down while
+  // settings are saved must not empty a list the user just chose from. It is the
+  // servers' catalogue now: the app ships no workflow files, so it cannot know
+  // any of those names another way.
+  comfyUiCatalogue(): ComfyUiServerCatalogue[] {
+    return [...ImageGenerationService.catalogues.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([url, models]) => ({ url, models }));
   }
 
-  private static readonly comfyUiCatalogue = new Set<string>();
+  private static readonly catalogues = new Map<string, ComfyUiPluginModel[]>();
 
   // Recomputes the available generators; called at startup and when settings
   // are saved. The probes run in parallel.
@@ -134,8 +138,8 @@ export class ImageGenerationService {
     // generator that named one that server turns out not to have — that is
     // exactly the case where the pick should show what could be chosen instead.
     for (const driver of candidates) {
-      if (driver instanceof ComfyUiDriver) {
-        for (const code of driver.offeredModels) ImageGenerationService.comfyUiCatalogue.add(code);
+      if (driver instanceof ComfyUiDriver && driver.offeredCatalogue.length) {
+        ImageGenerationService.catalogues.set(driver.baseUrl, driver.offeredCatalogue);
       }
     }
     return this.availableDrivers;

@@ -20,7 +20,23 @@ process.env.SILLYTALK_DATA_DIR = dataRoot;
 // size the job asked for, so the run's check of the file it downloaded is really
 // exercised.
 
-type MockModel = { code: string; max_refs: number; width?: number; height?: number };
+type MockModel = {
+  code: string;
+  max_refs: number;
+  orientation?: string;
+  sizes?: Record<string, [number, number]>;
+  model_file?: string | null;
+  model_files?: { folder: string; options: { name: string; mb?: number }[] };
+  loras?: { max: number; options: { name: string; mb?: number }[] };
+};
+
+const MOCK_SIZES: Record<string, [number, number]> = {
+  square: [1024, 1024],
+  portrait: [512, 384],
+  landscape: [384, 512],
+};
+const MOCK_FILES = [{ name: "base.safetensors", mb: 6919 }, { name: "derivative.safetensors", mb: 20000 }];
+const MOCK_LORAS = [{ name: "style.safetensors", mb: 200 }];
 
 type MockOptions = {
   /** The server has no comfyui-sillytalk: every /sillytalk route answers 404. */
@@ -43,22 +59,41 @@ interface MockComfy {
   url: string;
   close(): Promise<void>;
   /** Every job the app submitted, with what it asked for. */
-  jobs: Array<{ id: string; model: string; prompt: string; width: string; height: string; refs: number }>;
+  jobs: Array<{
+    id: string;
+    model: string;
+    prompt: string;
+    orientation: string;
+    modelFile: string;
+    loras: string;
+    refs: number;
+  }>;
   /** How often each route was asked for, by name. */
   hits: Record<string, number>;
 }
 
 function startMockComfy(options: MockOptions = {}): Promise<MockComfy> {
   const models = options.models ?? [
-    { code: "jest-model", max_refs: 2, width: 1024, height: 1024 },
-    { code: "plain-model", max_refs: 0, width: 1024, height: 1024 },
+    {
+      code: "jest-model",
+      max_refs: 2,
+      orientation: "square",
+      sizes: MOCK_SIZES,
+      model_file: MOCK_FILES[0].name,
+      model_files: { folder: "diffusion_models", options: MOCK_FILES },
+      loras: { max: 5, options: MOCK_LORAS },
+    },
+    { code: "plain-model", max_refs: 0, orientation: "square", sizes: MOCK_SIZES, model_file: null },
   ];
   // The state of a crashed server: no request is answered any more, and `kill`
   // is what brings it down (assigned once the server is listening).
   let dead = false;
   let kill: () => void = () => undefined;
   const mock: MockComfy = { url: "", close: () => Promise.resolve(), jobs: [], hits: {} };
-  const jobs = new Map<string, { size: { width: number; height: number }; finishesAt: number }>();
+  const jobs = new Map<
+    string,
+    { size: [number, number]; orientation: string; modelFile: string; loras: string; finishesAt: number }
+  >();
   let nextId = 1;
 
   const hit = (name: string): void => {
@@ -139,12 +174,27 @@ function startMockComfy(options: MockOptions = {}): Promise<MockComfy> {
               return send(400, { error: `the '${model}' workflow takes at most ${known.max_refs} reference image(s)` });
             }
             const id = `mock-${nextId++}`;
-            const size = {
-              width: Number(fieldOf(raw, "width")) || known.width || 1024,
-              height: Number(fieldOf(raw, "height")) || known.height || 1024,
-            };
-            mock.jobs.push({ id, model, prompt: fieldOf(raw, "prompt"), width: fieldOf(raw, "width"), height: fieldOf(raw, "height"), refs });
-            jobs.set(id, { size, finishesAt: Date.now() + 60 });
+            // The server turns the orientation into pixels — the app never sends
+            // a size, so this is where the number the picture comes back at is
+            // decided.
+            const orientation = fieldOf(raw, "orientation") || known.orientation || "square";
+            const size = known.sizes?.[orientation] ?? [1024, 1024];
+            mock.jobs.push({
+              id,
+              model,
+              prompt: fieldOf(raw, "prompt"),
+              orientation,
+              modelFile: fieldOf(raw, "model_file"),
+              loras: fieldOf(raw, "loras"),
+              refs,
+            });
+            jobs.set(id, {
+              size: [size[0], size[1]],
+              orientation,
+              modelFile: fieldOf(raw, "model_file"),
+              loras: fieldOf(raw, "loras"),
+              finishesAt: Date.now() + 60,
+            });
             // The crash: the job is accepted, then the process dies while the
             // client is polling for its picture — exactly what a GPU abort does.
             if (options.diesAfterPrompts !== undefined && jobs.size >= options.diesAfterPrompts) {
@@ -167,7 +217,7 @@ function startMockComfy(options: MockOptions = {}): Promise<MockComfy> {
                 return;
               }
               res.writeHead(200, { "Content-Type": "image/png" });
-              res.end(pngOf(job.size.width, job.size.height));
+              res.end(pngOf(job.size[0], job.size[1]));
               return;
             }
             if (options.failJobs) {
@@ -178,6 +228,11 @@ function startMockComfy(options: MockOptions = {}): Promise<MockComfy> {
               job_id: id,
               status: "succeeded",
               seconds: 0.1,
+              orientation: job.orientation,
+              width: job.size[0],
+              height: job.size[1],
+              model_file: job.modelFile || "base.safetensors",
+              loras: job.loras ? JSON.parse(job.loras) : [],
               placements: [{ node: "3", class: "UNETLoader", device: "cuda:0", mb: 12000 }],
             });
           }
@@ -293,7 +348,7 @@ async function replaceMock(options: MockOptions): Promise<void> {
 
 describe("ComfyUiSelfTestService", () => {
   it("walks a healthy server and draws one picture per reference count", async () => {
-    const { report, lines } = await runTest({ width: 512, height: 384 });
+    const { report, lines } = await runTest({ orientation: "portrait" });
     const text = lines.join("\n");
 
     expect(report.ok).toBe(true);
@@ -313,14 +368,21 @@ describe("ComfyUiSelfTestService", () => {
     // the plugin's own account of its cards, including the cache it could give up
     expect(text).toMatch(/its own cache/);
     expect(text).toMatch(/resident: vae .*cuda:1/);
-    // the catalogue it read, in the words the user picks from afterwards
-    expect(text).toMatch(/it draws: jest-model \(≤2 refs\), plain-model \(≤0 refs\)/);
+    // the catalogue it read, in the words the user picks from afterwards: what
+    // each model draws, which file it draws with, what it can be given
+    expect(text).toMatch(/jest-model: ≤2 refs, square 1024×1024, portrait 512×384, landscape 384×512/);
+    expect(text).toMatch(/model file: base\.safetensors \(2 in the server's folder to choose from\)/);
+    expect(text).toMatch(/loras: 5 slot\(s\), 1 file\(s\) in models\/loras\//);
+    expect(text).toMatch(/plain-model: ≤0 refs/);
+    expect(text).toMatch(/model file: fixed by the workflow/);
+    expect(text).toMatch(/loras: this workflow has no LoRA slots/);
 
-    // the draws really carried the size and the references they claim
-    expect(mock.jobs.map((j) => [j.width, j.height, j.refs])).toEqual([
-      ["512", "384", 0],
-      ["512", "384", 1],
-      ["512", "384", 2],
+    // the draws really carried the orientation the app asked for and the size
+    // the server turned it into
+    expect(mock.jobs.map((j) => [j.orientation, j.refs])).toEqual([
+      ["portrait", 0],
+      ["portrait", 1],
+      ["portrait", 2],
     ]);
     for (const item of report.items) {
       expect(ComfyUiSelfTestService.imageInfoOf(item.file!)).toEqual({ format: "PNG", width: 512, height: 384 });
@@ -401,6 +463,55 @@ describe("ComfyUiSelfTestService", () => {
     // …and what it does offer, so the next try can be typed from the answer
     expect(report.problems.join("\n")).toMatch(/it offers jest-model, plain-model/);
     expect(lines.join("\n")).toMatch(/no-such-model/);
+  }, 60_000);
+
+  it("draws with the model file and the LoRAs it was given and reads them back", async () => {
+    const { report, lines } = await runTest({
+      withRefs: false,
+      modelFile: "derivative.safetensors",
+      loras: [{ name: "style.safetensors", strength: 0.6 }],
+    });
+    expect(report.ok).toBe(true);
+    // what actually left the app, as the server saw it
+    expect(mock.jobs.map((j) => [j.modelFile, j.loras])).toEqual([
+      ["derivative.safetensors", '[{"name":"style.safetensors","strength":0.6}]'],
+    ]);
+    // …and what came back on the job, which is the part that proves the server
+    // understood rather than ignored the request
+    const text = lines.join("\n");
+    expect(text).toMatch(/with derivative\.safetensors \+ style\.safetensors@0\.6/);
+  }, 60_000);
+
+  it("refuses a file the server's folders have not got, before drawing anything", async () => {
+    const { report, lines } = await runTest({
+      withRefs: false,
+      modelFile: "my-derivative.safetensors",
+      loras: [{ name: "ghost.safetensors" }],
+    });
+    expect(report.ok).toBe(false);
+    expect(report.summary).toMatch(/The run was not started/);
+    expect(report.problems.join("\n")).toMatch(/'my-derivative\.safetensors' is not among its 2 model file\(s\)/);
+    expect(report.problems.join("\n")).toMatch(/'ghost\.safetensors' is not in its models\/loras\/ \(1 file\(s\) there\)/);
+    expect(report.items).toEqual([]);
+    expect(mock.hits.generate ?? 0).toBe(0);
+    expect(lines.join("\n")).toMatch(/✗ .*ghost\.safetensors/);
+  }, 60_000);
+
+  it("says so when more LoRAs were asked for than the workflow wired slots for", async () => {
+    const { report } = await runTest({
+      models: ["plain-model"],
+      withRefs: false,
+      loras: [{ name: "style.safetensors" }],
+    });
+    expect(report.ok).toBe(false);
+    expect(report.problems.join("\n")).toMatch(/it wired 0 LoRA slot\(s\), 1 were asked for/);
+    expect(mock.hits.generate ?? 0).toBe(0);
+  }, 60_000);
+
+  it("says so when a model's workflow loads a file of its own and cannot swap it", async () => {
+    const { report } = await runTest({ models: ["plain-model"], withRefs: false, modelFile: "derivative.safetensors" });
+    expect(report.ok).toBe(false);
+    expect(report.problems.join("\n")).toMatch(/its workflow loads a model file of its own/);
   }, 60_000);
 
   it("skips the generation on draw: false and is still a clean run", async () => {

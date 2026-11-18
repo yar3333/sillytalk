@@ -285,15 +285,26 @@ export async function startMockLlm(
 // What a job does follows the prompt text the app sent: "fail" — the server
 // fails it, "slow" — it takes 5 s, anything else is drawn after a short pause.
 // One imageGenerators entry of the config — the same shape the app reads from
-// /api/config (the suites PUT it there before each test).
+// /api/config (the suites PUT it there before each test). No pixel numbers: the
+// app asks for a shape and this server answers with the size of its own.
 export interface MockComfyGenerator {
   kind: 'comfyui';
   url: string;
   model: string;
-  width: number;
-  height: number;
+  orientation: MockOrientation;
   enabled: boolean;
 }
+
+export type MockOrientation = 'square' | 'portrait' | 'landscape';
+
+// The pixels this mock turns each shape into. They are deliberately not square
+// and not equal, so a run that mixed them up would be caught by the size of the
+// picture the app saved.
+export const MOCK_SIZES: Record<MockOrientation, [number, number]> = {
+  square: [96, 96],
+  portrait: [72, 96],
+  landscape: [96, 72],
+};
 
 export interface MockComfy {
   url: string;
@@ -304,27 +315,28 @@ export interface MockComfy {
   // the prompt the generator really saw and which pictures went with it.
   prompts(): string[];
   uploads(): string[];
+  // The shape, the model file and the LoRAs of every job, as the server read
+  // them from the request.
+  requests(): { orientation: string; modelFile: string; loras: string }[];
   close(): void;
 }
 
 interface MockComfyJob {
   id: string;
   prompt: string;
+  orientation: MockOrientation;
   finishesAt: number;
   fails: boolean;
   cancelled: boolean;
 }
 
-export async function startMockComfy(
-  model = 'qwen-image-2.1',
-  size: { width: number; height: number } = { width: 96, height: 96 },
-): Promise<MockComfy> {
+export async function startMockComfy(model = 'qwen-image-2.1'): Promise<MockComfy> {
   const jobs: MockComfyJob[] = [];
-  // What the app sent: the prompt of every job and the name of every uploaded
-  // reference picture.
+  // What the app sent: the prompt of every job, the name of every uploaded
+  // reference picture, and the shape/file/LoRAs each job asked for.
   const promptLog: string[] = [];
   const uploadLog: string[] = [];
-  const picture = makePng(96, 96, 210, 60, 60);
+  const requestLog: { orientation: string; modelFile: string; loras: string }[] = [];
   let nextId = 1;
 
   // The text fields of a multipart request, and the names of its file parts.
@@ -346,13 +358,38 @@ export async function startMockComfy(
         if (route === 'GET /system_stats') return send(200, { mock: true });
 
         if (route === 'GET /sillytalk/models') {
-          return send(200, { models: [{ code: model, label: 'Mock model', max_refs: 2, width: 96, height: 96 }] });
+          return send(200, {
+            models: [
+              {
+                code: model,
+                label: 'Mock model',
+                max_refs: 2,
+                orientation: 'square',
+                sizes: MOCK_SIZES,
+                model_file: 'mock_model.safetensors',
+                model_files: {
+                  folder: 'diffusion_models',
+                  options: [
+                    { name: 'mock_model.safetensors', mb: 6919 },
+                    { name: 'mock_model_derivative.safetensors', mb: 12000 },
+                  ],
+                },
+                loras: {
+                  max: 5,
+                  options: [
+                    { name: 'mock_style_a.safetensors', mb: 200 },
+                    { name: 'mock_style_b.safetensors', mb: 200 },
+                  ],
+                },
+              },
+            ],
+          });
         }
 
         if (route === 'GET /sillytalk/health') {
           return send(200, {
             name: 'comfyui-sillytalk',
-            version: '1.0.0-mock',
+            version: '1.1.0-mock',
             comfyui_version: '0.44.2-mock',
             workflow_dir: '/mock/workflows',
             models: [model],
@@ -366,12 +403,19 @@ export async function startMockComfy(
           const prompt = fieldOf(raw, 'prompt');
           const sent = fieldOf(raw, 'model');
           if (sent !== model) return send(400, { error: `no workflow named '${sent}' in this server's catalogue` });
+          const orientation = (fieldOf(raw, 'orientation') || 'square') as MockOrientation;
+          requestLog.push({
+            orientation,
+            modelFile: fieldOf(raw, 'model_file'),
+            loras: fieldOf(raw, 'loras'),
+          });
           for (const part of raw.toString('binary').matchAll(/filename="([^"]*)"/g)) uploadLog.push(part[1]);
           const id = `mock-${nextId++}`;
           promptLog.push(prompt);
           jobs.push({
             id,
             prompt,
+            orientation: MOCK_SIZES[orientation] ? orientation : 'square',
             finishesAt: Date.now() + (/slow/i.test(prompt) ? 5000 : 400),
             fails: /fail/i.test(prompt),
             cancelled: false,
@@ -394,8 +438,9 @@ export async function startMockComfy(
           if (jobRoute[2]) {
             if (job.fails || job.cancelled) return send(410, { error: 'the job has no picture to send' });
             if (Date.now() < job.finishesAt) return send(409, { error: 'the job is still running' });
+            const [w, h] = MOCK_SIZES[job.orientation];
             res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' });
-            res.end(picture);
+            res.end(makePng(w, h, 210, 60, 60));
             return;
           }
           if (job.cancelled) return send(200, { job_id: id, status: 'cancelled' });
@@ -403,10 +448,16 @@ export async function startMockComfy(
             return send(200, { job_id: id, status: 'failed', error: 'the mock ComfyUI failed on purpose' });
           }
           if (Date.now() < job.finishesAt) return send(200, { job_id: id, status: 'running' });
+          const [w, h] = MOCK_SIZES[job.orientation];
           return send(200, {
             job_id: id,
             status: 'succeeded',
             seconds: 0.4,
+            orientation: job.orientation,
+            width: w,
+            height: h,
+            model_file: 'mock_model.safetensors',
+            loras: [],
             placements: [{ node: '1', class: 'UNETLoaderMultiGPU', device: 'cuda:0', mb: 12000 }],
           });
         }
@@ -427,8 +478,7 @@ export async function startMockComfy(
       kind: 'comfyui',
       url,
       model,
-      width: size.width,
-      height: size.height,
+      orientation: 'square',
       enabled: true,
     },
     // what the app sent this server: the prompt of every job (in the order the
@@ -438,6 +488,9 @@ export async function startMockComfy(
     },
     uploads() {
       return [...uploadLog];
+    },
+    requests() {
+      return [...requestLog];
     },
     close() {
       server.close();

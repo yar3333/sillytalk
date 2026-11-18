@@ -75,8 +75,14 @@ describe("parseArgs", () => {
       "qwen-image-2.1",
       "--model",
       "my-flux",
-      "--size",
-      "768x512",
+      "--orientation",
+      "portrait",
+      "--model-file",
+      "my-qwen-derivative.safetensors",
+      "--lora",
+      "style-a.safetensors@0.6",
+      "--lora",
+      "style-b.safetensors",
       "--prompt",
       "a blue house",
       "--out",
@@ -89,8 +95,9 @@ describe("parseArgs", () => {
       options: {
         url: "http://127.0.0.1:8188",
         models: ["qwen-image-2.1", "my-flux"],
-        width: 768,
-        height: 512,
+        orientation: "portrait",
+        modelFile: "my-qwen-derivative.safetensors",
+        loras: [{ name: "style-a.safetensors", strength: 0.6 }, { name: "style-b.safetensors" }],
         prompt: "a blue house",
         outDir: "/tmp/pics",
         withRefs: false,
@@ -99,16 +106,28 @@ describe("parseArgs", () => {
     });
   });
 
+  it("keeps an @ that is part of a file name a whole name", () => {
+    // `x@2.safetensors` is a file someone could really have; only a tail that
+    // reads as a number is a strength.
+    const parsed = parseArgs(["test-comfyui", "u", "--lora", "x@2.safetensors"]);
+    expect(parsed).toMatchObject({ options: { loras: [{ name: "x@2.safetensors" }] } });
+  });
+
   it("has no --device — the plugin on the server chooses the GPUs", () => {
     const parsed = parseArgs(["test-comfyui", "u", "--device", "cuda:1"]);
+    expect("error" in parsed && parsed.error).toMatch(/Unknown option/);
+  });
+
+  it("has no --size — the server turns an orientation into pixels", () => {
+    const parsed = parseArgs(["test-comfyui", "u", "--size", "768x512"]);
     expect("error" in parsed && parsed.error).toMatch(/Unknown option/);
   });
 
   it("answers a bad option instead of guessing what it meant", () => {
     expect("error" in parseArgs(["test-comfyui", "u", "--modelz", "x"])).toBe(true);
     expect("error" in parseArgs(["test-comfyui", "u", "--model"])).toBe(true);
-    expect("error" in parseArgs(["test-comfyui", "u", "--size", "big"])).toBe(true);
-    expect("error" in parseArgs(["test-comfyui", "u", "--size", "32x32"])).toBe(true);
+    expect("error" in parseArgs(["test-comfyui", "u", "--orientation", "big"])).toBe(true);
+    expect("error" in parseArgs(["test-comfyui", "u", "--orientation"])).toBe(true);
   });
 });
 

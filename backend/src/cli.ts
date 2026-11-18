@@ -1,3 +1,4 @@
+import { ComfyUiLora, ComfyUiOrientation } from "./configuration/ComfyUiSettings";
 import { ComfyUiSelfTestOptions, ComfyUiSelfTestService } from "./image_generation/comfyui/ComfyUiSelfTestService";
 import { PathHelper } from "./shared/PathHelper";
 
@@ -24,12 +25,16 @@ reference count, each verified on disk afterwards. The server chooses the GPUs
 itself, so nothing here names one. Nothing of the app's config is read or
 changed, and the only files written are the test pictures.
 
-  --model <code>      only this model of the server's catalogue (repeatable)
-  --size <WxH>        the size of the test pictures (default: the model's own)
-  --prompt <text>     the prompt of the test pictures
-  --out <dir>         where the test pictures go (default <data root>/comfyui-test)
-  --no-refs           draw without reference images only
-  --no-draw           run the checks and draw nothing
+  --model <code>        only this model of the server's catalogue (repeatable)
+  --orientation <o>     square | portrait | landscape (default: the model's own)
+  --model-file <name>   a file of the server's models/diffusion_models/ to draw
+                        with instead of the workflow's own
+  --lora <name[@s]>     a file of the server's models/loras/ to merge, with an
+                        optional strength (repeatable, applied in this order)
+  --prompt <text>       the prompt of the test pictures
+  --out <dir>           where the test pictures go (default <data root>/comfyui-test)
+  --no-refs             draw without reference images only
+  --no-draw             run the checks and draw nothing
 
 Exit code: 0 clean, 1 something failed or needs a look, 2 a bad command line.
 Data folder: ${PathHelper.configDir()} (SILLYTALK_DATA_DIR moves it elsewhere).`;
@@ -40,8 +45,9 @@ export type ParsedCommand =
   | { command: "test-comfyui"; url: string; options: ComfyUiSelfTestOptions }
   | { error: string };
 
-const FLAGS_WITH_VALUE = new Set(["--model", "--size", "--prompt", "--out"]);
+const FLAGS_WITH_VALUE = new Set(["--model", "--orientation", "--model-file", "--lora", "--prompt", "--out"]);
 const SWITCHES = new Set(["--no-refs", "--no-draw"]);
+const ORIENTATIONS: readonly string[] = ["square", "portrait", "landscape"];
 
 export function parseArgs(argv: string[]): ParsedCommand {
   const [command, ...rest] = argv;
@@ -65,6 +71,7 @@ export function parseArgs(argv: string[]): ParsedCommand {
 
   const options: ComfyUiSelfTestOptions = { url };
   const models: string[] = [];
+  const loras: ComfyUiLora[] = [];
   for (let i = 0; i < rest.length; i++) {
     const flag = rest[i];
     if (flag === urlArg) continue;
@@ -84,22 +91,31 @@ export function parseArgs(argv: string[]): ParsedCommand {
     if (flag === "--model") models.push(value);
     else if (flag === "--prompt") options.prompt = value;
     else if (flag === "--out") options.outDir = value;
+    else if (flag === "--model-file") options.modelFile = value.trim();
+    else if (flag === "--lora") loras.push(loraOf(value));
     else {
-      const match = /^(\d+)\s*[x*]\s*(\d+)$/i.exec(value.trim());
-      if (!match) {
-        return { error: `--size wants a size like 1024x1024, got "${value}"` };
+      const orientation = value.trim().toLowerCase();
+      if (!ORIENTATIONS.includes(orientation)) {
+        return { error: `--orientation wants one of ${ORIENTATIONS.join(" | ")}, got "${value}"` };
       }
-      const width = Number(match[1]);
-      const height = Number(match[2]);
-      if (width < 64 || height < 64 || width > 8192 || height > 8192) {
-        return { error: `--size ${value} is outside what a generator takes (64..8192 on a side)` };
-      }
-      options.width = width;
-      options.height = height;
+      options.orientation = orientation as ComfyUiOrientation;
     }
   }
   if (models.length) options.models = models;
+  if (loras.length) options.loras = loras;
   return { command: "test-comfyui", url, options };
+}
+
+// `style.safetensors@0.7` is that LoRA at 70 %. A name with no `@`, or one whose
+// tail is not a number, is the whole file name — a file genuinely called
+// `x@2.safetensors` has to stay typeable.
+function loraOf(value: string): ComfyUiLora {
+  const at = value.lastIndexOf("@");
+  if (at > 0) {
+    const strength = Number(value.slice(at + 1));
+    if (Number.isFinite(strength)) return { name: value.slice(0, at), strength };
+  }
+  return { name: value };
 }
 
 // The seams of a test: where the run writes, and the service it runs against.

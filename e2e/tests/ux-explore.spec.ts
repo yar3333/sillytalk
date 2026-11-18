@@ -1583,6 +1583,57 @@ test('UX 22: the reference set of a picture is edited in its own dialog', async 
   expect(sent.some((name) => /^ux-22-reference-png-[0-9a-f]{6}\.png$/.test(name))).toBe(true);
 });
 
+// The files of the server, picked where the user actually sits. Settings lists
+// the model file and the LoRAs that ComfyUI itself published — the user drops a
+// file into its models/diffusion_models/ or models/loras/ and it appears here,
+// with nothing to type — and the next draw carries exactly that pick. The app
+// sends a shape, never a pixel number: the size in the answer is the server's.
+test('UX 23: a model file and a LoRA of the server are picked in Settings and drawn', async ({ page }) => {
+  await setDelay(0);
+  await openApp(page);
+  await page.getByTestId('menu').click();
+  await page.getByTestId('settings').click();
+  await expect(page.locator('.settings-body')).toBeVisible();
+
+  // Both lists are the server's, including the pixels its model was trained at.
+  const file = page.getByTestId('settings-comfy-file');
+  await expect(file.locator('option', { hasText: 'mock_model_derivative.safetensors' })).toHaveCount(1);
+  await expect(
+    page.getByTestId('settings-comfy-orientation').locator('option', { hasText: 'portrait — 72×96' }),
+  ).toHaveCount(1);
+  const loras = page.getByTestId('settings-comfy-lora');
+  await expect(loras).toHaveCount(2);
+  await page.screenshot({ path: `${SHOTS}/ux-23a-settings-files.png` });
+
+  await file.selectOption('mock_model_derivative.safetensors');
+  await loras.first().check();
+  // ticking a LoRA hands it a strength, and the slider is where it is changed
+  const slider = page.locator('.settings-body input[type=range]');
+  await expect(slider).toHaveCount(1);
+  await slider.fill('0.4');
+  await page.screenshot({ path: `${SHOTS}/ux-23b-settings-lora.png` });
+  await page.locator('.settings-body .actions .btn.primary').click();
+  await expect(page.locator('.settings-body')).toBeHidden();
+
+  // The config of the app now names both files of the server…
+  const cfg = (await api('/config')) as {
+    imageGenerators: Array<{ modelFile?: string; loras?: { name: string; strength: number }[] }>;
+  };
+  expect(cfg.imageGenerators[0].modelFile).toBe('mock_model_derivative.safetensors');
+  expect(cfg.imageGenerators[0].loras).toEqual([{ name: 'mock_style_a.safetensors', strength: 0.4 }]);
+
+  // …and the picture asked for in the chat is drawn with them.
+  await askForPicture(page, 'a red apple on a wooden table');
+  await expect(anyPicImage(page).first()).toBeVisible({ timeout: 30000 });
+  const sent = (comfy?.requests() ?? []).at(-1);
+  expect(sent).toMatchObject({
+    orientation: 'square',
+    modelFile: 'mock_model_derivative.safetensors',
+    loras: JSON.stringify([{ name: 'mock_style_a.safetensors', strength: 0.4 }]),
+  });
+  await page.screenshot({ path: `${SHOTS}/ux-23c-drawn-with-them.png` });
+});
+
 // The collected issues are attached to every test run as a JSON artifact.
 test.afterEach(async ({ page }, testInfo) => {
   if (issues.length > 0) {

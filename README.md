@@ -39,9 +39,13 @@ Stack: **Node.js / Express 5 / TypeScript** (backend) + **Angular 22 / SCSS** (f
 - Image generation by several backends (all the enabled and available ones are used; the jobs of one
   generator are queued, different generators run in parallel):
   - **ComfyUI** — a generator is a ComfyUI URL plus one model code of that server's catalogue and the
-    picture size, so one ComfyUI server running two models is two generators. The server needs the
+    picture's *orientation* (square / portrait / landscape), so one ComfyUI server running two models
+    is two generators. The server needs the
     [`comfyui-sillytalk`](https://github.com/yar3333/comfyui-sillytalk) custom node: it owns the
-    workflows, publishes the model list and picks the GPU;
+    workflows, publishes the model list and picks the GPU. It also publishes what is in its
+    `models/diffusion_models/` and `models/loras/`, so a derivative checkpoint or a LoRA you drop
+    there becomes a dropdown entry and a checkbox in **Settings** — with a strength slider per LoRA —
+    rather than a name to type;
   - **SD API (Stable Diffusion WebUI)** — via the API (`/sdapi/v1/txt2img`, `/sdapi/v1/img2img`).
   Generation always runs in the background: the chat stays usable, a spinner with Cancel shows
   while it runs and a failed picture keeps a Regenerate button. A click on a picture enlarges it
@@ -128,16 +132,23 @@ count** (text, 1 reference, 2 references), kept in `~/.config/sillytalk/comfyui-
 look at them. A failing step is reported with the reason and what to do about it (the plugin not
 installed, a card without room, a job still queued, a server bound to 127.0.0.1 only).
 
-It reads nothing of your config and changes nothing — the URL, the models and the size are arguments:
+It reads nothing of your config and changes nothing — the URL, the models, the shape and the files
+are arguments:
 
 | Option | What it does |
 | --- | --- |
 | `--model <code>` | only this model of the server's catalogue (repeatable) |
-| `--size <WxH>` | the size of the test pictures (default: the model's own) |
+| `--orientation <o>` | `square`, `portrait` or `landscape` (default: the model's own). There is no size option: the server turns a shape into the pixels its model was trained at |
+| `--model-file <name>` | a file of the server's `models/diffusion_models/` to draw with instead of the workflow's own |
+| `--lora <name[@s]>` | a file of the server's `models/loras/` to merge, with an optional strength (repeatable, applied in this order) |
 | `--prompt <text>` | the prompt of the test pictures |
 | `--out <dir>` | where the test pictures go (default `<data root>/comfyui-test`) |
 | `--no-refs` | draw without reference pictures only |
 | `--no-draw` | run the checks and draw nothing |
+
+A file the server does not have is named once, against the catalogue it just published, before any
+picture is drawn — and the run prints how many model files and LoRAs each model offers, which is
+what the Settings dialog will list.
 
 Exit code: `0` clean, `1` something failed or needs a look, `2` a bad command line. Ctrl+C stops
 the run and tells the server to drop the job it was given.
@@ -178,8 +189,13 @@ Example:
       "kind": "comfyui",
       "url": "http://127.0.0.1:8188", // the ComfyUI server (needs the comfyui-sillytalk node)
       "model": "qwen-image-2.1", // a model code of THAT server's catalogue
-      "width": 1328, // the GPU is not here: the plugin picks it per job
-      "height": 1328,
+      "orientation": "square", // square | portrait | landscape — the server owns the pixels,
+                               // and the GPU: the plugin picks both per job
+      "modelFile": "my-qwen-derivative.safetensors", // optional: a file of the server's
+                               // models/diffusion_models/ to draw with instead of its own
+      "loras": [ // optional, merged in this order
+        { "name": "my-style.safetensors", "strength": 0.6 }, // strength defaults to 1.0
+      ],
       "enabled": true,
     },
     {
@@ -238,17 +254,25 @@ resolved by `resolveApiKey()`: `envKey` (an environment variable) takes priority
   jobs in turn).
 - **A ComfyUI server needs the [`comfyui-sillytalk`](https://github.com/yar3333/comfyui-sillytalk)
   custom node — it is a hard requirement, not an optional extra.** The app sends that plugin a
-  prompt, its reference pictures, a model code and a size; the plugin owns the workflow graph, runs
-  it and returns the finished picture. The app holds no graph, no converter endpoint and no GPU
-  name: which card draws the picture is decided on the server, from the memory free at the moment
-  the job arrives. A server without the plugin is simply not offered as a generator, and the log
-  says which custom node to install.
+  prompt, its reference pictures, a model code and an orientation; the plugin owns the workflow
+  graph, runs it and returns the finished picture. The app holds no graph, no converter endpoint and
+  no GPU name: which card draws the picture is decided on the server, from the memory free at the
+  moment the job arrives, and so are the pixels — the app asks for a shape (square, portrait,
+  landscape) and the server answers with the size its model was trained at. A server without the
+  plugin is simply not offered as a generator, and the log says which custom node to install.
   `sillytalk test-comfyui <url>` checks exactly these prerequisites and draws one real picture per
   model and reference count — see [Command line](#command-line).
 - **Adding a model therefore happens on the server, not in this app.** Drop a `<code>.json` workflow
   into the plugin's `workflows/` folder (its README describes the file and the environment variables
   that steer the GPU placement) and it appears in the model pick after the next save in **Settings**
   — the list is what the servers report, so nothing has to be rebuilt or reconfigured here.
+- **So does using a checkpoint or a LoRA of your own.** The plugin publishes the contents of its
+  `models/diffusion_models/` and `models/loras/` folders, and **Settings** turns them into a
+  dropdown (which file of that folder the model should load — e.g. a quantised derivative of
+  qwen-image-2.1 you dropped there) and a checkbox per LoRA with a 0…1 strength slider next to the
+  ones you tick. Nothing is typed by hand: a file appears in the list as soon as the server can see
+  it, and a workflow whose graph wired no LoRA slots says so instead of offering them. Ask for more
+  LoRAs than its slots and the server answers before drawing anything.
 
 ## Data storage
 

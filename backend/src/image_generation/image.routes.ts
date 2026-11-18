@@ -24,10 +24,11 @@ export function createImageRouter(
   router.get("/status", (_req, res) => {
     res.json({
       available: imageGeneration.hasAvailableGenerator(),
-      // The image models a ComfyUI generator can be pointed at: what the
-      // configured servers' comfyui-sillytalk plugin offers (the settings dialog
-      // offers exactly these — the app ships no workflows of its own).
-      comfyUiModels: imageGeneration.comfyUiModels(),
+      // What each configured ComfyUI server's comfyui-sillytalk plugin offers:
+      // its models, the sizes behind an orientation, and the files of its model
+      // folders. The settings dialog offers exactly these — the app ships no
+      // workflows and types no file names of its own.
+      comfyUi: imageGeneration.comfyUiCatalogue(),
       // The languages a picture's description can be written in — the Settings
       // dialog fills its pick from here, so the list of what the model can be
       // asked for lives in one place (configuration/PictureLanguage.ts).

@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { createToken } from "../di";
+import { ComfyUiLora, ComfyUiOrientation } from "./ComfyUiSettings";
 import { Config } from "./Config";
 import { ImageGenerator } from "./ImageGenerator";
 import { LlmModel } from "./LlmModel";
@@ -10,6 +11,12 @@ import { PathHelper } from "../shared/PathHelper";
 
 // The DI token of the configuration service (registered in index.ts).
 export const DI_CONFIGURATION_SERVICE = createToken<ConfigurationService>("ConfigurationService");
+
+const COMFY_ORIENTATIONS: readonly string[] = ["square", "portrait", "landscape"];
+
+function isComfyUiOrientation(value: unknown): value is ComfyUiOrientation {
+  return typeof value === "string" && COMFY_ORIENTATIONS.includes(value);
+}
 
 // The top-level configuration service: the config.json load/save (with the
 // normalization and the JSONC comment stripping), the defaults, the listen
@@ -219,6 +226,27 @@ export class ConfigurationService {
     return Object.keys(result).length > 0 ? result : def.llmModels;
   }
 
+  // The LoRA list of a ComfyUI generator: a name survives, junk does not. A name
+  // the server has not got is not filtered here — the driver is the one that
+  // asked the server for its folder, so it is the one that can say so.
+  private static normalizeLoras(raw: unknown): ComfyUiLora[] {
+    if (!Array.isArray(raw)) return [];
+    const out: ComfyUiLora[] = [];
+    for (const item of raw) {
+      if (typeof item === "string" && item.trim()) {
+        out.push({ name: item.trim() });
+        continue;
+      }
+      if (!item || typeof item !== "object") continue;
+      const entry = item as Record<string, unknown>;
+      const name = typeof entry.name === "string" ? entry.name.trim() : "";
+      if (!name) continue;
+      const strength = typeof entry.strength === "number" && Number.isFinite(entry.strength) ? entry.strength : undefined;
+      out.push(strength === undefined ? { name } : { name, strength });
+    }
+    return out;
+  }
+
   private normalizeGenerators(raw: unknown): ImageGenerator[] {
     if (!Array.isArray(raw)) return [];
     const result: ImageGenerator[] = [];
@@ -228,16 +256,21 @@ export class ConfigurationService {
       // enabled defaults to true — a generator without the field is on.
       const enabled = typeof g.enabled === "boolean" ? g.enabled : true;
       if (g.kind === "comfyui") {
+        const loras = ConfigurationService.normalizeLoras(g.loras);
         result.push({
           kind: "comfyui",
           url: typeof g.url === "string" ? g.url : "",
           // A model code the server does not offer is kept as it is written —
           // the driver reports which codes it does offer, and this generator
-          // simply is not available. (A `device` field of an older config is
-          // dropped: the plugin on the server picks the cards now.)
+          // simply is not available.
           model: typeof g.model === "string" ? g.model.trim() : "",
-          width: typeof g.width === "number" ? g.width : 1328,
-          height: typeof g.height === "number" ? g.height : 1328,
+          // The server owns the pixel numbers behind an orientation, so the
+          // `width`/`height` of a config written before that are dropped (like
+          // the older `device` before them): the plugin on the server decides
+          // both, from what its model was trained at and what is free now.
+          orientation: isComfyUiOrientation(g.orientation) ? g.orientation : "square",
+          ...(typeof g.modelFile === "string" && g.modelFile.trim() ? { modelFile: g.modelFile.trim() } : {}),
+          ...(loras.length ? { loras } : {}),
           enabled,
         });
       } else if (g.kind === "sdapi") {

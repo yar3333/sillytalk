@@ -1,5 +1,5 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
-import { ApiService, AppConfig, Character, LlmModel, Model, PictureLanguage, User } from './api';
+import { ApiService, AppConfig, Character, ComfyUiServerCatalogue, LlmModel, Model, PictureLanguage, User } from './api';
 import { UiStore } from './ui-store';
 
 // The entity edit dialogs (character / persona / model): which one is open
@@ -31,9 +31,10 @@ export class ConfigStore {
 
   // Whether the active image generator is available (the first available one from the config).
   readonly imageGenAvailable = signal(false);
-  // The image model codes the ComfyUI servers offer — each server publishes its
-  // own catalogue, the settings dialog offers exactly these.
-  readonly comfyUiModels = signal<string[]>([]);
+  // What each ComfyUI server offers — its address and, per model, the sizes it
+  // draws, the model file it loads and the LoRAs it has. The settings dialog
+  // lists exactly this, so nothing of it has to be typed by hand.
+  readonly comfyUi = signal<ComfyUiServerCatalogue[]>([]);
   // The languages a picture's description can be written in — also the
   // backend's list: the name of a language is what the model is told, so the
   // pick must not be a second copy of it.
@@ -66,7 +67,7 @@ export class ConfigStore {
       })
       .then((status) => {
         this.imageGenAvailable.set(status.available);
-        this.comfyUiModels.set(status.comfyUiModels ?? []);
+        this.comfyUi.set(status.comfyUi ?? []);
         this.pictureLanguages.set(status.pictureLanguages ?? []);
         return this.api.getCharacters();
       })
@@ -340,7 +341,7 @@ export class ConfigStore {
       })
       .then((status) => {
         this.imageGenAvailable.set(status.available);
-        this.comfyUiModels.set(status.comfyUiModels ?? []);
+        this.comfyUi.set(status.comfyUi ?? []);
         this.pictureLanguages.set(status.pictureLanguages ?? []);
         this.settingsOpen.set(false);
       })

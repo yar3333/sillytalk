@@ -56,6 +56,45 @@ export interface SdApiSettings {
   enabled?: boolean; // generator toggle (default true) — a disabled one is never used
 }
 
+// What a picture can be shaped like. The pixel numbers behind an orientation
+// belong to the ComfyUI server — each of its models was trained at its own, and
+// the plugin answers with them in its catalogue — so the app asks for a shape
+// and never for a size.
+export type ComfyUiOrientation = 'square' | 'portrait' | 'landscape';
+
+// A LoRA to merge into the model of a run, with an optional strength (the server
+// defaults it to 1.0). The names come from the server's models/loras/ folder.
+export interface ComfyUiLora {
+  name: string;
+  strength?: number;
+}
+
+// One file of one of the server's model folders, as its catalogue lists it.
+export interface ComfyUiFileOption {
+  name: string;
+  mb?: number;
+}
+
+// One model of a server's catalogue: what it is called, how many references it
+// takes, the sizes it draws per orientation, the file it loads by default with
+// the folder it could load instead, and the LoRA slots its workflow wired.
+export interface ComfyUiPluginModel {
+  code: string;
+  label?: string;
+  max_refs: number;
+  orientation?: ComfyUiOrientation;
+  sizes?: Partial<Record<ComfyUiOrientation, [number, number]>>;
+  model_file?: string | null;
+  model_files?: { folder?: string; options: ComfyUiFileOption[] };
+  loras?: { max?: number; options: ComfyUiFileOption[] };
+}
+
+// A ComfyUI server running the comfyui-sillytalk plugin, as the backend read it.
+export interface ComfyUiServerCatalogue {
+  url: string;
+  models: ComfyUiPluginModel[];
+}
+
 // A ComfyUI server running the comfyui-sillytalk plugin. One entry runs ONE
 // model, and the model codes are the ones that server publishes — so a server
 // serving two models is configured as two generators, and a server without the
@@ -66,10 +105,15 @@ export interface ComfyUiSettings {
   // The model this generator asks the server for: a code of the catalogue the
   // backend answers in imageStatus() (the codes the servers offer).
   model: string;
-  // The picture size. Which GPU draws it is the plugin's decision, made when
-  // the job arrives — the app neither asks for a card nor names one.
-  width: number;
-  height: number;
+  // The shape to draw. Which pixels that is, and which GPU draws it, is the
+  // plugin's decision, made when the job arrives — the app names neither.
+  orientation: ComfyUiOrientation;
+  // A file of the server's models/diffusion_models/ to draw with instead of the
+  // one the workflow names — how a LoRA-style derivative of e.g. qwen-image-2.1
+  // that the user dropped there gets used. Absent: the workflow's own file.
+  modelFile?: string;
+  // LoRAs to merge, applied in this order, from the server's models/loras/.
+  loras?: ComfyUiLora[];
   enabled?: boolean; // generator toggle (default true) — a disabled one is never used
 }
 
@@ -693,17 +737,18 @@ export class ApiService {
     return this.req(`/chats/${chatId}/auto-image`, { method: 'POST' });
   }
 
-  // Whether an image generator is available (any enabled one that answers), the
-  // image model codes the ComfyUI servers offer (each server publishes its own
-  // catalogue) and the languages a picture's description can be written in.
+  // Whether an image generator is available (any enabled one that answers), what
+  // each ComfyUI server offers (its address, and per model its sizes, its model
+  // file and its LoRA folder — so nothing here has to be typed by hand) and the
+  // languages a picture's description can be written in.
   imageStatus(): Promise<{
     available: boolean;
-    comfyUiModels?: string[];
+    comfyUi?: ComfyUiServerCatalogue[];
     pictureLanguages?: PictureLanguage[];
   }> {
     return this.req<{
       available: boolean;
-      comfyUiModels?: string[];
+      comfyUi?: ComfyUiServerCatalogue[];
       pictureLanguages?: PictureLanguage[];
     }>('/image/status');
   }

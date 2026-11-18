@@ -742,7 +742,16 @@ or through the in-app **Settings** dialog. Paths may use `~` (resolved by `expan
                                         // comfyui-sillytalk plugin
       "url": "http://127.0.0.1:8188",
       "model": "qwen-image-2.1",        // a code of THAT server's catalogue
-      "width": 1328, "height": 1328,   // the app's size; the GPU is not here
+      "orientation": "square",          // square | portrait | landscape. There
+                                        // is NO size: the server turns a shape
+                                        // into the pixels its model was trained
+                                        // at, and picks the GPU, per job
+      "modelFile": "my-qwen.safetensors", // optional — a file of the server's
+                                        // models/diffusion_models/ to load
+                                        // instead of the workflow's own
+      "loras": [                        // optional, merged in this order
+        { "name": "my-style.safetensors", "strength": 0.6 } // strength defaults to 1.0
+      ],
       "enabled": true
     }
   ]
@@ -792,13 +801,17 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   concurrently). This is why the driver carries TWO ids: `key` (the generator's identity — written
   into the picture row's `generator` and shown in the hover hint) and `queueKey` (the queue identity:
   `comfyui:<url>` for ComfyUI, so two generators of one server share one queue; for SD API it is
-  its own `key`). `GET /api/image/status` returns `{ available, comfyUiModels, pictureLanguages }`
+  its own `key`). `GET /api/image/status` returns `{ available, comfyUi, pictureLanguages }`
   for the UI —
-  `available` is true when at least one generator is available and `comfyUiModels` is the union of
-  the catalogues every configured server offered during that refresh (the service keeps it in a
-  static set, so a generator that named a model its server does not have still shows what COULD be
-  picked instead); the Settings dialog fills its model pick from it and the frontend does not mirror
-  model names; `pictureLanguages` is `PICTURE_LANGUAGES` (the codes and the names a picture's
+  `available` is true when at least one generator is available and `comfyUi` is what every
+  configured server published, as `{ url, models }` entries kept in a static map keyed by the
+  server address (so a generator that named a model its server does not have still shows what the
+  server COULD be pointed at, and two generators of one server read the same entry). A model entry
+  carries more than its code: `sizes` per orientation, `model_file` with the whole
+  `model_files.options` listing of the server's `models/diffusion_models/`, and `loras` — the
+  number of slots that model's workflow wired plus the files of its `models/loras/`. The Settings
+  dialog builds its picks from that and the frontend mirrors no names, no sizes and no file names;
+  `pictureLanguages` is `PICTURE_LANGUAGES` (the codes and the names a picture's
   description can be written in — see the language bullet below), mirrored for the same
   reason. Config changes via `PUT /api/config` recompute the available
   generators.
@@ -806,17 +819,22 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   `PARAM_*` placeholders, no converter endpoint and no GPU name: the
   [`comfyui-sillytalk`](https://github.com/yar3333/comfyui-sillytalk) custom node on the server does
   all of that, and the whole boundary is four requests (see `drivers/ComfyUiDriver.ts`):
-  `POST /sillytalk/generate` (multipart: `model`, `prompt`, `width`, `height`, and one `image` part
-  per reference, sent under its own file name) answers 202 with a `job_id`; `GET
+  `POST /sillytalk/generate` (multipart: `model`, `prompt`, `orientation`, and one `image` part
+  per reference, sent under its own file name; `model_file` and `loras` — a JSON array of
+  `{name, strength}` — go along when the generator names them, and are left out entirely when it
+  does not) answers 202 with a `job_id`; `GET
   /sillytalk/jobs/{id}` is polled every 2 s (10 min cap) until the job is `succeeded`, `failed` or
   `cancelled` — a failed answer carries the server's own reason and becomes the error of the card;
   `GET /sillytalk/jobs/{id}/image` returns the picture bytes, which the driver writes to the target
   file; `DELETE /sillytalk/jobs/{id}` drops a job the user cancelled, so the GPU is free for the
-  next one. `GET /sillytalk/models` (the catalogue: `code`, `max_refs`, the model's own size) and
+  next one. `GET /sillytalk/models` (the catalogue: `code`, `max_refs`, the `sizes` of each
+  orientation, the model file and the two folder listings) and
   `GET /sillytalk/health` (versions, the plugin's cards and what is resident on them, the workflows
   it could not load) are the read-only probes the self-test uses. A 404 on any `/sillytalk/…` route
   is reported as the plugin being absent, with the name of the custom node to install.
   **The driver is the only place that knows this dialect**: `baseUrl`, `model`, `offeredModels`,
+  `offeredCatalogue`, `lastModelFile`, `lastLoras` (what the server says the last run drew with —
+  read back off the finished job, so the account cannot drift from what happened),
   `unavailableBecause`, `placements` (where the loaders of the last run landed, as the server said),
   `systemStats()`, `pluginHealth()`, `pluginModels()`, `objectInfo()`, `hasNodeClass(name)`. A failed
   connection reports the `cause` code (`ECONNREFUSED`, `ENOTFOUND`, a TLS mismatch) inside its
@@ -877,7 +895,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   (the Settings dialog's "Picture descriptions → Language" pick, `settings-picture-language`) whose
   value is a code of `configuration/PictureLanguage.ts` — en, ru, uk, de, fr, es, it, pt, pl, tr, zh,
   ja, ko. The LIST lives in the backend and reaches the UI through `GET /api/image/status`
-  (`pictureLanguages`), just like `comfyUiModels`: the model is told the language NAME ("Russian",
+  (`pictureLanguages`), just like the `comfyUi` catalogues: the model is told the language NAME ("Russian",
   never "ru"), so a second copy of the list on the frontend would be a second thing to keep true.
   `normalizePictureLanguage` drops a code the app cannot name on load (English is what the field
   means when it is absent), and `ReplyService.resolvePictureLanguage()` is the one rule every
@@ -1462,13 +1480,20 @@ that needs the databases resolves them here — the one place allowed to.
   = the CLI. A new command therefore goes into `cli.ts`, never into `index.ts`.
 - **`test-comfyui <url>`** drives `image_generation/comfyui/ComfyUiSelfTestService.ts` and is the
   supported way to find out why a ComfyUI server draws nothing. Its invariants:
-  - **Nothing of the user's config is read or written.** The URL, the model codes and the size are
-    arguments, so it can test a server the user has not configured yet — and
+  - **Nothing of the user's config is read or written.** The URL, the model codes, the orientation
+    and the files are arguments, so it can test a server the user has not configured yet — and
     `ConfigurationService.loadConfig` is never called, because it WRITES a config file when there is
     none and a diagnostic does not create state. The only writes are the test pictures and the two
     reference pictures (made by the service itself, under `--out` / `<data root>/comfyui-test/`).
     There is no `--device`: the plugin on the server picks the cards, and a diagnostic that pinned
-    one would test a thing the app never does.
+    one would test a thing the app never does. There is no `--size` either, for the same reason as
+    in the app: `--orientation` is what is asked for, and the size that came back is checked against
+    the `sizes` the server itself published for that model — which is what catches a workflow that
+    drew something else.
+    A `--model-file` or `--lora` the server's catalogue does not list is named once, before the
+    first draw, rather than failing six times identically; and the run prints per model how many
+    files its folder holds and how many LoRA slots its workflow wired, which is the same account the
+    Settings dialog will show.
   - **The four steps run cheapest first and each one is printed**: server (`/system_stats`) → plugin
     (`/sillytalk/health`) → catalogue (`/sillytalk/models`) → one REAL picture per model and per
     reference count. Everything before the GPU is free, so a server without the plugin or a workflow
@@ -1572,11 +1597,19 @@ that needs the databases resolves them here — the one place allowed to.
   `GET /api/image/status`'s `pictureLanguages`), the global picture-prompt model pick and the image
   generators (with a hint
   pointing at the header menus): "+ ComfyUI"
-  adds a `{ kind: 'comfyui' }` entry (URL + the model **pick** + width/height — the
-  pick is fed by `GET /api/image/status`'s `comfyUiModels`, the codes the configured servers offer,
-  rather than a hardcoded frontend list, and the hint under it names the plugin that decides the GPU)
-  and "+ SD API" the SD fields; the row
-  header shows the kind (`ComfyUI — <model>` / `SD API`). The model pick marks the current option
+  adds a `{ kind: 'comfyui' }` entry (URL + the model **pick** + the orientation **pick** + the model
+  file **pick** + a checkbox per LoRA) and "+ SD API" the SD fields; the row
+  header shows the kind (`ComfyUI — <model>` / `SD API`). Every one of those four lists is read off
+  `GET /api/image/status`'s `comfyUi` — the catalogue of the server THIS generator points at, matched
+  by its URL — so nothing is typed by hand and the frontend holds no model names, no pixel numbers
+  and no file names: the orientation options are the keys of that model's `sizes` (each labelled
+  with the pixels it means on that server), the file pick is that folder's listing with "the
+  workflow's own" as its first option, and the LoRA checkboxes are its `models/loras/` listing, each
+  with a 0…1 strength slider that appears when it is ticked and stops being tickable once the
+  workflow's `loras.max` slots are used. A model the config names but no server answers with is kept
+  in the pick as its own option — otherwise opening the dialog and saving would silently change the
+  generator. Picking another model drops the file and the LoRAs it cannot load, and an orientation it
+  has no size for. The pick marks the current option
   with `[selected]` on the `<option>` — `[value]` on the `<select>` would be set before the `@for`
   options exist and silently fail (the same gotcha as the reasoning pick in the model dialog).
 - Message list is anchored to the bottom (grows upward); a "typing…" indicator shows while the model is

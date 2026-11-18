@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { deflateSync } from "zlib";
-import { ComfyUiSettings } from "../../configuration/ComfyUiSettings";
+import { ComfyUiLora, ComfyUiOrientation, ComfyUiSettings } from "../../configuration/ComfyUiSettings";
 import { PathHelper } from "../../shared/PathHelper";
 import { ComfyUiDriver, ComfyUiPluginHealth, ComfyUiPluginModel } from "../drivers/ComfyUiDriver";
 
@@ -33,9 +33,12 @@ export interface ComfyUiSelfTestOptions {
   url: string;
   /** Only these model codes (default: everything the server offers). */
   models?: string[];
-  /** The size the test pictures are drawn at (default: the model's own). */
-  width?: number;
-  height?: number;
+  /** Which way the test pictures stand (default: each model's own). */
+  orientation?: ComfyUiOrientation;
+  /** The diffusion file to draw with, instead of the workflow's default. */
+  modelFile?: string;
+  /** The LoRAs to merge, in order. */
+  loras?: ComfyUiLora[];
   /** The prompt of the test pictures. */
   prompt?: string;
   /** Where the test pictures go (default `<data root>/comfyui-test`). */
@@ -55,6 +58,10 @@ export interface ComfyUiSelfTestItem {
   file?: string;
   /** The size the file itself says it has, when it is a readable picture. */
   image?: { format: string; width?: number; height?: number };
+  /** The orientation that was sent, and the file and LoRAs the server used. */
+  orientation?: ComfyUiOrientation;
+  modelFile?: string;
+  loras?: string[];
   seconds?: number;
   /** Where the model loaders of this draw landed, as the server reported it. */
   placement?: string;
@@ -177,7 +184,21 @@ export class ComfyUiSelfTestService {
       log(`  ✗ ${report.summary}`);
       return report;
     }
-    log(`  ✓ it draws: ${models.map((m) => `${m.code} (≤${m.max_refs} refs)`).join(", ")}`);
+    log(`  ✓ it draws:`);
+    for (const m of models) {
+      const sizes = Object.entries(m.sizes ?? {})
+        .map(([name, wh]) => `${name} ${wh?.[0]}×${wh?.[1]}`)
+        .join(", ");
+      log(`      ${m.code}: ≤${m.max_refs} refs${sizes ? `, ${sizes}` : ""}`);
+      const files = m.model_files?.options.length ?? 0;
+      log(
+        `        model file: ${m.model_file ? `${path.basename(m.model_file)} (${files} in the server's folder to choose from)` : "fixed by the workflow"}`,
+      );
+      const slots = m.loras?.max ?? 0;
+      log(
+        `        loras: ${slots ? `${slots} slot(s), ${m.loras?.options.length ?? 0} file(s) in models/loras/` : "this workflow has no LoRA slots"}`,
+      );
+    }
 
     // ---- 4. the draws ----
     const draw = options.draw !== false;
@@ -188,6 +209,24 @@ export class ComfyUiSelfTestService {
       const line = `the server does not offer: ${unknown.join(", ")} (it offers ${models.map((m) => m.code).join(", ")})`;
       report.problems.push(line);
       log(`  ✗ ${line}`);
+      return report;
+    }
+
+    // A file the server has not got is answered precisely by the server — but
+    // six identical failures are a poor way to learn a name was mistyped, so it
+    // is said once here, against the catalogue the server just published.
+    const missing = ComfyUiSelfTestService.missingFiles(wanted, options);
+    if (missing.length) {
+      report.ok = false;
+      for (const line of missing) {
+        report.problems.push(line);
+        log(`  ✗ ${line}`);
+      }
+      // Not every problem here is a missing file — asking a workflow with no
+      // slots for a LoRA is one too — so the line says what was refused instead
+      // of sending the reader to a folder that does contain the file.
+      report.summary =
+        `The run was not started: ${missing.length} of what was asked for is not in what this server offers.`;
       return report;
     }
 
@@ -252,11 +291,16 @@ export class ComfyUiSelfTestService {
   ): Promise<ComfyUiSelfTestItem> {
     const label = `${model.code} / ${refCount} reference${refCount === 1 ? "" : "s"}`;
     const file = path.join(outDir, `${model.code.replace(/[^\w.+-]/g, "_")}_${refCount}refs.png`);
+    // The server owns the pixel numbers, so the test asks for an orientation and
+    // checks the size that came back against the one the server itself published.
+    const orientation = options.orientation ?? model.orientation ?? "square";
+    const expected = model.sizes?.[orientation];
     const driver = this.driverFor({
       url: options.url,
       model: model.code,
-      width: options.width ?? model.width,
-      height: options.height ?? model.height,
+      orientation,
+      modelFile: options.modelFile,
+      loras: options.loras,
     });
     this.ctrl = new AbortController();
     const began = Date.now();
@@ -265,8 +309,6 @@ export class ComfyUiSelfTestService {
       if (!(await driver.available())) {
         return { model: model.code, refs: refCount, status: "failed", error: driver.unavailableBecause ?? "unavailable" };
       }
-      const width = options.width ?? model.width;
-      const height = options.height ?? model.height;
       await driver.run(options.prompt ?? DEFAULT_PROMPT, refs.slice(0, refCount), file, (ctrl) => {
         ctrl.signal.addEventListener("abort", () => this.ctrl?.abort());
         this.ctrl?.signal.addEventListener("abort", () => ctrl.abort(), { once: true });
@@ -284,16 +326,28 @@ export class ComfyUiSelfTestService {
           advice: "Look at what the server put there — `file` and the first bytes of it usually say.",
         };
       }
-      const wrongSize = width && height && image.width && image.height && (image.width !== width || image.height !== height);
+      const wrongSize =
+        !!expected && !!image.width && !!image.height && (image.width !== expected[0] || image.height !== expected[1]);
       // Which card did the work is the whole point of the plugin, so it belongs
       // in the line the user reads.
       const placement = driver.placements.map((p) => `${p.class}@${p.device}`).join(", ");
+      const used = ComfyUiSelfTestService.usedOf(driver);
       log(
-        `    ✓ ${seconds.toFixed(1)}s → ${file} (${image.width ?? "?"}×${image.height ?? "?"} ${image.format})` +
-          `${wrongSize ? ` — asked for ${width}×${height}` : ""}` +
+        `    ✓ ${seconds.toFixed(1)}s → ${file} (${image.width ?? "?"}×${image.height ?? "?"} ${image.format}, ${orientation})` +
+          `${wrongSize && expected ? ` — asked for ${expected[0]}×${expected[1]}` : ""}` +
+          `${used ? ` with ${used}` : ""}` +
           `${placement ? ` on ${placement}` : ""}`,
       );
-      return { model: model.code, refs: refCount, status: "ok", file, image, seconds, placement: placement || undefined };
+      return {
+        model: model.code,
+        refs: refCount,
+        status: "ok",
+        file,
+        image,
+        seconds,
+        orientation,
+        placement: placement || undefined,
+      };
     } catch (err) {
       const why = (err as Error).message;
       log(`    ✗ ${why}`);
@@ -311,15 +365,58 @@ export class ComfyUiSelfTestService {
     }
   }
 
-  private driverFor(cfg: { url: string; model: string; width?: number; height?: number }): ComfyUiDriver {
+  private driverFor(cfg: {
+    url: string;
+    model: string;
+    orientation?: ComfyUiOrientation;
+    modelFile?: string;
+    loras?: ComfyUiLora[];
+  }): ComfyUiDriver {
     const settings: ComfyUiSettings = {
       kind: "comfyui",
       url: cfg.url,
       model: cfg.model,
-      width: cfg.width ?? 0,
-      height: cfg.height ?? 0,
+      orientation: cfg.orientation ?? "square",
+      ...(cfg.modelFile ? { modelFile: cfg.modelFile } : {}),
+      ...(cfg.loras?.length ? { loras: cfg.loras } : {}),
     };
     return new ComfyUiDriver(settings);
+  }
+
+  // What the run asks for that the server's own catalogue says it has not got.
+  private static missingFiles(models: ComfyUiPluginModel[], options: ComfyUiSelfTestOptions): string[] {
+    const out: string[] = [];
+    for (const model of models) {
+      const files = model.model_files?.options;
+      if (options.modelFile && !files) {
+        out.push(`${model.code}: its workflow loads a model file of its own — nothing here to swap for '${options.modelFile}'`);
+      } else if (options.modelFile && !files!.some((f) => f.name === options.modelFile)) {
+        out.push(`${model.code}: '${options.modelFile}' is not among its ${files!.length} model file(s)`);
+      }
+      const loras = model.loras?.options ?? [];
+      const slots = model.loras?.max ?? 0;
+      for (const lora of options.loras ?? []) {
+        if (!loras.some((f) => f.name === lora.name)) {
+          out.push(`${model.code}: '${lora.name}' is not in its models/loras/ (${loras.length} file(s) there)`);
+        }
+      }
+      if ((options.loras?.length ?? 0) > slots) {
+        out.push(`${model.code}: it wired ${slots} LoRA slot(s), ${options.loras?.length} were asked for`);
+      }
+    }
+    return out;
+  }
+
+  // What the server says it drew with — the file it loaded and the LoRAs it
+  // merged. The test asked for them; reading them back off the job is what
+  // proves the request was understood rather than ignored.
+  private static usedOf(driver: ComfyUiDriver): string {
+    const parts: string[] = [];
+    if (driver.lastModelFile) parts.push(path.basename(driver.lastModelFile));
+    for (const lora of driver.lastLoras) {
+      parts.push(`${path.basename(lora.name)}@${lora.strength}`);
+    }
+    return parts.join(" + ");
   }
 
   // The GPU lines of /system_stats — the numbers a placement problem is read
