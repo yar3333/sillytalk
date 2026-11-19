@@ -369,11 +369,10 @@ export class Settings implements OnInit {
     return !this.loraOn(g, f.name) && (g.loras?.length ?? 0) >= this.comfySlots(g);
   }
 
-  /** Why a row is grey, or — for a LoRA the server could not place — why it may
-      do nothing. Empty when there is nothing to warn about. */
+  /** Why a row is grey, why it would land only partly, or — for a LoRA the server
+      could not place — why it may do nothing. Empty when there is nothing to say. */
   loraReason(g: ComfyUiSettings, f: ComfyUiFileOption): string {
-    const fit = this.loraFit(g, f);
-    return fit && fit.fits !== 'yes' ? (fit.reason ?? '') : '';
+    return this.loraFit(g, f)?.reason ?? '';
   }
 
   loraOn(g: ComfyUiSettings, name: string): boolean {

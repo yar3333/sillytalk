@@ -45,8 +45,8 @@ Stack: **Node.js / Express 5 / TypeScript** (backend) + **Angular 22 / SCSS** (f
     workflows, publishes the model list and picks the GPU. It also publishes what is in its
     `models/diffusion_models/` and `models/loras/`, so a derivative checkpoint or a LoRA you drop
     there becomes a dropdown entry and a checkbox in **Settings** — with a strength slider per LoRA,
-    and greyed out with the reason when its headers say it would merge into nothing — rather than a
-    name to type;
+    and greyed out with the reason when its headers say it would merge into nothing, or a line of
+    text when it would merge only partly — rather than a name to type;
   - **SD API (Stable Diffusion WebUI)** — via the API (`/sdapi/v1/txt2img`, `/sdapi/v1/img2img`).
   Generation always runs in the background: the chat stays usable, a spinner with Cancel shows
   while it runs and a failed picture keeps a Regenerate button. A click on a picture enlarges it
@@ -279,10 +279,11 @@ resolved by `resolveApiKey()`: `envKey` (an environment variable) takes priority
   verdict next to the file, so **Settings** can leave a LoRA of another model visible but
   unclickable and say why — ComfyUI does not refuse such a LoRA, it skips every tensor of it and
   draws the picture the model makes without it, from a job that reported itself a success. Pick the
-  file the LoRA was made for and the same row lights up. A LoRA whose layers the server could not
-  match to anything stays selectable, with a line saying so: not understanding a file is not proof
-  it will not work. Changing the model file drops a LoRA it cannot take, and the server refuses one
-  that arrives anyway.
+  file the LoRA was made for and the same row lights up. A LoRA that fits but not everywhere stays
+  selectable and gets a line naming the layers ComfyUI will skip — the style lands, just not all of
+  it. A LoRA whose layers the server could not match to anything stays selectable, with a line
+  saying so: not understanding a file is not proof it will not work. Changing the model file drops
+  a LoRA it cannot take, and the server refuses one that arrives anyway.
 
 ## Data storage
 

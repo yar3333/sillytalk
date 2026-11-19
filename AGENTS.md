@@ -1613,9 +1613,11 @@ that needs the databases resolves them here — the one place allowed to.
   with a 0…1 strength slider that appears when it is ticked and stops being tickable once the
   workflow's `loras.max` slots are used. A LoRA the server marked `no` for the file that would be
   loaded now is grey and unclickable with its reason on the line below (`.why`), `unknown` is
-  selectable with its line, and a `yes` says nothing — the row is judged by `loraBlocked()` /
-  `loraReason()` against `g.modelFile || model.model_file`, so switching the file switches the
-  verdicts. A model the config names but no server answers with is kept
+  selectable with its line, and a `yes` says nothing unless it lands only partly — then its line
+  names the layers ComfyUI will skip, without greying the row (`loraReason()` shows any reason the
+  server sent, `loraBlocked()` only ever blocks a `no`). The row is judged by
+  `loraBlocked()` / `loraReason()` against `g.modelFile || model.model_file`, so switching the file
+  switches the verdicts. A model the config names but no server answers with is kept
   in the pick as its own option — otherwise opening the dialog and saving would silently change the
   generator. Picking another model or another file drops the LoRAs it cannot take
   (`keepFittingLoras()`, because the server would answer the run with a 400) and an orientation it

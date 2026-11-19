@@ -2935,7 +2935,8 @@ describe('Settings — a ComfyUI generator uses the files of its own server', ()
         },
         // three files in the folder, room for two in its workflow. The server
         // read their headers, so each says per model file whether it merges:
-        // style-b is for another model, style-c names layers neither has.
+        // style-a lands but not on every layer, style-b is for another model,
+        // style-c names layers neither has.
         loras: {
           max: 2,
           options: [
@@ -2943,7 +2944,10 @@ describe('Settings — a ComfyUI generator uses the files of its own server', ()
               name: 'style-a.safetensors',
               mb: 200,
               fits: {
-                'qwen_image_2.1_int8_convrot.safetensors': { fits: 'yes' },
+                'qwen_image_2.1_int8_convrot.safetensors': {
+                  fits: 'yes',
+                  reason: '32 of the layers it names are not in this model at all and ComfyUI will skip them',
+                },
                 'my-qwen-derivative.safetensors': { fits: 'yes' },
               },
             },
@@ -3098,6 +3102,16 @@ describe('Settings — a ComfyUI generator uses the files of its own server', ()
     expect(whys(el).join(' |')).toContain('may be for another one');
     // the reason is not hidden behind a hover: it is the row's own line of text
     expect(el.querySelectorAll('.row.dim')).toHaveLength(1);
+  });
+
+  it('says so when a LoRA lands only partly, without greying it', async () => {
+    const { el } = await open(base);
+    // a partial fit is not a refusal: the row is normal and still pickable
+    expect(ticks(el)[0].disabled).toBe(false);
+    expect(el.querySelectorAll('.row.dim')).toHaveLength(1);
+    expect(whys(el)[0]).toContain('not in this model at all');
+    ticks(el)[0].click();
+    expect((await save(el)).loras?.map((l) => l.name)).toEqual(['style-a.safetensors']);
   });
 
   it('lets that LoRA in when the file it was made for is the one loaded', async () => {
