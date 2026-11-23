@@ -1,7 +1,8 @@
-// The common shape of every generation backend (a ComfyUI server, the SD
-// WebUI API). The top-level service drives all backends through this interface
-// only — adding a backend means adding one implementation, nothing else
-// changes.
+// The common shape of every generation backend (a ComfyUI server). The
+// top-level service drives all backends through this interface only — adding a
+// backend means adding one implementation, nothing else changes.
+
+import { PictureOrientation } from "../shared/ImageMeta";
 
 export interface IImageGeneratorDriver {
   // Stable identity of this generator entry: recorded in the picture's row of
@@ -21,13 +22,16 @@ export interface IImageGeneratorDriver {
   // the job still produces the picture the user asked for.
   readonly maxRefs: number;
   // Runs one generation and writes the produced image to outPath (absolute).
-  // registerAbort lets a caller cancel the run in flight (a background job);
-  // the driver aborts its own requests and, when the backend keeps running the
-  // job without the client, tells it to stop.
+  // `orientation` is the shape this picture was asked for — a property of the
+  // picture, not of the generator (the server turns it into the pixels its model
+  // was trained at). registerAbort lets a caller cancel the run in flight (a
+  // background job); the driver aborts its own requests and, when the backend
+  // keeps running the job without the client, tells it to stop.
   run(
     prompt: string,
     refPaths: string[],
     outPath: string,
+    orientation: PictureOrientation,
     registerAbort?: (ctrl: AbortController) => void,
   ): Promise<void>;
 }

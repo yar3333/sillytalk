@@ -3,7 +3,7 @@ import path from "path";
 import { randomUUID } from "crypto";
 import { Model } from "../configuration/Model";
 import { PathHelper } from "../shared/PathHelper";
-import { ImageGenerationRecord } from "../shared/ImageMeta";
+import { ImageGenerationRecord, PictureOrientation } from "../shared/ImageMeta";
 import { FileFacts } from "../shared/FileFacts";
 import { ImageMetaService } from "../images/ImageMetaService";
 import { ConfigurationService } from "../configuration/ConfigurationService";
@@ -200,6 +200,9 @@ export class ImageGenerationService {
     id: string;
     prompt: string;
     refs: string[];
+    // The shape this picture is drawn in — its own, decided when its
+    // description became a prompt. Absent falls back to square.
+    orientation?: PictureOrientation;
     // The job's owner may disappear while it waits in the queue. The caller
     // says how to notice ("gone" is consulted right before the run starts) —
     // this service knows generators, not chats, so it does not ask after them
@@ -208,7 +211,7 @@ export class ImageGenerationService {
     gone?: () => boolean;
     meta?: ImageGenerationRecord;
   }): ImageJob {
-    const { id, prompt, refs, gone, meta } = opts;
+    const { id, prompt, refs, orientation, gone, meta } = opts;
     const target = PathHelper.resolveImageId(id);
     const dir = target ? path.dirname(target) : null;
     const entry: JobEntry = {
@@ -238,7 +241,8 @@ export class ImageGenerationService {
         // (or a reference file may have disappeared). The extras are dropped in
         // order, so what stays are the references the caller listed first.
         const refPaths = ImageGenerationService.resolveRefPaths(refs).slice(0, Math.max(0, driver.maxRefs));
-        await driver.run(prompt, refPaths, temp, (ctrl) => {
+        const shape = orientation ?? "square";
+        await driver.run(prompt, refPaths, temp, shape, (ctrl) => {
           entry.aborts.push(ctrl);
         });
         if (entry.cancelled) {
@@ -267,6 +271,8 @@ export class ImageGenerationService {
                 steps: meta.steps,
               }
             : {}),
+          // The shape the run really used, so a later regeneration keeps it.
+          orientation: shape,
           generator: driver.key,
         });
         return { status: "ok" };

@@ -1,7 +1,8 @@
 import fs from "fs";
 import path from "path";
 import { deflateSync } from "zlib";
-import { ComfyUiLora, ComfyUiOrientation, ComfyUiSettings } from "../../configuration/ComfyUiSettings";
+import { ComfyUiLora, ComfyUiSettings } from "../../configuration/ComfyUiSettings";
+import { PictureOrientation } from "../../shared/ImageMeta";
 import { PathHelper } from "../../shared/PathHelper";
 import { ComfyUiDriver, ComfyUiPluginHealth, ComfyUiPluginModel } from "../drivers/ComfyUiDriver";
 
@@ -34,7 +35,7 @@ export interface ComfyUiSelfTestOptions {
   /** Only these model codes (default: everything the server offers). */
   models?: string[];
   /** Which way the test pictures stand (default: each model's own). */
-  orientation?: ComfyUiOrientation;
+  orientation?: PictureOrientation;
   /** The diffusion file to draw with, instead of the workflow's default. */
   modelFile?: string;
   /** The LoRAs to merge, in order. */
@@ -59,7 +60,7 @@ export interface ComfyUiSelfTestItem {
   /** The size the file itself says it has, when it is a readable picture. */
   image?: { format: string; width?: number; height?: number };
   /** The orientation that was sent, and the file and LoRAs the server used. */
-  orientation?: ComfyUiOrientation;
+  orientation?: PictureOrientation;
   modelFile?: string;
   loras?: string[];
   seconds?: number;
@@ -309,7 +310,7 @@ export class ComfyUiSelfTestService {
       if (!(await driver.available())) {
         return { model: model.code, refs: refCount, status: "failed", error: driver.unavailableBecause ?? "unavailable" };
       }
-      await driver.run(options.prompt ?? DEFAULT_PROMPT, refs.slice(0, refCount), file, (ctrl) => {
+      await driver.run(options.prompt ?? DEFAULT_PROMPT, refs.slice(0, refCount), file, orientation, (ctrl) => {
         ctrl.signal.addEventListener("abort", () => this.ctrl?.abort());
         this.ctrl?.signal.addEventListener("abort", () => ctrl.abort(), { once: true });
       });
@@ -368,7 +369,7 @@ export class ComfyUiSelfTestService {
   private driverFor(cfg: {
     url: string;
     model: string;
-    orientation?: ComfyUiOrientation;
+    orientation?: PictureOrientation;
     modelFile?: string;
     loras?: ComfyUiLora[];
   }): ComfyUiDriver {
@@ -376,7 +377,6 @@ export class ComfyUiSelfTestService {
       kind: "comfyui",
       url: cfg.url,
       model: cfg.model,
-      orientation: cfg.orientation ?? "square",
       ...(cfg.modelFile ? { modelFile: cfg.modelFile } : {}),
       ...(cfg.loras?.length ? { loras: cfg.loras } : {}),
     };

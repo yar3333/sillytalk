@@ -53,7 +53,7 @@ backend/               Express API; also serves the built frontend
                        thing the user reads and corrects) and
                        composeImagePromptFromDescription (stage two: ONE
                        description becomes what the generator needs — the English
-                       prompt, the refs, the cast and the subject phrases; it
+                       prompt, the orientation, the refs, the cast and the subject phrases; it
                        serves the 📷 button, the 🎨 dialog, the
                        [IMAGE_BY_PROMPT] marker of a character AND the editor's
                        "Prompt and references", because all four ask the same
@@ -78,8 +78,8 @@ backend/               Express API; also serves the built frontend
                        TextGenerationService.test.ts — jest unit tests
     image_generation/  image generation: the driver
                        interface (IImageGeneratorDriver.ts — key + queueKey; the
-                       job model — ImageJob.ts / ImageJobResult.ts), the backends
-                       (drivers/ComfyUiDriver.ts / drivers/SdApiDriver.ts), the
+                       job model — ImageJob.ts / ImageJobResult.ts), the backend
+                       (drivers/ComfyUiDriver.ts), the
                        ComfyUI domain folder — there is NO workflow file in this
                        app any more: the ComfyUI server's own plugin
                        (github.com/yar3333/comfyui-sillytalk) owns the graphs,
@@ -336,9 +336,8 @@ backend/               Express API; also serves the built frontend
                        normalizer/namer of it, so the config, the prompt and
                        the Settings list cannot disagree — and the generator
                        settings —
-                       ImageGenerator.ts, the union of SdApiSettings.ts /
-                       ComfyUiSettings.ts + the isSdApiGenerator /
-                       isComfyUiGenerator guards on the `kind` discriminator:
+                       ImageGenerator.ts (ComfyUiSettings.ts + the
+                       isComfyUiGenerator guard on the `kind` discriminator:
                        they describe the config schema, so the domain owns
                        them),
                        the top-level service class (ConfigurationService.ts —
@@ -744,26 +743,16 @@ or through the in-app **Settings** dialog. Paths may use `~` (resolved by `expan
   // editor's "From the chat"; the generation
   // PROMPT stays English, because that is what the generators read.
   "pictureLanguage": "en",
-  // generation backends: kind = "sdapi" | "comfyui" decides the type; every
+  // generation backends: kind = "comfyui" decides the type; every
   // enabled + available one is used in parallel, the jobs of one SERVER are
-  // queued (enabled defaults to true)
+  // queued (enabled defaults to true). A picture's orientation is NOT a
+  // generator setting — each picture carries its own (see below)
   "imageGenerators": [
-    {
-      "kind": "sdapi",                  // SD API / Stable Diffusion WebUI
-      "url": "http://127.0.0.1:7860",
-      "steps": 30, "width": 768, "height": 768,
-      "denoisingStrength": 0.75, "negativePrompt": "",
-      "enabled": true                   // generator toggle (default true)
-    },
     {
       "kind": "comfyui",                // a ComfyUI server running the
                                         // comfyui-sillytalk plugin
       "url": "http://127.0.0.1:8188",
       "model": "qwen-image-2.1",        // a code of THAT server's catalogue
-      "orientation": "square",          // square | portrait | landscape. There
-                                        // is NO size: the server turns a shape
-                                        // into the pixels its model was trained
-                                        // at, and picks the GPU, per job
       "modelFile": "my-qwen.safetensors", // optional — a file of the server's
                                         // models/diffusion_models/ to load
                                         // instead of the workflow's own
@@ -805,13 +794,13 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   absent the default set `low, medium, high, xhigh, max` applies (and a level outside the model's list
   is normalized to off on load). Edited in the model dialog ("Reasoning levels" + "Reasoning" pick).
 - **Image generation has no `auto` toggle anymore.** `imageGenerators` is a list of
-  generators, each named by its `kind` (`sdapi` / `comfyui`) and carrying an
+  generators, each named by its `kind` (`comfyui`) and carrying an
   `enabled` flag (defaults to `true` — a disabled generator is never used). An entry whose
   `kind` the app does not know is dropped by `normalizeGenerators` — there is **no legacy
   format support** (no bare-`url` SD entry, no `command` entry; the old local-program
   generators were converted once by a throwaway script). At startup
   (`refreshAvailableGenerators` in `image_generation/ImageGenerationService.ts`) all generators are probed
-  (in parallel): the SD API availability is checked via `GET {url}/sdapi/v1/sd-models`, a ComfyUI
+  (in parallel): a ComfyUI
   generator is available when `GET {url}/sillytalk/models` answers AND that catalogue contains its
   `model` — a server without the plugin is NOT a generator this app can use, and the reason naming
   the custom node is logged (a server that answers in a browser but is missing from the app is
@@ -821,8 +810,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   while the jobs of ONE server are queued (one run at a time — the GPU must not be hit
   concurrently). This is why the driver carries TWO ids: `key` (the generator's identity — written
   into the picture row's `generator` and shown in the hover hint) and `queueKey` (the queue identity:
-  `comfyui:<url>` for ComfyUI, so two generators of one server share one queue; for SD API it is
-  its own `key`). `GET /api/image/status` returns `{ available, comfyUi, pictureLanguages }`
+  `comfyui:<url>` for ComfyUI, so two generators of one server share one queue). `GET /api/image/status` returns `{ available, comfyUi, pictureLanguages }`
   for the UI —
   `available` is true when at least one generator is available and `comfyUi` is what every
   configured server published, as `{ url, models }` entries kept in a static map keyed by the
@@ -867,8 +855,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   connection reports the `cause` code (`ECONNREFUSED`, `ENOTFOUND`, a TLS mismatch) inside its
   message, because that code is the whole diagnostic and `fetch` hides it otherwise.
   **How many references a generator takes is the server's answer** (`max_refs` of the model, read
-  into `maxRefs` by the probe that decided the generator is usable; for the SD API it is `1`,
-  because several `init_images` are a batch, not a reference set) and
+  into `maxRefs` by the probe that decided the generator is usable) and
   `ImageGenerationService.maxReferenceCount()` is the highest count ANY available generator takes —
   which is what the picture planner is asked for and what assembles the final list. Before a job
   starts the service cuts the references to `driver.maxRefs`, so a model with fewer slots uses
@@ -1075,9 +1062,11 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
     the second call is made, so a picture is never only a machine's plan nobody can argue with.
   - **Stage two — what draws that sentence?** `composeImagePromptFromDescription` gets the sentence
     (plus the same dialogue brief and the same catalogue) and answers with the strict JSON
-    `{"name","description","prompt","refs","cast","subjects"}` extracted from whatever wrapping the
+    `{"name","description","prompt","orientation","refs","cast","subjects"}` extracted from whatever wrapping the
     model chose (`parseJsonPlan`), with `refs` clamped to the catalogue and `cast`/`subjects` to the
-    cast it was given. The card's picture is then named from the model's 2–5
+    cast it was given. `orientation` is the shape the model judged the sentence needs (a standing or
+    tall subject portrait, a wide or crowded one landscape, otherwise square); a missing or unknown
+    value defaults to square, and the picture editor can override it. The card's picture is then named from the model's 2–5
     English words and the generation runs as the usual background job; the caption stays stage one's.
   The tail is a budget on purpose
   (`ReplyService.conversationBrief`): the newest 24 messages, the whole brief within 8000
@@ -1171,10 +1160,13 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   preview by id from here, so every file response of the app goes through `sendImage`. The storage
   side stays looser on purpose: a reference may name any image of the data folders.
 - **What is known about a picture lives in ONE global table, `images.db`** — keyed by the image id,
-  holding `{ name, description, prompt, negativePrompt, refs, source, generator, model,
+  holding `{ name, description, prompt, negativePrompt, orientation, refs, source, generator, model,
   width, height, steps, createdAt, updatedAt }` (`shared/ImageMeta.ts` is the row shape,
   `images/ImageMetaService.ts` the store; there is no `depicts` column — who a picture shows is
-  part of its `description`, see the cast bullet above). The table is the authority: `ChatsService.get()` fills the
+  part of its `description`, see the cast bullet above). `orientation` (`square` / `portrait` /
+  `landscape`, the `PictureOrientation` type that lives in `shared/ImageMeta.ts`) is a property of
+  the PICTURE, not of a generator: the planner chooses it in stage two and the picture editor can
+  override it; a picture with none draws square. The table is the authority: `ChatsService.get()` fills the
   `pictures` map of every line from it on every read, and a message row stores **no copy** of the
   caption/prompt — a picture with no row reads as a picture nobody described. A row is merge-on-write: a
   field given as `undefined` or empty is removed, and a row left saying nothing is deleted.
@@ -1639,13 +1631,12 @@ that needs the databases resolves them here — the one place allowed to.
   `GET /api/image/status`'s `pictureLanguages`), the global picture-prompt model pick and the image
   generators (with a hint
   pointing at the header menus): "+ ComfyUI"
-  adds a `{ kind: 'comfyui' }` entry (URL + the model **pick** + the orientation **pick** + the model
-  file **pick** + a checkbox per LoRA) and "+ SD API" the SD fields; the row
-  header shows the kind (`ComfyUI — <model>` / `SD API`). Every one of those four lists is read off
+  adds a `{ kind: 'comfyui' }` entry (URL + the model **pick** + the model
+  file **pick** + a checkbox per LoRA); the row
+  header shows the kind (`ComfyUI — <model>`). Every one of those three lists is read off
   `GET /api/image/status`'s `comfyUi` — the catalogue of the server THIS generator points at, matched
   by its URL — so nothing is typed by hand and the frontend holds no model names, no pixel numbers
-  and no file names: the orientation options are the keys of that model's `sizes` (each labelled
-  with the pixels it means on that server), the file pick is that folder's listing with "the
+  and no file names: the file pick is that folder's listing with "the
   workflow's own" as its first option, and the LoRA checkboxes are its `models/loras/` listing, each
   with a 0…1 strength slider that appears when it is ticked and stops being tickable once the
   workflow's `loras.max` slots are used. A LoRA the server marked `no` for the file that would be
@@ -1661,8 +1652,7 @@ that needs the databases resolves them here — the one place allowed to.
   model the config names but no server answers with is kept
   in the pick as its own option — otherwise opening the dialog and saving would silently change the
   generator. Picking another model or another file drops the LoRAs it cannot take
-  (`keepFittingLoras()`, because the server would answer the run with a 400) and an orientation it
-  has no size for. The pick marks the current option
+  (`keepFittingLoras()`, because the server would answer the run with a 400). The pick marks the current option
   with `[selected]` on the `<option>` — `[value]` on the `<select>` would be set before the `@for`
   options exist and silently fail (the same gotcha as the reasoning pick in the model dialog).
 - Message list is anchored to the bottom (grows upward); a "typing…" indicator shows while the model is
@@ -1700,9 +1690,12 @@ that needs the databases resolves them here — the one place allowed to.
   `picture-dialog` for THAT picture — a line can show several and the dialog edits one of them; the
   bottom input's edit mode is for text messages only). A picture is one of two
   things, and the dialog's kind says which: **generated** — a prompt (with "Prompt and references",
-  which turns the description into what the generator reads plus the pictures it names, and "Make it
+  which turns the description into what the generator reads plus the pictures it names and the shape
+  it judged the sentence needs, and "Make it
   English", which translates + shapes the
-  typed text for the generator) — or **from a file** — the picture's id, picked from the catalog of
+  typed text for the generator) and an **orientation** pick (square / portrait / landscape,
+  `picture-orientation`) — the picture's own shape, which "Prompt and references" fills from the
+  plan and the user can override before Save — or **from a file** — the picture's id, picked from the catalog of
   the data folder (`GET /api/pictures`, the same list the picture browser shows) or from disk; a file
   picked from disk is filed where the LINE it joins keeps its pictures (`ReplyService.storePictureFor`:
   the persona's folder for the user's line, the character's for hers, the chat's for a neutral card),
@@ -1902,9 +1895,9 @@ that needs the databases resolves them here — the one place allowed to.
     registry moved from `routes.ts`); leave HTTP concerns (validation, status codes, file
     streaming) in the route files, and be able to say why.
   - **A generation backend goes behind the driver interface**
-    (`IImageGeneratorDriver.ts` + `drivers/ComfyUiDriver.ts` / `drivers/SdApiDriver.ts`, chosen by
+    (`IImageGeneratorDriver.ts` + `drivers/ComfyUiDriver.ts`, chosen by
     `DriverFactory` on the config entry's `kind`): the driver speaks the generator's own protocol
-    (ComfyUI's four `/sillytalk/…` routes over HTTP, the SD API's txt2img/img2img), fills
+    (ComfyUI's four `/sillytalk/…` routes over HTTP), fills
     `key` + `queueKey` and writes the picture to the `outPath` it is handed — the service above it
     knows neither protocols nor URLs. A new backend is a new driver + a new `kind`, not a branch in
     `ImageGenerationService`. There is no OS-specific code left in the app (the former `machine/`
@@ -2153,7 +2146,8 @@ that needs the databases resolves them here — the one place allowed to.
   `picture-description-from-chat` (stage one — "From the chat") and `picture-describe` (the vision
   call) under the description, `picture-prompt-from-description` (stage two — "Prompt and
   references", disabled while the description is empty) and
-  `picture-prompt-english`, `picture-id` (the catalog
+  `picture-prompt-english`, `picture-orientation` (the square / portrait / landscape pick of a
+  generated picture, filled by "Prompt and references" and overridable), `picture-id` (the catalog
   `<select>`), `picture-file` (the disk pick), the reference set the prompt names
   (`.refs` / `.ref` chips, each with `picture-ref-remove`) with its two ways to add
   (`picture-ref-add` — the catalog `<select>` — and `picture-ref-file` — the disk pick; the same

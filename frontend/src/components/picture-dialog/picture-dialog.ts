@@ -1,5 +1,5 @@
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
-import { ApiService, ChatMessage, Picture } from '../../services/api';
+import { ApiService, ChatMessage, ComfyUiOrientation, Picture } from '../../services/api';
 import { ChatStore } from '../../services/chat-store';
 import { ImageStore } from '../../services/image-store';
 import { UiStore } from '../../services/ui-store';
@@ -35,6 +35,10 @@ import { UiStore } from '../../services/ui-store';
 function sameList(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((x, i) => x === b[i]);
 }
+
+// The shapes a picture can be drawn in, in the order the pick lists them. The
+// server turns the chosen one into the pixels its model was trained at.
+const ORIENTATIONS: ComfyUiOrientation[] = ['square', 'portrait', 'landscape'];
 
 @Component({
   selector: 'app-picture-dialog',
@@ -145,6 +149,18 @@ function sameList(a: string[], b: string[]): boolean {
             The picture is redrawn from this prompt by the ↻ button on the card, and again
             afterwards whenever the card is regenerated.
           </div>
+          <!-- The shape is the picture's own, not the generator's: "Prompt and
+               references" picks it from what the description shows and the user
+               corrects it here. The server turns the shape into the pixels its
+               model was trained at. -->
+          <label class="field">
+            <span>Orientation</span>
+            <select data-testid="picture-orientation" (change)="setOrientation($event)">
+              @for (o of orientations; track o) {
+                <option [value]="o" [selected]="o === orientation()">{{ o }}</option>
+              }
+            </select>
+          </label>
           <!-- The reference set is the prompt's own: the prompt counts these
                pictures ("the first reference image shows …"), so editing them is
                an edit of what the prompt means and it saves together with it.
@@ -252,6 +268,10 @@ export class PictureDialog implements OnInit {
   readonly kind = signal<'generated' | 'file'>('generated');
   readonly prompt = signal('');
   readonly description = signal('');
+  // The shape this picture is drawn in — its own, picked by "Prompt and
+  // references" and correctable here; the ↻ redraw reuses it.
+  readonly orientation = signal<ComfyUiOrientation>('square');
+  readonly orientations = ORIENTATIONS;
   // The pictures the prompt names in order ("the first reference image shows
   // …"). They belong to the prompt: saving one without the rest would redraw
   // something else, so "Prompt and references" fills them, the user edits them
@@ -306,6 +326,7 @@ export class PictureDialog implements OnInit {
     const generated = generation?.prompt !== undefined || (generation?.source !== undefined && generation.source !== 'upload');
     this.kind.set(generated ? 'generated' : 'file');
     this.prompt.set(generation?.prompt ?? '');
+    this.orientation.set(generation?.orientation ?? 'square');
     this.refs.set(generation?.refs ?? []);
     this.initialRefs = [...this.refs()];
     this.description.set(facts?.description ?? '');
@@ -346,6 +367,10 @@ export class PictureDialog implements OnInit {
   }
   setPrompt(e: Event): void {
     this.prompt.set((e.target as HTMLTextAreaElement).value);
+  }
+  setOrientation(e: Event): void {
+    const v = (e.target as HTMLSelectElement).value;
+    if (v === 'square' || v === 'portrait' || v === 'landscape') this.orientation.set(v);
   }
   setDescription(e: Event): void {
     this.description.set((e.target as HTMLTextAreaElement).value);
@@ -461,6 +486,7 @@ export class PictureDialog implements OnInit {
       .then((res) => {
         this.prompt.set(res.prompt);
         this.refs.set(res.refs ?? []);
+        if (res.orientation) this.orientation.set(res.orientation);
       })
       .catch((e) => this.ui.error.set(String((e as Error).message)))
       .finally(() => this.busy.set(null));
@@ -508,6 +534,7 @@ export class PictureDialog implements OnInit {
         kind: this.kind(),
         description: this.description(),
         prompt: this.prompt(),
+        orientation: this.orientation(),
         imageId: this.chosenId(),
         data: this.pickedData() || undefined,
         // The references travel only when the dialog actually changed them — a

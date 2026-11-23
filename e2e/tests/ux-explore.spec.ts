@@ -1595,12 +1595,10 @@ test('UX 23: a model file and a LoRA of the server are picked in Settings and dr
   await page.getByTestId('settings').click();
   await expect(page.locator('.settings-body')).toBeVisible();
 
-  // Both lists are the server's, including the pixels its model was trained at.
+  // The file list is the server's own — the user drops a file into its models/
+  // diffusion_models/ and it appears here with nothing to type.
   const file = page.getByTestId('settings-comfy-file');
   await expect(file.locator('option', { hasText: 'mock_model_derivative.safetensors' })).toHaveCount(1);
-  await expect(
-    page.getByTestId('settings-comfy-orientation').locator('option', { hasText: 'portrait — 72×96' }),
-  ).toHaveCount(1);
   const loras = page.getByTestId('settings-comfy-lora');
   await expect(loras).toHaveCount(2);
   await page.screenshot({ path: `${SHOTS}/ux-23a-settings-files.png` });

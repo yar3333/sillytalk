@@ -493,7 +493,7 @@ export function createChatsRouter(
       res.status(404).json({ error: "Message not found" });
       return;
     }
-    const { description, prompt, repointTo, kind, refs } = req.body ?? {};
+    const { description, prompt, repointTo, kind, refs, orientation } = req.body ?? {};
     // Which of the line's pictures the edit is about.
     const target = imageOf(req.body, msg.images) ?? (msg.images.length === 1 ? msg.images[0] : null);
     if (!target) {
@@ -527,6 +527,10 @@ export function createChatsRouter(
       res.status(400).json({ error: 'Expected kind "generated" or "file"' });
       return;
     }
+    if (orientation !== undefined && orientation !== "square" && orientation !== "portrait" && orientation !== "landscape") {
+      res.status(400).json({ error: 'Expected orientation "square", "portrait" or "landscape"' });
+      return;
+    }
     if (repointTo !== undefined) {
       if (typeof repointTo !== "string") {
         res.status(400).json({ error: "Expected repointTo (string)" });
@@ -553,6 +557,9 @@ export function createChatsRouter(
       ...(kind !== undefined ? { kind } : {}),
       ...(refs !== undefined
         ? { refs: (refs as unknown[]).filter((x): x is string => typeof x === "string") }
+        : {}),
+      ...(orientation !== undefined
+        ? { orientation: orientation as "square" | "portrait" | "landscape" }
         : {}),
     });
     if (!fresh) {

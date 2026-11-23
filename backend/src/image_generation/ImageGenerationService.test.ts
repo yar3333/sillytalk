@@ -4,7 +4,7 @@ import os from "os";
 import path from "path";
 import { PathHelper } from "../shared/PathHelper";
 import { ImageMetaService } from "../images/ImageMetaService";
-import { ImageGenerationRecord } from "../shared/ImageMeta";
+import { ImageGenerationRecord, PictureOrientation } from "../shared/ImageMeta";
 import { TextGenerationService } from "../text_generation/TextGenerationService";
 import { ImageGenerationService } from "./ImageGenerationService";
 import { ConfigurationService } from "../configuration/ConfigurationService";
@@ -315,7 +315,6 @@ function comfyGen(comfy: MockComfy, over: Partial<ComfyUiSettings> = {}): ComfyU
     kind: "comfyui",
     url: comfy.url,
     model: "qwen-image-2.1",
-    orientation: "landscape",
     enabled: true,
     ...over,
   };
@@ -325,15 +324,17 @@ const chatIdDefault = "jest-comfy-test";
 
 // One generation through the production path: the service is told about one
 // generator and asked for one picture (the reserved id is given by the test).
+// The shape is the picture's own, handed to the job — not a generator setting.
 async function oneShot(
   gen: ComfyUiSettings,
   prompt: string,
   refs: string[],
   name: string,
   chatId = chatIdDefault,
+  orientation: PictureOrientation = "square",
 ): Promise<ImageJobResult> {
   await images.refreshAvailableGenerators([gen]);
-  return images.startImageJob({ id: imageId(chatId, name), prompt, refs }).result;
+  return images.startImageJob({ id: imageId(chatId, name), prompt, refs, orientation }).result;
 }
 
 let comfy: MockComfy;
@@ -365,7 +366,7 @@ beforeEach(() => {
 // ------------------------------------------------------------------ the driver
 describe("ComfyUI generator", () => {
   it("sends the prompt and the orientation, and writes the picture back", async () => {
-    const r = await oneShot(comfyGen(comfy), "a red boat at dusk", [], "substituted.png");
+    const r = await oneShot(comfyGen(comfy), "a red boat at dusk", [], "substituted.png", chatIdDefault, "landscape");
     expect(r.status).toBe("ok");
     const job = comfy.jobs[0];
     expect(job.model).toBe("qwen-image-2.1");

@@ -4,7 +4,6 @@ import {
   ChatMessage,
   ChatSummary,
   User,
-  isSdApiGenerator,
   isComfyUiGenerator,
 } from './api';
 
@@ -126,10 +125,10 @@ export function splitNarration(text: string): Array<{ text: string; narration: b
 }
 
 // The hover hint of ONE picture of a line: how it was generated (a ComfyUI
-// server and the model it drew with / a request to SD API / just the prompt).
-// With several enabled generators the picture may have been made by any of them,
-// so the server details are shown only for a single one. A file somebody brought
-// has no generation data — its hint is the plain click note.
+// server and the model it drew with / just the prompt). With several enabled
+// generators the picture may have been made by any of them, so the server
+// details are shown only for a single one. A file somebody brought has no
+// generation data — its hint is the plain click note.
 export function imageHintFor(config: AppConfig | null, m: ChatMessage, img: string): string {
   const base = 'Click — open the picture';
   const prompt = m.pictures?.[img]?.generation?.prompt;
@@ -139,10 +138,6 @@ export function imageHintFor(config: AppConfig | null, m: ChatMessage, img: stri
   const comfy = gens.length === 1 ? gens.find(isComfyUiGenerator) : undefined;
   if (comfy) {
     return `ComfyUI ${comfy.model} (${comfy.url}): ${prompt}\n${base}`;
-  }
-  const sdapi = gens.length === 1 ? gens.find(isSdApiGenerator) : undefined;
-  if (sdapi) {
-    return `SD API (${sdapi.url}): ${prompt}\n${base}`;
   }
   return `Prompt: ${prompt}\n${base}`;
 }

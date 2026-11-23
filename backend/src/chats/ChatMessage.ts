@@ -2,6 +2,8 @@
 // the images it was drawn from. This is a VIEW of the picture's row of the
 // global images table (images/ImageMetaService.ts) — the row is the only copy,
 // a chat line never keeps generation data of its own.
+import { PictureOrientation } from "../shared/ImageMeta";
+
 export type ImageGenerationData = {
   prompt?: string;
   // Reference images — identifiers, i.e. paths relative to the data folder.
@@ -14,6 +16,9 @@ export type ImageGenerationData = {
   // The generator that produced it and the model that wrote the prompt.
   generator?: string;
   model?: string;
+  // The shape this picture is drawn in — its own, decided when its description
+  // became a prompt, so a regeneration keeps the same shape.
+  orientation?: PictureOrientation;
   width?: number;
   height?: number;
   steps?: number;

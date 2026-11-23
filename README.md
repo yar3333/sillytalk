@@ -36,18 +36,20 @@ Stack: **Node.js / Express 5 / TypeScript** (backend) + **Angular 22 / SCSS** (f
   sits right of the ID field and the line under it says how many other pictures use this one as
   their reference; the list is counted by that number too and can be sorted by ID as well as by the
   file date).
-- Image generation by several backends (all the enabled and available ones are used; the jobs of one
-  generator are queued, different generators run in parallel):
-  - **ComfyUI** — a generator is a ComfyUI URL plus one model code of that server's catalogue and the
-    picture's *orientation* (square / portrait / landscape), so one ComfyUI server running two models
-    is two generators. The server needs the
+- Image generation by ComfyUI (all the enabled and available generators run; the jobs of one
+  server are queued, different servers run in parallel):
+  - **ComfyUI** — a generator is a ComfyUI URL plus one model code of that server's catalogue, so
+    one ComfyUI server running two models is two generators. The server needs the
     [`comfyui-sillytalk`](https://github.com/yar3333/comfyui-sillytalk) custom node: it owns the
     workflows, publishes the model list and picks the GPU. It also publishes what is in its
     `models/diffusion_models/` and `models/loras/`, so a derivative checkpoint or a LoRA you drop
     there becomes a dropdown entry and a checkbox in **Settings** — with a strength slider per LoRA,
     and greyed out with the reason when its headers say it would merge into nothing, or a line of
-    text when it would merge only partly — rather than a name to type;
-  - **SD API (Stable Diffusion WebUI)** — via the API (`/sdapi/v1/txt2img`, `/sdapi/v1/img2img`).
+    text when it would merge only partly — rather than a name to type.
+  The picture's *orientation* (square / portrait / landscape) is not a generator setting: each
+  picture carries its own, chosen by the planner when its description is turned into a prompt and
+  overridable in the picture editor (default square). The server turns that shape into the pixels
+  its model was trained at.
   Generation always runs in the background: the chat stays usable, a spinner with Cancel shows
   while it runs and a failed picture keeps a Regenerate button. A click on a picture enlarges it
   and makes it a generation reference.
@@ -82,8 +84,8 @@ Stack: **Node.js / Express 5 / TypeScript** (backend) + **Angular 22 / SCSS** (f
 ## Requirements
 
 - Node.js 20+ (tested on Node 24).
-- Optionally: a running OpenAI-compatible backend and/or an SD API (Stable Diffusion WebUI)
-  server for image generation.
+- Optionally: a running OpenAI-compatible backend and/or a ComfyUI server (running the
+  [`comfyui-sillytalk`](https://github.com/yar3333/comfyui-sillytalk) custom node) for image generation.
 
 ## Install
 
@@ -183,31 +185,19 @@ Example:
   // Replies and picture captions are unaffected.
   "imagePromptModel": "",
   "imageGenerators": [
-    // A generation method: "kind" says which one — "comfyui" or "sdapi".
+    // A generation method: "kind" says which one — "comfyui".
     // Every enabled and available method works in parallel; the jobs of one
     // server are queued (one at a time). "enabled" defaults to true.
     {
       "kind": "comfyui",
       "url": "http://127.0.0.1:8188", // the ComfyUI server (needs the comfyui-sillytalk node)
       "model": "qwen-image-2.1", // a model code of THAT server's catalogue
-      "orientation": "square", // square | portrait | landscape — the server owns the pixels,
-                               // and the GPU: the plugin picks both per job
       "modelFile": "my-qwen-derivative.safetensors", // optional: a file of the server's
                                // models/diffusion_models/ to draw with instead of its own
       "loras": [ // optional, merged in this order
         { "name": "my-style.safetensors", "strength": 0.6 }, // strength defaults to 1.0
       ],
       "enabled": true,
-    },
-    {
-      "kind": "sdapi",
-      "url": "http://127.0.0.1:7860",
-      "steps": 30,
-      "width": 768,
-      "height": 768,
-      "denoisingStrength": 0.75,
-      "negativePrompt": "",
-      "enabled": true, // generator toggle (default true)
     },
   ],
 }
@@ -244,12 +234,11 @@ resolved by `resolveApiKey()`: `envKey` (an environment variable) takes priority
 - Picture prompt model: the model that writes a picture's prompt (the 📷 "picture of my turn" and
   the editor's "From the chat") can be set separately from the one that replies — a global field in
   **Settings** ("Picture prompt model"). Leave it on Default to plan with each chat's own model.
-- Image generation: there can be several methods (`imageGenerators`), each named by its `kind`
-  (`comfyui` or `sdapi`) and carrying an `enabled` toggle (default `true` — a disabled method is
-  never used; an entry whose `kind` the app does not know is dropped). At app startup every method
-  is probed: the SD API answers `GET /sdapi/v1/sd-models`; a ComfyUI generator is available when the
-  server answers `GET /sillytalk/models` and that catalogue contains its `model`.
-  **Every enabled and available method is used**: images can be generated on several generators at
+- Image generation: there can be several ComfyUI generators (`imageGenerators`), each carrying an
+  `enabled` toggle (default `true` — a disabled generator is never used; an entry whose `kind` the
+  app does not know is dropped). At app startup every generator is probed: a ComfyUI generator is
+  available when the server answers `GET /sillytalk/models` and that catalogue contains its `model`.
+  **Every enabled and available generator is used**: images can be generated on several servers at
   the same time, while the jobs of one server are queued (one at a time — the GPU is not hit by
   several runs concurrently; two ComfyUI generators of the same URL share that queue and take the
   jobs in turn).
@@ -334,8 +323,8 @@ backend/
                      # call (text + the pictures of the cards), the prompts, the
                      # picture plan of the user's turn —
                      # the TextGenerationService class + its DI token
-    image_generation/ # generation: the driver interface, the ComfyUI / SD API
-                      # backends (comfyui/ — the server probes and the
+    image_generation/ # generation: the driver interface, the ComfyUI
+                      # backend (comfyui/ — the server probes and the
                       # `test-comfyui` self-test), the top-level service class
                       # (background jobs); di.ts — the minimal DI container
     images/        # what is known about a picture: the global images.db table

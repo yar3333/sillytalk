@@ -69,21 +69,11 @@ export interface User {
   avatar?: string | null;
 }
 
-export interface SdApiSettings {
-  kind: 'sdapi';
-  url: string;
-  steps: number;
-  width: number;
-  height: number;
-  denoisingStrength: number;
-  negativePrompt: string;
-  enabled?: boolean; // generator toggle (default true) — a disabled one is never used
-}
-
 // What a picture can be shaped like. The pixel numbers behind an orientation
 // belong to the ComfyUI server — each of its models was trained at its own, and
 // the plugin answers with them in its catalogue — so the app asks for a shape
-// and never for a size.
+// and never for a size. It is a property of ONE picture, chosen when its
+// description becomes a prompt, never a setting of the generator.
 export type ComfyUiOrientation = 'square' | 'portrait' | 'landscape';
 
 // A LoRA to merge into the model of a run, with an optional strength (the server
@@ -143,9 +133,10 @@ export interface ComfyUiSettings {
   // The model this generator asks the server for: a code of the catalogue the
   // backend answers in imageStatus() (the codes the servers offer).
   model: string;
-  // The shape to draw. Which pixels that is, and which GPU draws it, is the
-  // plugin's decision, made when the job arrives — the app names neither.
-  orientation: ComfyUiOrientation;
+  // The shape to draw is NOT a generator setting: it is a property of each
+  // picture, chosen when its description becomes a prompt (see the picture
+  // editor). Which pixels a shape is, and which GPU draws it, is the plugin's
+  // decision, made when the job arrives — the app names neither.
   // A file of the server's models/diffusion_models/ to draw with instead of the
   // one the workflow names — how a LoRA-style derivative of e.g. qwen-image-2.1
   // that the user dropped there gets used. Absent: the workflow's own file.
@@ -158,17 +149,13 @@ export interface ComfyUiSettings {
   enabled?: boolean; // generator toggle (default true) — a disabled one is never used
 }
 
-// An imageGenerators entry: every generator names its own kind ("comfyui" /
-// "sdapi") — the app never guesses a type from the fields that happen to be
-// set, and an entry without a known kind is dropped by the backend.
-export type ImageGenerator = SdApiSettings | ComfyUiSettings;
+// An imageGenerators entry. The app draws through one backend only — a ComfyUI
+// server running the comfyui-sillytalk plugin — so every entry names its kind
+// ("comfyui"); an entry without a known kind is dropped by the backend.
+export type ImageGenerator = ComfyUiSettings;
 
 export function isComfyUiGenerator(g: ImageGenerator): g is ComfyUiSettings {
   return (g as { kind?: string }).kind === 'comfyui';
-}
-
-export function isSdApiGenerator(g: ImageGenerator): g is SdApiSettings {
-  return (g as { kind?: string }).kind === 'sdapi';
 }
 
 // Characters and users are not in the config — each one is a row of the
@@ -271,6 +258,9 @@ export interface ImageGenerationData {
   source?: 'upload' | 'manual' | 'auto';
   generator?: string;
   model?: string;
+  // The shape this picture is drawn in — its own, chosen when its description
+  // became a prompt, so a regeneration keeps the same shape.
+  orientation?: ComfyUiOrientation;
   width?: number;
   height?: number;
   steps?: number;
@@ -567,6 +557,7 @@ export class ApiService {
       repointTo?: string;
       kind?: 'generated' | 'file';
       refs?: string[];
+      orientation?: ComfyUiOrientation;
     },
   ): Promise<{ chat: Chat }> {
     return this.req('/chats/' + chatId + '/messages/' + messageId + '/picture', {
@@ -647,11 +638,11 @@ export class ApiService {
     chatId: string,
     description: string,
     messageId?: string,
-  ): Promise<{ prompt: string; refs: string[]; name: string }> {
-    return this.req<{ prompt: string; refs: string[]; name: string }>('/image/prompt-from-description', {
-      method: 'POST',
-      body: JSON.stringify({ chatId, description, messageId }),
-    });
+  ): Promise<{ prompt: string; refs: string[]; name: string; orientation: ComfyUiOrientation }> {
+    return this.req<{ prompt: string; refs: string[]; name: string; orientation: ComfyUiOrientation }>(
+      '/image/prompt-from-description',
+      { method: 'POST', body: JSON.stringify({ chatId, description, messageId }) },
+    );
   }
 
   // Rewrites a prompt into English and shapes it for the generator

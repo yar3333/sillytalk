@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { createToken } from "../di";
-import { ComfyUiLora, ComfyUiOrientation } from "./ComfyUiSettings";
+import { ComfyUiLora } from "./ComfyUiSettings";
 import { Config } from "./Config";
 import { ImageGenerator } from "./ImageGenerator";
 import { LlmModel } from "./LlmModel";
@@ -12,12 +12,6 @@ import { PathHelper } from "../shared/PathHelper";
 
 // The DI token of the configuration service (registered in index.ts).
 export const DI_CONFIGURATION_SERVICE = createToken<ConfigurationService>("ConfigurationService");
-
-const COMFY_ORIENTATIONS: readonly string[] = ["square", "portrait", "landscape"];
-
-function isComfyUiOrientation(value: unknown): value is ComfyUiOrientation {
-  return typeof value === "string" && COMFY_ORIENTATIONS.includes(value);
-}
 
 // The top-level configuration service: the config.json load/save (with the
 // normalization and the JSONC comment stripping), the defaults, the listen
@@ -284,27 +278,16 @@ export class ConfigurationService {
           // the driver reports which codes it does offer, and this generator
           // simply is not available.
           model: typeof g.model === "string" ? g.model.trim() : "",
-          // The server owns the pixel numbers behind an orientation, so the
-          // `width`/`height` of a config written before that are dropped (like
-          // the older `device` before them): the plugin on the server decides
-          // both, from what its model was trained at and what is free now.
-          orientation: isComfyUiOrientation(g.orientation) ? g.orientation : "square",
+          // The shape to draw is no longer a generator setting: it is a property
+          // of each picture. The `orientation`/`width`/`height` of a config
+          // written before that are dropped (like the older `device` before
+          // them) — the plugin on the server turns a picture's shape into the
+          // pixels its model was trained at.
           ...(typeof g.modelFile === "string" && g.modelFile.trim() ? { modelFile: g.modelFile.trim() } : {}),
           // Absent means "the workflow's own count" — the server answers with the
           // one it used, and rejects a number outside the range it published.
           ...(typeof g.steps === "number" && Number.isInteger(g.steps) && g.steps > 0 ? { steps: g.steps } : {}),
           ...(loras.length ? { loras } : {}),
-          enabled,
-        });
-      } else if (g.kind === "sdapi") {
-        result.push({
-          kind: "sdapi",
-          url: typeof g.url === "string" ? g.url : "",
-          steps: typeof g.steps === "number" ? g.steps : 30,
-          width: typeof g.width === "number" ? g.width : 768,
-          height: typeof g.height === "number" ? g.height : 768,
-          denoisingStrength: typeof g.denoisingStrength === "number" ? g.denoisingStrength : 0.75,
-          negativePrompt: typeof g.negativePrompt === "string" ? g.negativePrompt : "",
           enabled,
         });
       }

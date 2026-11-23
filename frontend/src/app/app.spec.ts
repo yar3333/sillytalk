@@ -1299,6 +1299,8 @@ describe('PictureDialog — the picture editor', () => {
           // the plan names these pictures in order, so they belong to the prompt
           refs: ['chat-1/the-fox-face-9f8e7d.png'],
           name: 'a fox at the shore',
+          // the shape the plan chose for the picture
+          orientation: 'portrait',
         });
       },
       tunePicturePrompt: (chatId: string, prompt: string) => {
@@ -1392,7 +1394,12 @@ describe('PictureDialog — the picture editor', () => {
         chatId: 'chat-1',
         messageId: 'card-1',
         image: cardImage,
-        patch: { description: 'a fox in the snow', kind: 'generated', prompt: 'a red fox' },
+        patch: {
+          description: 'a fox in the snow',
+          kind: 'generated',
+          prompt: 'a red fox',
+          orientation: 'square',
+        },
       },
     ]);
     // the dialog closes itself after a successful save
@@ -1430,6 +1437,8 @@ describe('PictureDialog — the picture editor', () => {
     expect((el.querySelector('[data-testid=picture-prompt]') as HTMLTextAreaElement).value).toBe(
       'a planned prompt',
     );
+    // the shape the plan chose fills the orientation pick, ready to be corrected
+    expect((el.querySelector('[data-testid=picture-orientation]') as HTMLSelectElement).value).toBe('portrait');
     // the idea stays what it was — the user may still correct it
     expect((el.querySelector('[data-testid=picture-description]') as HTMLTextAreaElement).value).toBe(
       'a fox in the snow',
@@ -1492,6 +1501,8 @@ describe('PictureDialog — the picture editor', () => {
           kind: 'generated',
           prompt: 'a planned prompt',
           refs: [face],
+          // the shape the plan chose travels with the prompt it was made for
+          orientation: 'portrait',
         },
       },
     ]);
@@ -1573,6 +1584,7 @@ describe('PictureDialog — the picture editor', () => {
       description: 'a fox in the snow',
       kind: 'generated',
       prompt: 'a red fox',
+      orientation: 'square',
     });
   });
 
@@ -1666,7 +1678,7 @@ describe('PictureDialog — the picture editor', () => {
         chatId: 'chat-1',
         messageId: 'msg-3',
         image: boat,
-        patch: { description: 'a red boat', kind: 'generated', prompt: 'a red boat' },
+        patch: { description: 'a red boat', kind: 'generated', prompt: 'a red boat', orientation: 'square' },
       },
     ]);
   });
@@ -2909,8 +2921,8 @@ describe('Settings — the language of the picture descriptions', () => {
 // the models, the file a model loads, the LoRAs it can merge — is a file of that
 // server, so the dialog lists what the server itself published and asks the user
 // to type nothing: they drop a file into models/diffusion_models/ or
-// models/loras/ and it appears. The pixel numbers are the server's as well, so
-// the config stores an orientation and the pick only shows what it means there.
+// models/loras/ and it appears. The shape to draw is no longer here at all — it
+// is a property of each picture, chosen when its description becomes a prompt.
 describe('Settings — a ComfyUI generator uses the files of its own server', () => {
   let saved: AppConfig | undefined;
   const server: ComfyUiServerCatalogue = {
@@ -3035,21 +3047,13 @@ describe('Settings — a ComfyUI generator uses the files of its own server', ()
     kind: 'comfyui',
     url: 'http://comfy.test:8188',
     model: 'qwen-image-2.1',
-    orientation: 'square',
   };
 
-  it('lists the models, shapes, files and LoRAs that server published', async () => {
+  it('lists the models, files and LoRAs that server published', async () => {
     const { el } = await open(base);
     expect([...pick(el, 'settings-comfy-model').options].map((o) => o.value)).toEqual([
       'qwen-image-2.1',
       'plain-model',
-    ]);
-    // the shape pick carries the pixels of THIS server, so the numbers a model
-    // was trained at are read here and nowhere else
-    expect([...pick(el, 'settings-comfy-orientation').options].map((o) => o.textContent?.trim())).toEqual([
-      'square — 1328×1328',
-      'portrait — 1140×1472',
-      'landscape — 1472×1140',
     ]);
     // its own file is the default pick, the rest of the folder is what a
     // derivative can be drawn with
@@ -3149,11 +3153,9 @@ describe('Settings — a ComfyUI generator uses the files of its own server', ()
   it('shows the file and the LoRAs the config already names', async () => {
     const { el } = await open({
       ...base,
-      orientation: 'portrait',
       modelFile: 'my-qwen-derivative.safetensors',
       loras: [{ name: 'style-b.safetensors', strength: 0.6 }],
     });
-    expect(pick(el, 'settings-comfy-orientation').value).toBe('portrait');
     expect(pick(el, 'settings-comfy-file').value).toBe('my-qwen-derivative.safetensors');
     expect(ticks(el).map((c) => c.checked)).toEqual([false, true, false]);
     expect((el.querySelector('input[type=range]') as HTMLInputElement).value).toBe('0.6');

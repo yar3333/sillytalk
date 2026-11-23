@@ -4,6 +4,7 @@ import { ChatMessage, isImageMessage } from "../chats/ChatMessage";
 import { Config } from "../configuration/Config";
 import { Model } from "../configuration/Model";
 import { PathHelper } from "../shared/PathHelper";
+import { PictureOrientation } from "../shared/ImageMeta";
 import { ConfigurationService } from "../configuration/ConfigurationService";
 import { createToken } from "../di";
 
@@ -61,6 +62,10 @@ export type ImagePromptPlan = {
   description: string;
   prompt: string;
   refs: number[];
+  // The shape the picture should be drawn in, chosen from what the description
+  // shows (a standing person → portrait, a wide scene → landscape). The server
+  // turns the shape into the pixels its model was trained at.
+  orientation: PictureOrientation;
   // Cast refs of the people the picture shows.
   cast: string[];
   // The visual phrase the prompt uses for a person ("the red-haired woman"),
@@ -582,6 +587,7 @@ export class TextGenerationService {
             "Answer with ONE JSON object and nothing else:\n" +
             '{"name": "2-5 english words naming the picture", ' +
             '"prompt": "the image generation prompt, in english, 1-3 sentences: subjects, action, setting, lighting, style", ' +
+            '"orientation": "square | portrait | landscape", ' +
             '"refs": [numbers of the pictures below to draw from], ' +
             '"cast": [the ids of the people who appear in the picture], ' +
             '"subjects": [{"id": "the cast id", "noun": "the 2-4 word english phrase the prompt uses for them"}]}\n' +
@@ -590,6 +596,8 @@ export class TextGenerationService {
             "light, style) and never a person, an event or an object it does not imply;\n" +
             "- the name, the prompt and the subject phrases are in english;\n" +
             "- the prompt describes a single concrete scene, not a story;\n" +
+            "- orientation: portrait for a standing person or a tall subject, landscape for a wide " +
+            "scene or several people side by side, square otherwise;\n" +
             "- NEVER write a person's name in the prompt. Call a person by how they look " +
             '(the "look" line of their cast entry: "the red-haired woman in a green coat") or by their ' +
             'reference picture ("the woman from the first reference image");\n' +
@@ -693,10 +701,15 @@ export class TextGenerationService {
       : [];
     const name = typeof plan.name === "string" ? plan.name.trim() : "";
     const description = typeof plan.description === "string" ? plan.description.trim() : "";
+    // The shape the model chose; anything it did not name is square (the one
+    // shape every server draws).
+    const orientation =
+      plan.orientation === "portrait" || plan.orientation === "landscape" ? plan.orientation : "square";
     return {
       name: name || prompt,
       description,
       prompt,
+      orientation,
       refs: [...new Set(refs)],
       cast: [...new Set(cast)],
       subjects,

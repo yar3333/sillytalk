@@ -1,3 +1,10 @@
+// Which way a picture stands. It is a property of ONE picture, decided when its
+// description is turned into a prompt (and correctable in the picture editor),
+// never a setting of the generator. The pixel numbers behind a shape belong to
+// the ComfyUI server that draws it — its model was trained at particular sizes —
+// so the app sends the shape and the plugin answers with the size it used.
+export type PictureOrientation = "square" | "portrait" | "landscape";
+
 // What the app knows about a picture: a human-readable description of what is
 // on it plus everything needed to reproduce it (the generation prompt and the
 // reference images it was drawn from).
@@ -32,11 +39,13 @@ export type ImageMeta = {
   // How the image got here: uploaded by the user, drawn on request (the 🎨
   // mode), or drawn automatically for the user's turn.
   source?: "upload" | "manual" | "auto";
-  // The generator that produced it (the driver key: an SD API URL or a
-  // ComfyUI server + model) and the model that wrote the prompt (an llmModels
-  // key).
+  // The generator that produced it (the driver key: a ComfyUI server + model)
+  // and the model that wrote the prompt (an llmModels key).
   generator?: string;
   model?: string;
+  // The shape this picture was asked to be drawn in — the value the generator
+  // got, so a regeneration keeps the same shape.
+  orientation?: PictureOrientation;
   width?: number;
   height?: number;
   steps?: number;
@@ -69,6 +78,7 @@ export const IMAGE_GENERATION_KEYS = [
   "source",
   "generator",
   "model",
+  "orientation",
   "width",
   "height",
   "steps",
@@ -83,6 +93,7 @@ export type ImageGenerationRecord = {
   source?: ImageMeta["source"];
   generator?: string;
   model?: string;
+  orientation?: PictureOrientation;
   width?: number;
   height?: number;
   steps?: number;

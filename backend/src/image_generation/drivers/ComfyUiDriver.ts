@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
-import { ComfyUiLora, ComfyUiOrientation, ComfyUiSettings } from "../../configuration/ComfyUiSettings";
+import { ComfyUiLora, ComfyUiSettings } from "../../configuration/ComfyUiSettings";
+import { PictureOrientation } from "../../shared/ImageMeta";
 import { ComfyUiObjectInfo, ComfyUiSystemStats } from "../comfyui/ComfyUiServerInfo";
 import { IImageGeneratorDriver } from "../IImageGeneratorDriver";
 
@@ -28,8 +29,8 @@ export type ComfyUiPluginModel = {
   code: string;
   label?: string;
   max_refs: number;
-  orientation?: ComfyUiOrientation;
-  sizes?: Partial<Record<ComfyUiOrientation, [number, number]>>;
+  orientation?: PictureOrientation;
+  sizes?: Partial<Record<PictureOrientation, [number, number]>>;
   // The file the workflow loads when the client names none.
   model_file?: string | null;
   // Present only when the workflow can take another file at all.
@@ -84,7 +85,7 @@ export type ComfyUiJob = {
   status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
   width?: number;
   height?: number;
-  orientation?: ComfyUiOrientation;
+  orientation?: PictureOrientation;
   model_file?: string;
   loras?: { name: string; strength: number; node?: string }[];
   steps?: number;
@@ -326,6 +327,7 @@ export class ComfyUiDriver implements IImageGeneratorDriver {
     prompt: string,
     refPaths: string[],
     outPath: string,
+    orientation: PictureOrientation,
     registerAbort?: (ctrl: AbortController) => void,
   ): Promise<void> {
     if (!this.base) throw new Error("The ComfyUI generator has no server URL");
@@ -355,8 +357,9 @@ export class ComfyUiDriver implements IImageGeneratorDriver {
     form.append("model", this.cfg.model);
     form.append("prompt", prompt);
     // An orientation, not a size: the server knows the pixel numbers its model
-    // was trained at, and the job answers with the ones it used.
-    form.append("orientation", this.cfg.orientation || "square");
+    // was trained at, and the job answers with the ones it used. The shape is
+    // the picture's own, chosen when its description became a prompt.
+    form.append("orientation", orientation || "square");
     if (this.cfg.modelFile) form.append("model_file", this.cfg.modelFile);
     if (typeof this.cfg.steps === "number") form.append("steps", String(this.cfg.steps));
     const loras = ComfyUiDriver.lorasToSend(this.cfg.loras);

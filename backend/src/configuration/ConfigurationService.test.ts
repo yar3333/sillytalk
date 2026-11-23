@@ -191,25 +191,23 @@ describe("the image generators of the config", () => {
   const gens = (imageGenerators: unknown[]) =>
     loadConfigWith(JSON.stringify({ listen: "127.0.0.1:3210", llmModels: {}, imageGenerators })).imageGenerators;
 
-  it("reads a ComfyUI generator and defaults its orientation", () => {
+  it("reads a ComfyUI generator", () => {
     expect(gens([{ kind: "comfyui", url: "http://127.0.0.1:4240", model: " qwen-image-2.1 " }])).toEqual([
       {
         kind: "comfyui",
         url: "http://127.0.0.1:4240",
         model: "qwen-image-2.1",
-        orientation: "square",
         enabled: true,
       },
     ]);
   });
 
-  it("keeps the orientation, the model file, the steps and the LoRAs a ComfyUI generator states", () => {
+  it("keeps the model file, the steps and the LoRAs a ComfyUI generator states", () => {
     const [g] = gens([
       {
         kind: "comfyui",
         url: "http://h:8188/",
         model: "qwen-image-2512",
-        orientation: "landscape",
         modelFile: " my-qwen-derivative.safetensors ",
         steps: 8,
         loras: ["style-a.safetensors", { name: "style-b.safetensors", strength: 0.4 }],
@@ -217,7 +215,6 @@ describe("the image generators of the config", () => {
       },
     ]);
     expect(g).toMatchObject({
-      orientation: "landscape",
       modelFile: "my-qwen-derivative.safetensors",
       steps: 8,
       loras: [{ name: "style-a.safetensors" }, { name: "style-b.safetensors", strength: 0.4 }],
@@ -232,16 +229,25 @@ describe("the image generators of the config", () => {
     }
   });
 
-  it("drops the size and the device of a ComfyUI entry — the plugin on the server decides both", () => {
-    // Both were fields of an older config; the server owns the pixels behind an
-    // orientation and the cards behind a job, so neither is carried any more.
+  it("drops the size, the device and the orientation of a ComfyUI entry — the shape is the picture's, the server decides the pixels", () => {
+    // All three were fields of an older config; the orientation is now a property
+    // of each picture and the server owns the pixels behind it and the cards
+    // behind a job, so none of them is carried any more.
     const [g] = gens([
-      { kind: "comfyui", url: "http://h:8188", model: "qwen-image-2.1", width: 1664, height: 928, device: "cuda:3" },
+      {
+        kind: "comfyui",
+        url: "http://h:8188",
+        model: "qwen-image-2.1",
+        orientation: "landscape",
+        width: 1664,
+        height: 928,
+        device: "cuda:3",
+      },
     ]);
     expect(g).not.toHaveProperty("width");
     expect(g).not.toHaveProperty("height");
     expect(g).not.toHaveProperty("device");
-    expect(g).toMatchObject({ orientation: "square" });
+    expect(g).not.toHaveProperty("orientation");
   });
 
   it("keeps only the LoRAs of a ComfyUI entry that are really named", () => {
@@ -256,24 +262,10 @@ describe("the image generators of the config", () => {
     expect(g).toMatchObject({ loras: [{ name: "ok.safetensors" }, { name: "two.safetensors" }] });
   });
 
-  it("reads an SD API generator with its defaults", () => {
-    expect(gens([{ kind: "sdapi", url: "http://127.0.0.1:7860" }])).toEqual([
-      {
-        kind: "sdapi",
-        url: "http://127.0.0.1:7860",
-        steps: 30,
-        width: 768,
-        height: 768,
-        denoisingStrength: 0.75,
-        negativePrompt: "",
-        enabled: true,
-      },
-    ]);
-  });
-
   it("drops an entry that does not name a generator the app can run", () => {
     // a bare url is not a kind, and neither is a generator type the app no
-    // longer has — nothing is guessed from the fields that happen to be set
+    // longer has (the SD API backend is gone) — nothing is guessed from the
+    // fields that happen to be set
     const kept = gens([
       { url: "http://127.0.0.1:7860" },
       { command: "gen.cmd", args: [] },
@@ -281,7 +273,6 @@ describe("the image generators of the config", () => {
       "not an object at all",
       { kind: "sdapi", url: "http://127.0.0.1:7860" },
     ]);
-    expect(kept).toHaveLength(1);
-    expect(kept[0]).toMatchObject({ kind: "sdapi" });
+    expect(kept).toHaveLength(0);
   });
 });

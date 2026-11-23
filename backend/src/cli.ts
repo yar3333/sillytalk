@@ -1,4 +1,5 @@
-import { ComfyUiLora, ComfyUiOrientation } from "./configuration/ComfyUiSettings";
+import { ComfyUiLora } from "./configuration/ComfyUiSettings";
+import { PictureOrientation } from "./shared/ImageMeta";
 import { ComfyUiSelfTestOptions, ComfyUiSelfTestService } from "./image_generation/comfyui/ComfyUiSelfTestService";
 import { PathHelper } from "./shared/PathHelper";
 
@@ -98,7 +99,7 @@ export function parseArgs(argv: string[]): ParsedCommand {
       if (!ORIENTATIONS.includes(orientation)) {
         return { error: `--orientation wants one of ${ORIENTATIONS.join(" | ")}, got "${value}"` };
       }
-      options.orientation = orientation as ComfyUiOrientation;
+      options.orientation = orientation as PictureOrientation;
     }
   }
   if (models.length) options.models = models;

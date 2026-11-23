@@ -1,8 +1,3 @@
-// Which way a picture stands. The pixel numbers behind it belong to the server
-// that draws it (its model was trained at particular sizes), so the app sends an
-// orientation and the plugin answers with the size it used.
-export type ComfyUiOrientation = "square" | "portrait" | "landscape";
-
 // One LoRA of the server's `models/loras/` folder, with how hard to apply it.
 export type ComfyUiLora = {
   name: string;
@@ -19,7 +14,8 @@ export type ComfyUiSettings = {
   // /sillytalk/models lists. A code the server does not offer makes the
   // generator unavailable.
   model: string;
-  orientation: ComfyUiOrientation;
+  // The shape to draw is NOT configured here: it is a property of each picture,
+  // decided when its description becomes a prompt (see shared/ImageMeta.ts).
   // The diffusion file to load instead of the one the workflow names — any file
   // of the server's models/diffusion_models/, which is how a derivative of the
   // model gets drawn with. Absent means the workflow's own default.

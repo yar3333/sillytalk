@@ -3,20 +3,14 @@ import {
   AppConfig,
   ComfyUiFileOption,
   ComfyUiFit,
-  ComfyUiOrientation,
   ComfyUiPluginModel,
   ComfyUiSettings,
   ImageGenerator,
   PictureLanguage,
-  SdApiSettings,
   isComfyUiGenerator,
 } from '../../services/api';
 import { ConfigStore } from '../../services/config-store';
 import { UiStore } from '../../services/ui-store';
-
-// The shapes a picture can be asked for, in the order the pick lists them when
-// a server's catalogue says nothing about its own.
-const ORIENTATIONS: ComfyUiOrientation[] = ['square', 'portrait', 'landscape'];
 
 // The "Settings" modal: the listen address and the image generators. The
 // models, characters and personas are managed by their own edit dialogs
@@ -107,14 +101,6 @@ const ORIENTATIONS: ComfyUiOrientation[] = ['square', 'portrait', 'landscape'];
                     }
                   </select>
                 </label>
-                <label class="grow">
-                  <span>orientation</span>
-                  <select data-testid="settings-comfy-orientation" (change)="setGenStr(i, 'orientation', $event)">
-                    @for (o of comfyOrientations(g); track o) {
-                      <option [value]="o" [selected]="o === g.orientation">{{ o }} — {{ comfySize(g, o) }}</option>
-                    }
-                  </select>
-                </label>
               </div>
               @if (comfySteps(g)) {
                 <label class="field">
@@ -184,25 +170,15 @@ const ORIENTATIONS: ComfyUiOrientation[] = ['square', 'portrait', 'landscape'];
               }
               <div class="hint">
                 The server draws {{ g.model }} with its own plugin (comfyui-sillytalk): it turns the
-                orientation into the pixels that model was trained at, and picks the GPU from the
-                memory free when the job arrives. Drop a file of your own into its
+                picture's orientation into the pixels that model was trained at, and picks the GPU
+                from the memory free when the job arrives. Drop a file of your own into its
                 models/diffusion_models/ or models/loras/ and it appears in these lists.
               </div>
-            } @else {
-              <input class="full" placeholder="URL (http://127.0.0.1:7860)" [value]="g.url" (input)="setGenStr(i, 'url', $event)" />
-              <div class="row">
-                <label><span>steps</span> <input type="number" [value]="g.steps" (input)="setGenNum(i, 'steps', $event)" /></label>
-                <label><span>width</span> <input type="number" [value]="g.width" (input)="setGenNum(i, 'width', $event)" /></label>
-                <label><span>height</span> <input type="number" [value]="g.height" (input)="setGenNum(i, 'height', $event)" /></label>
-              </div>
-              <label class="row"><span>denoising</span> <input type="number" step="0.05" [value]="g.denoisingStrength" (input)="setGenNum(i, 'denoisingStrength', $event)" /></label>
-              <input class="full" placeholder="Negative prompt" [value]="g.negativePrompt" (input)="setGenStr(i, 'negativePrompt', $event)" />
             }
           </div>
         }
         <div class="row">
           <button class="btn" (click)="addComfyUi()">+ ComfyUI</button>
-          <button class="btn" (click)="addSdApi()">+ SD API</button>
         </div>
 
         <div class="row actions">
@@ -270,7 +246,7 @@ export class Settings implements OnInit {
     return this.m()?.imageGenerators ?? [];
   }
   genKind(g: ImageGenerator): string {
-    return isComfyUiGenerator(g) ? `ComfyUI — ${g.model}` : 'SD API';
+    return `ComfyUI — ${g.model}`;
   }
   // Type guards must be component methods: narrowing imported functions
   // in the template does not work.
@@ -284,13 +260,6 @@ export class Settings implements OnInit {
     const gen = c.imageGenerators[i] as unknown as Record<string, unknown>;
     if (!gen) return;
     gen[key] = (e.target as HTMLInputElement).value;
-    this.m.set({ ...c });
-  }
-  private setGenNum(i: number, key: string, e: Event): void {
-    const c = this.m()!;
-    const gen = c.imageGenerators[i] as unknown as Record<string, unknown>;
-    if (!gen) return;
-    gen[key] = Number((e.target as HTMLInputElement).value);
     this.m.set({ ...c });
   }
   private setGenEnabled(i: number, e: Event): void {
@@ -334,18 +303,6 @@ export class Settings implements OnInit {
 
   private comfyModel(g: ComfyUiSettings): ComfyUiPluginModel | undefined {
     return this.comfyModels(g).find((m) => m.code === g.model);
-  }
-
-  /** The shapes that model draws — exactly the ones its server lists sizes for. */
-  comfyOrientations(g: ComfyUiSettings): ComfyUiOrientation[] {
-    const sizes = Object.keys(this.comfyModel(g)?.sizes ?? {}) as ComfyUiOrientation[];
-    return sizes.length ? sizes.filter((o) => ORIENTATIONS.includes(o)) : [...ORIENTATIONS];
-  }
-
-  /** The pixels the server turns a shape into — the hint beside the pick. */
-  comfySize(g: ComfyUiSettings, o: ComfyUiOrientation): string {
-    const wh = this.comfyModel(g)?.sizes?.[o];
-    return wh ? `${wh[0]}×${wh[1]}` : 'its own';
   }
 
   /** The files of the server this model could load instead of its own. Its own
@@ -414,8 +371,7 @@ export class Settings implements OnInit {
   }
 
   // Another model is another workflow: the file and the LoRAs picked for the
-  // previous one are dropped when it cannot load them, and an orientation it has
-  // no size for would only be answered by an error.
+  // previous one are dropped when it cannot load them.
   private setComfyModel(i: number, e: Event): void {
     const c = this.m()!;
     const gen = c.imageGenerators[i];
@@ -425,9 +381,6 @@ export class Settings implements OnInit {
     if (!model?.model_files?.options.some((f) => f.name === gen.modelFile)) delete gen.modelFile;
     this.keepFittingLoras(gen);
     this.keepFittingSteps(gen);
-    if (model?.sizes && !(gen.orientation in model.sizes)) {
-      gen.orientation = model.orientation ?? 'square';
-    }
     this.m.set({ ...c });
   }
 
@@ -518,21 +471,6 @@ export class Settings implements OnInit {
       url,
       // the first model that server offers; the pick lists the rest
       model: this.comfyCatalogue(url)[0]?.code ?? '',
-      orientation: 'square',
-      enabled: true,
-    };
-    this.m.set({ ...c, imageGenerators: [...c.imageGenerators, g] });
-  }
-  private addSdApi(): void {
-    const c = this.m()!;
-    const g: SdApiSettings = {
-      kind: 'sdapi',
-      url: 'http://127.0.0.1:7860',
-      steps: 30,
-      width: 768,
-      height: 768,
-      denoisingStrength: 0.75,
-      negativePrompt: '',
       enabled: true,
     };
     this.m.set({ ...c, imageGenerators: [...c.imageGenerators, g] });

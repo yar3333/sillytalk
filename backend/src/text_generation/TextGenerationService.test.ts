@@ -1016,10 +1016,37 @@ describe("composeImagePromptFromDescription", () => {
       name: "a red boat at dusk",
       description: "",
       prompt: "a red boat on a calm lake at dusk",
+      orientation: "square",
       refs: [2],
       cast: [],
       subjects: [],
     });
+  });
+
+  it("keeps the orientation the model chose and defaults a missing one to square", async () => {
+    const portrait = jest
+      .fn()
+      .mockResolvedValue(
+        jsonRes({ choices: [{ message: { content: '{"prompt": "a tall woman", "orientation": "portrait", "refs": []}' } }] }),
+      );
+    global.fetch = portrait as unknown as typeof fetch;
+    const p = await textGenerationService.composeImagePromptFromDescription(model, {
+      description: "a tall woman",
+      images: [],
+    });
+    expect(p?.orientation).toBe("portrait");
+
+    // A shape the model did not name (or named wrongly) is square — the one
+    // shape every server draws.
+    const missing = jest
+      .fn()
+      .mockResolvedValue(jsonRes({ choices: [{ message: { content: '{"prompt": "a fox", "orientation": "wide", "refs": []}' } }] }));
+    global.fetch = missing as unknown as typeof fetch;
+    const m = await textGenerationService.composeImagePromptFromDescription(model, {
+      description: "a fox",
+      images: [],
+    });
+    expect(m?.orientation).toBe("square");
   });
 
   it("keeps only the people and the noun phrases of the cast it was given", async () => {

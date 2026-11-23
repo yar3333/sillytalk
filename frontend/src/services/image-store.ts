@@ -1,5 +1,5 @@
 import { Injectable, computed, effect, inject, signal } from '@angular/core';
-import { ApiService, Chat } from './api';
+import { ApiService, Chat, ComfyUiOrientation } from './api';
 import { ChatStore } from './chat-store';
 import { ConfigStore } from './config-store';
 import { UiStore } from './ui-store';
@@ -187,6 +187,7 @@ export class ImageStore {
       kind: 'generated' | 'file';
       description: string;
       prompt?: string;
+      orientation?: ComfyUiOrientation;
       imageId?: string;
       data?: string;
       refs?: string[];
@@ -212,6 +213,7 @@ export class ImageStore {
         description: edit.description,
         kind: edit.kind,
         ...(edit.kind === 'generated' ? { prompt: edit.prompt ?? '' } : {}),
+        ...(edit.kind === 'generated' && edit.orientation ? { orientation: edit.orientation } : {}),
         // The references travel with the prompt that names them ("the first
         // reference image shows …"), so a picture redrawn later draws the same
         // face rather than a new one.

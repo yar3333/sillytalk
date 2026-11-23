@@ -285,13 +285,13 @@ export async function startMockLlm(
 // What a job does follows the prompt text the app sent: "fail" — the server
 // fails it, "slow" — it takes 5 s, anything else is drawn after a short pause.
 // One imageGenerators entry of the config — the same shape the app reads from
-// /api/config (the suites PUT it there before each test). No pixel numbers: the
-// app asks for a shape and this server answers with the size of its own.
+// /api/config (the suites PUT it there before each test). No pixel numbers and
+// no shape: the app asks for a shape per picture and this server answers with
+// the size of its own.
 export interface MockComfyGenerator {
   kind: 'comfyui';
   url: string;
   model: string;
-  orientation: MockOrientation;
   enabled: boolean;
 }
 
@@ -498,7 +498,6 @@ export async function startMockComfy(model = 'qwen-image-2.1'): Promise<MockComf
       kind: 'comfyui',
       url,
       model,
-      orientation: 'square',
       enabled: true,
     },
     // what the app sent this server: the prompt of every job (in the order the

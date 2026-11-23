@@ -11,7 +11,7 @@ import { PathHelper } from "../shared/PathHelper";
 import { createToken } from "../di";
 import { ImageBrief, ImageCastMember, ImagePromptPlan, TextGenerationService } from "../text_generation/TextGenerationService";
 import { ImageGenerationService } from "../image_generation/ImageGenerationService";
-import { ImageGenerationRecord } from "../shared/ImageMeta";
+import { ImageGenerationRecord, PictureOrientation } from "../shared/ImageMeta";
 import { ImageMetaService } from "../images/ImageMetaService";
 import { ImageJob } from "../image_generation/ImageJob";
 import { PersonsService } from "../persons/PersonsService";
@@ -516,15 +516,23 @@ export class ReplyService {
         refs: done.refs.length > 0 ? done.refs : undefined,
         source,
         model: model.name,
+        orientation: done.orientation,
         createdAt: new Date().toISOString(),
       };
       this.chats.writeImageMeta(id, request, generation);
-      this.startChatImageJob(id, done.prompt, done.refs, chatId, {
-        prompt: done.prompt,
-        refs: done.refs,
-        source,
-        model: model.name,
-      });
+      this.startChatImageJob(
+        id,
+        done.prompt,
+        done.refs,
+        chatId,
+        {
+          prompt: done.prompt,
+          refs: done.refs,
+          source,
+          model: model.name,
+        },
+        done.orientation,
+      );
     } catch (err) {
       giveUp((err as Error).message);
     }
@@ -629,6 +637,7 @@ export class ReplyService {
         source: "auto",
         // the PLANNER wrote this prompt — that is what the row remembers
         model: model.name,
+        orientation: done.orientation,
         createdAt: new Date().toISOString(),
       };
       // The caption of the finished picture is the stage-one sentence (the plan
@@ -636,12 +645,19 @@ export class ReplyService {
       // handed is the caption).
       this.chats.writeImageMeta(id, description, generation);
       this.chats.setMessageText(chatId, messageId, description);
-      this.startChatImageJob(id, done.prompt, done.refs, chatId, {
-        prompt: done.prompt,
-        refs: done.refs,
-        source: "auto",
-        model: model.name,
-      });
+      this.startChatImageJob(
+        id,
+        done.prompt,
+        done.refs,
+        chatId,
+        {
+          prompt: done.prompt,
+          refs: done.refs,
+          source: "auto",
+          model: model.name,
+        },
+        done.orientation,
+      );
     } catch (err) {
       giveUp((err as Error).message);
     }
@@ -920,7 +936,7 @@ export class ReplyService {
     chat: Chat,
     plan: ImagePromptPlan,
     material: PictureMaterial,
-  ): Promise<{ name: string; description: string; prompt: string; refs: string[] }> {
+  ): Promise<{ name: string; description: string; prompt: string; refs: string[]; orientation: PictureOrientation }> {
     const maxRefs = this.imageGeneration.maxReferenceCount();
     const refs: string[] = [];
     const addRef = (number: number | undefined): void => {
@@ -948,7 +964,7 @@ export class ReplyService {
           .trim(),
       ),
     );
-    return { name: plan.name, description: plan.description, prompt, refs: chosen };
+    return { name: plan.name, description: plan.description, prompt, refs: chosen, orientation: plan.orientation };
   }
 
   // Which person each offered picture was chosen as the face OF. The cast's
@@ -1053,6 +1069,9 @@ export class ReplyService {
     const prompt = this.withChatStyle(chat, spoken);
     const refs = stored?.generation?.refs ?? [];
     const source = stored?.generation?.source ?? "manual";
+    // The redraw keeps the picture's own shape (the one it was drawn in), so a
+    // portrait does not come back square because a generator setting says so.
+    const orientation = stored?.generation?.orientation;
     // A regeneration in flight for this picture is cancelled — one job per image.
     this.imageGeneration.cancelJob(image);
     const fresh = this.chats.get(chat.id);
@@ -1065,12 +1084,19 @@ export class ReplyService {
     }
     this.chats.save(fresh);
     this.chats.writeImageMeta(image, undefined, { prompt, refs: refs.length > 0 ? refs : undefined, source });
-    this.startChatImageJob(image, prompt, refs, chat.id, {
+    this.startChatImageJob(
+      image,
       prompt,
       refs,
-      source,
-      model: this.chatModelName(),
-    });
+      chat.id,
+      {
+        prompt,
+        refs,
+        source,
+        model: this.chatModelName(),
+      },
+      orientation,
+    );
     // Re-read: what the client gets back must already say what the picture is
     // now drawn from (the facts of a picture are derived from its row on every
     // read, and the row changed a moment ago).
@@ -1160,6 +1186,9 @@ export class ReplyService {
       // generator gets them — the "From the chat" button saves them together
       // with the prompt that refers to them.
       refs?: string[];
+      // The shape to redraw this picture in — the editor's own pick, which the
+      // stage-two plan filled and the user may have corrected.
+      orientation?: PictureOrientation;
     },
   ): Chat | null {
     const fresh = this.chats.get(chat.id);
@@ -1173,6 +1202,7 @@ export class ReplyService {
     if (!fmsg.images.includes(target)) return null;
     const prompt = patch.prompt?.trim();
     const refs = patch.refs?.filter((id) => typeof id === "string" && id);
+    const orientation = patch.orientation;
     const stored = fmsg.pictures?.[target];
     let generation: ImageGenerationData | null | undefined;
     if (patch.kind === "file") {
@@ -1182,13 +1212,14 @@ export class ReplyService {
       // the block, and the new file's row — which another line may share — is not
       // ours to rewrite.
       generation = repointed ? undefined : null;
-    } else if (patch.kind === "generated" || prompt !== undefined || refs !== undefined) {
+    } else if (patch.kind === "generated" || prompt !== undefined || refs !== undefined || orientation !== undefined) {
       generation = {
         ...(stored?.generation ?? {}),
         // an empty prompt is a real edit — the picture then has nothing to redraw
         // from until the user writes one
         ...(prompt !== undefined ? { prompt } : {}),
         ...(refs !== undefined ? { refs: refs.length > 0 ? refs : undefined } : {}),
+        ...(orientation !== undefined ? { orientation } : {}),
         source: stored?.generation?.source ?? ("manual" as const),
       };
     }
@@ -1244,7 +1275,7 @@ export class ReplyService {
     chatId: string,
     description: string,
     messageId?: string,
-  ): Promise<{ prompt: string; refs: string[]; name: string } | null> {
+  ): Promise<{ prompt: string; refs: string[]; name: string; orientation: PictureOrientation } | null> {
     const chat = this.chats.get(chatId);
     if (!chat) throw new Error("Chat not found");
     const model = this.resolveImagePromptModel();
@@ -1262,7 +1293,7 @@ export class ReplyService {
     });
     if (!plan) return null;
     const done = await this.finishPlan(chat, plan, material);
-    return { prompt: done.prompt, refs: done.refs, name: done.name };
+    return { prompt: done.prompt, refs: done.refs, name: done.name, orientation: done.orientation };
   }
 
   // Rewrites a typed prompt for the generator — English + tuned (the "Make it
@@ -1387,11 +1418,13 @@ export class ReplyService {
     refs: string[],
     chatId: string,
     meta: ImageGenerationRecord,
+    orientation?: PictureOrientation,
   ): void {
     const job: ImageJob = this.imageGeneration.startImageJob({
       id,
       prompt,
       refs,
+      orientation,
       // The chat may be deleted while the job waits in the queue. The check is
       // the chat store's — the folder on disk is not the evidence anymore (the
       // chat lives in the database, its folder exists only once it owns a file).
