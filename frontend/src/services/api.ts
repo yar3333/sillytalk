@@ -1,5 +1,26 @@
 import { Injectable } from '@angular/core';
 
+// How one model is to pick its next token. Every field is optional and an empty
+// field of the model dialog is NOT SENT at all, so the provider keeps its own
+// default — which is the honest answer more often than a number copied from
+// somebody else's setup. The block belongs to the model, not to a chat: a
+// checkpoint is served with parameters its own weights were tuned for.
+export interface ModelSampling {
+  // How flat the distribution is made before a word is drawn: 1 leaves the
+  // model's own confidence alone, below it the likely word wins (safe, flat),
+  // above it rare words get their chance (varied, incoherent sooner).
+  temperature?: number;
+  // Nucleus: keep the most likely words until their probability sums to this.
+  topP?: number;
+  // Keep this many best candidates at each step, cut by count, not probability.
+  topK?: number;
+  // Drop a word below this FRACTION of the best candidate's probability — it
+  // scales with the top word, so a hot temperature cannot reach into the tail.
+  minP?: number;
+  // Raises the cost of a word already used, against echoing. 1 — no penalty.
+  repetitionPenalty?: number;
+}
+
 // The value of an llmModels entry: the provider connection.
 export interface LlmModel {
   id: string; // the ID sent to the provider
@@ -14,6 +35,9 @@ export interface LlmModel {
   reasoning?: string | false;
   // The possible reasoning levels; absent — the default set.
   reasoningLevels?: string[];
+  // How this model picks its next token (see ModelSampling). Empty fields are
+  // not sent, so the provider default applies.
+  sampling?: ModelSampling;
 }
 
 // The flat model for templates: the llmModels key becomes name
@@ -291,14 +315,8 @@ export interface Chat {
   // The models are GLOBAL settings, not fields of a chat: AppConfig.chatModel
   // is the model the app talks with, AppConfig.visionModel the one that looks at
   // pictures (AppConfig.imagePromptModel writes the picture prompts). The header
-  // chips write them.
-  // Per-chat sampling overrides for the provider request; a field left
-  // undefined is not sent at all (the provider default applies).
-  sampling?: {
-    temperature?: number;
-    minP?: number;
-    repetitionPenalty?: number;
-  };
+  // chips write them. A chat carries no sampling either — how the next token is
+  // picked belongs to the model entry (LlmModel.sampling).
   // A free-text addition appended to the system prompt of every reply in
   // this chat (empty/absent — nothing is added).
   systemSuffix?: string;

@@ -694,6 +694,74 @@ test('the entity dialogs: edit, create, clone and delete', async ({ page }) => {
   await page.screenshot({ path: `${SHOTS}/10c-model-dialogs.png` });
 });
 
+// How a model picks its next token belongs to the model entry, not to a chat:
+// the model dialog is the one place that writes it, every one of its five fields
+// may stay empty — an empty field sends NOTHING, so the server keeps its own
+// default — and a block whose fields are all empty is not written at all. The
+// chat settings dialog holds none of it.
+test('the sampling of a model: five fields, each of them optional', async ({ page }) => {
+  await page.goto('/');
+  const openModelDialog = async () => {
+    await page.getByTestId('model-chip').click();
+    await page
+      .getByTestId('model-option-row')
+      .filter({ hasText: 'mock model' })
+      .first()
+      .getByTestId('model-edit')
+      .click();
+    await expect(page.getByTestId('model-dialog')).toBeVisible();
+  };
+  const entry = async (): Promise<Record<string, unknown>> => {
+    const cfg = (await (await fetch(`${API}/config`)).json()) as {
+      llmModels: Record<string, Record<string, unknown>>;
+    };
+    return cfg.llmModels['mock model'];
+  };
+  const fields = ['temperature', 'topp', 'topk', 'minp', 'reppen'];
+
+  // The mock entry carries no sampling block, so every field starts empty.
+  await openModelDialog();
+  for (const f of fields) {
+    await expect(page.getByTestId(`model-${f}-input`)).toHaveValue('');
+  }
+  await page.getByTestId('model-temperature-input').fill('0.9');
+  await page.getByTestId('model-topp-input').fill('0.9');
+  await page.getByTestId('model-topk-input').fill('40');
+  await page.getByTestId('model-minp-input').fill('0.05');
+  await page.getByTestId('model-reppen-input').fill('1.1');
+  await page.getByTestId('model-save').click();
+  await expect(page.getByTestId('model-dialog')).toBeHidden();
+  expect(await entry()).toMatchObject({
+    sampling: { temperature: 0.9, topP: 0.9, topK: 40, minP: 0.05, repetitionPenalty: 1.1 },
+  });
+
+  // Re-opened, the dialog shows what the entry holds — and emptying one field is
+  // a real edit that takes it out of the block.
+  await openModelDialog();
+  await expect(page.getByTestId('model-temperature-input')).toHaveValue('0.9');
+  await expect(page.getByTestId('model-minp-input')).toHaveValue('0.05');
+  await page.getByTestId('model-topk-input').fill('');
+  await page.getByTestId('model-save').click();
+  expect(await entry()).toMatchObject({
+    sampling: { temperature: 0.9, topP: 0.9, minP: 0.05, repetitionPenalty: 1.1 },
+  });
+
+  // All five empty — no block at all, so every provider default stands.
+  await openModelDialog();
+  for (const f of fields) await page.getByTestId(`model-${f}-input`).fill('');
+  await page.getByTestId('model-save').click();
+  expect(await entry()).not.toHaveProperty('sampling');
+
+  // The chat settings dialog is where the sampling used to live; nothing of it
+  // is left there.
+  await page.getByTestId('chat-dots').click();
+  await page.getByTestId('chat-settings').click();
+  await expect(page.getByTestId('chat-settings-dialog')).toBeVisible();
+  for (const old of ['chat-temp-input', 'chat-minp-input', 'chat-reppen-input']) {
+    await expect(page.getByTestId(old)).toHaveCount(0);
+  }
+});
+
 // The ID of a character is the name of its folder, and a chat names its
 // participants and the author of every line by that ID. So the ID the user types
 // when creating one is what the server must store, and renaming it afterwards

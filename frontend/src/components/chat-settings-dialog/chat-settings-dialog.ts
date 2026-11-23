@@ -4,11 +4,13 @@ import { formatTime, isEntityId, ENTITY_ID_RULE } from '../../services/helpers';
 import { UiStore } from '../../services/ui-store';
 
 // The "Chat settings" dialog: the chat's own name (the header title), the chat
-// ID with its own Rename, the per-chat sampling overrides sent to the provider
-// with every reply (temperature / min-p / repetition penalty) and the
-// system-prompt addition. An empty name = the chat is titled by its creation
-// date; an empty sampling field = the parameter is not overridden (the provider
-// default applies) and all three empty = the whole block is cleared server-side.
+// ID with its own Rename, the system-prompt addition and the picture style of
+// the conversation. An empty name = the chat is titled by its creation date.
+//
+// What the model is sent when it picks its next token is NOT here: sampling
+// belongs to the model entry (the model dialog), because a checkpoint is served
+// with parameters its own weights were tuned for and a chat has no business
+// overriding that per conversation.
 //
 // The ID is the name of the chat's folder (chats/<id>/, the home of its
 // pictures), so it is the one field with a rule of its own, exactly as in the
@@ -53,48 +55,6 @@ import { UiStore } from '../../services/ui-store';
         follow the new ID. A picture that is still being generated blocks the rename until it is
         done or cancelled — and Save alone does not rename anything.
       </div>
-      <label class="field">
-        <span>Temperature</span>
-        <input
-          class="grow"
-          type="number"
-          step="0.05"
-          min="0"
-          max="2"
-          placeholder="provider default"
-          data-testid="chat-temp-input"
-          [value]="temperature()"
-          (input)="setTemperature($event)"
-        />
-      </label>
-      <label class="field">
-        <span>Min-P</span>
-        <input
-          class="grow"
-          type="number"
-          step="0.01"
-          min="0"
-          max="1"
-          placeholder="provider default"
-          data-testid="chat-minp-input"
-          [value]="minP()"
-          (input)="setMinP($event)"
-        />
-      </label>
-      <label class="field">
-        <span>Repetition penalty</span>
-        <input
-          class="grow"
-          type="number"
-          step="0.05"
-          min="0"
-          max="2"
-          placeholder="provider default"
-          data-testid="chat-reppen-input"
-          [value]="repetitionPenalty()"
-          (input)="setRepetitionPenalty($event)"
-        />
-      </label>
       <label class="field col">
         <span>System prompt addition</span>
         <textarea
@@ -106,10 +66,6 @@ import { UiStore } from '../../services/ui-store';
           (input)="setSystemSuffix($event)"
         ></textarea>
       </label>
-      <div class="dialog-hint">
-        Leave a field empty to use the provider's default. The values are sent with every model call
-        of this chat (temperature, min_p, repetition_penalty).
-      </div>
       <label class="field col">
         <span>Picture style</span>
         <textarea
@@ -139,9 +95,6 @@ export class ChatSettingsDialog implements OnInit {
   private ui = inject(UiStore);
 
   readonly name = signal('');
-  readonly temperature = signal('');
-  readonly minP = signal('');
-  readonly repetitionPenalty = signal('');
   readonly systemSuffix = signal('');
   readonly stylePrompt = signal('');
   // The title an empty Name field stands for — the chat's creation date, shown
@@ -159,14 +112,10 @@ export class ChatSettingsDialog implements OnInit {
 
   ngOnInit(): void {
     const c = this.chatStore.chat();
-    const s = c?.sampling;
     this.name.set(c?.name ?? '');
     this.defaultTitle.set(c ? formatTime(c.createdAt) : 'the creation date');
     this.currentId.set(c?.id ?? '');
     this.idDraft.set(this.currentId());
-    this.temperature.set(s?.temperature !== undefined ? String(s.temperature) : '');
-    this.minP.set(s?.minP !== undefined ? String(s.minP) : '');
-    this.repetitionPenalty.set(s?.repetitionPenalty !== undefined ? String(s.repetitionPenalty) : '');
     this.systemSuffix.set(c?.systemSuffix ?? '');
     this.stylePrompt.set(c?.stylePrompt ?? '');
   }
@@ -205,15 +154,6 @@ export class ChatSettingsDialog implements OnInit {
     });
   }
 
-  setTemperature(e: Event): void {
-    this.temperature.set((e.target as HTMLInputElement).value);
-  }
-  setMinP(e: Event): void {
-    this.minP.set((e.target as HTMLInputElement).value);
-  }
-  setRepetitionPenalty(e: Event): void {
-    this.repetitionPenalty.set((e.target as HTMLInputElement).value);
-  }
   setSystemSuffix(e: Event): void {
     this.systemSuffix.set((e.target as HTMLTextAreaElement).value);
   }
@@ -221,25 +161,9 @@ export class ChatSettingsDialog implements OnInit {
     this.stylePrompt.set((e.target as HTMLTextAreaElement).value);
   }
 
-  // Parses one field: empty -> undefined, garbage -> null (an error).
-  private parse(v: string): number | undefined | null {
-    const t = v.trim();
-    if (!t) return undefined;
-    const n = Number(t);
-    return Number.isFinite(n) ? n : null;
-  }
-
   save(): void {
-    const temp = this.parse(this.temperature());
-    const minP = this.parse(this.minP());
-    const rep = this.parse(this.repetitionPenalty());
-    if (temp === null || minP === null || rep === null) {
-      this.ui.error.set('The sampling parameters must be numbers');
-      return;
-    }
     this.chatStore.saveChatSettings({
       name: this.name(),
-      sampling: { temperature: temp, minP: minP, repetitionPenalty: rep },
       systemSuffix: this.systemSuffix(),
       stylePrompt: this.stylePrompt(),
     });

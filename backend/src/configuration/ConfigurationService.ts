@@ -6,6 +6,7 @@ import { Config } from "./Config";
 import { ImageGenerator } from "./ImageGenerator";
 import { LlmModel } from "./LlmModel";
 import { Model } from "./Model";
+import { ModelSampling } from "./Sampling";
 import { DEFAULT_PICTURE_LANGUAGE, normalizePictureLanguage } from "./PictureLanguage";
 import { PathHelper } from "../shared/PathHelper";
 
@@ -212,6 +213,7 @@ export class ConfigurationService {
       // A level outside the model's list (or not a string) is treated as off.
       const reasoning =
         typeof v.reasoning === "string" && levels.includes(v.reasoning) ? v.reasoning : false;
+      const sampling = ConfigurationService.normalizeSampling(v.sampling);
       result[name] = {
         id: typeof v.id === "string" ? v.id : "",
         baseUrl: typeof v.baseUrl === "string" ? v.baseUrl : "",
@@ -221,9 +223,27 @@ export class ConfigurationService {
         supportsImages: typeof v.supportsImages === "boolean" ? v.supportsImages : false,
         reasoning,
         reasoningLevels: levels,
+        ...(sampling ? { sampling } : {}),
       };
     }
     return Object.keys(result).length > 0 ? result : def.llmModels;
+  }
+
+  // The sampling block of one model: a finite number survives, anything else
+  // (a string, NaN, an absent field) does not, and a block that ends up saying
+  // nothing is removed entirely. An absent field is the thing that tells the
+  // provider to keep its own default, so an empty block must never be written
+  // and no value is ever corrected here — a number the user typed in the config
+  // by hand is sent as he wrote it, however the provider reads it.
+  private static normalizeSampling(raw: unknown): ModelSampling | undefined {
+    if (!raw || typeof raw !== "object") return undefined;
+    const given = raw as Record<string, unknown>;
+    const out: ModelSampling = {};
+    for (const key of ["temperature", "topP", "topK", "minP", "repetitionPenalty"] as const) {
+      const value = given[key];
+      if (typeof value === "number" && Number.isFinite(value)) out[key] = value;
+    }
+    return Object.keys(out).length > 0 ? out : undefined;
   }
 
   // The LoRA list of a ComfyUI generator: a name survives, junk does not. A name

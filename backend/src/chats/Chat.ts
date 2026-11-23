@@ -1,13 +1,5 @@
 import { ChatMessage } from "./ChatMessage";
 
-// Per-chat sampling overrides for the provider request. A field left
-// undefined is not sent at all — the provider applies its own default.
-export type ChatSampling = {
-  temperature?: number;
-  minP?: number;
-  repetitionPenalty?: number;
-};
-
 export type Chat = {
   id: string;
   // The chat's own name as the user typed it (the header title). Absent — the
@@ -28,8 +20,9 @@ export type Chat = {
   // the model the app talks with and Config.visionModel the one that looks at
   // pictures (Config.imagePromptModel writes the picture prompts). A chat that
   // still carries its old per-chat pick loses it on the next read
-  // (ChatsService.normalize).
-  sampling?: ChatSampling; // per-chat sampling overrides (absent fields = provider default)
+  // (ChatsService.normalize). Its sampling belongs to the model entry too
+  // (LlmModel.sampling) — a model is served with parameters its own weights were
+  // tuned for, so the same number is not a good number on two checkpoints.
   // A free-text addition appended to the system prompt of every reply in
   // this chat (the user's extra instructions — style, quirks, etc.).
   systemSuffix?: string;

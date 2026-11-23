@@ -73,8 +73,8 @@ import { PictureLibraryStore } from '../services/picture-library-store';
         </div>
       }
 
-      <!-- The "Chat settings" dialog: the per-chat sampling overrides
-           (temperature / min-p / repetition penalty). -->
+      <!-- The "Chat settings" dialog: the chat's name, the system-prompt
+           addition and the picture style of the conversation. -->
       @if (chatStore.chatSettingsOpen()) {
         <div class="modal-backdrop">
           <div class="modal modal-chat-settings">

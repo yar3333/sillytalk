@@ -351,18 +351,48 @@ describe("tunePrompt", () => {
       .mockResolvedValue(jsonRes({ choices: [{ message: { content: "a cat on a windowsill, morning light" } }] }));
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    const out = await textGenerationService.tunePrompt(model, "кот на подоконнике", { temperature: 0.4 });
+    // The sampling belongs to the model entry, so a call carries whatever this
+    // model was configured with — here all five fields at once.
+    const tuned: Model = {
+      ...model,
+      sampling: { temperature: 0.4, topP: 0.9, topK: 40, minP: 0.05, repetitionPenalty: 1.1 },
+    };
+    const out = await textGenerationService.tunePrompt(tuned, "кот на подоконнике");
     expect(out).toBe("a cat on a windowsill, morning light");
     const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
     const body = JSON.parse(init.body) as {
       messages: Array<{ role: string; content: string }>;
       temperature?: number;
+      top_p?: number;
+      top_k?: number;
+      min_p?: number;
+      repetition_penalty?: number;
     };
     expect(body.messages[0].content).toContain("image generation prompt");
     expect(body.messages[0].content).toContain("English");
     expect(body.messages[1].content).toBe("кот на подоконнике");
-    // the chat's sampling rides along like on every other call of the chat
+    // every field of the model's block rides along, in the provider's spelling
     expect(body.temperature).toBe(0.4);
+    expect(body.top_p).toBe(0.9);
+    expect(body.top_k).toBe(40);
+    expect(body.min_p).toBe(0.05);
+    expect(body.repetition_penalty).toBe(1.1);
+  });
+
+  it("sends no sampling field at all for a model whose fields are empty", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(jsonRes({ choices: [{ message: { content: "ok" } }] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await textGenerationService.tunePrompt(model, "кот");
+    const [, init] = fetchMock.mock.calls[0] as unknown as [{}, { body: string }];
+    const body = JSON.parse(init.body) as Record<string, unknown>;
+    // An empty field means "the provider's own default", which only holds when
+    // the key is absent from the request.
+    for (const key of ["temperature", "top_p", "top_k", "min_p", "repetition_penalty"]) {
+      expect(body).not.toHaveProperty(key);
+    }
   });
 });
 

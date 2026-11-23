@@ -198,10 +198,11 @@ describe("the format guards", () => {
   });
 });
 
-// The models are global settings now (config.chatModel / config.visionModel):
-// a chat that still carries the retired per-chat picks loses them on the first
-// read, and the cleanup is persisted — there is no second copy of a setting.
-describe("the retired per-chat model picks", () => {
+// The models are global settings and their sampling belongs to the model entry,
+// so a chat that still carries the retired per-chat picks or a per-chat sampling
+// block loses them on the first read, and the cleanup is persisted — there is no
+// second copy of a setting.
+describe("the retired per-chat model picks and sampling", () => {
   it("are stripped from a chat that still carries them, and the cleanup is saved", () => {
     writeChat("c1", {
       id: "c1",
@@ -209,14 +210,17 @@ describe("the retired per-chat model picks", () => {
       userId: "me",
       modelId: "m1",
       visionModelId: "m2",
+      sampling: { temperature: 0.7, minP: 0.05 },
       messages: [],
     });
     const chat = chats.get("c1");
     expect(chat).not.toHaveProperty("modelId");
     expect(chat).not.toHaveProperty("visionModelId");
+    expect(chat).not.toHaveProperty("sampling");
     // a fresh service on the same root (a restart) sees the cleaned row too
     expect(peek("c1")).not.toHaveProperty("modelId");
     expect(peek("c1")).not.toHaveProperty("visionModelId");
+    expect(peek("c1")).not.toHaveProperty("sampling");
   });
 });
 
@@ -306,7 +310,6 @@ describe("clone", () => {
     const chat = chats.create(["alice", "bob"], "me");
     const configured = chats.get(chat.id)!;
     configured.name = "Road trip";
-    configured.sampling = { temperature: 0.7 };
     configured.systemSuffix = "terse answers";
     chats.save(configured);
     const withLines = chats.get(chat.id)!;
@@ -328,7 +331,6 @@ describe("clone", () => {
     expect(copy.createdAt).toBeGreaterThanOrEqual(chat.createdAt);
     expect(copy.characterIds).toEqual(["alice", "bob"]);
     expect(copy.userId).toBe("me");
-    expect(copy.sampling).toEqual({ temperature: 0.7 });
     expect(copy.systemSuffix).toBe("terse answers");
     expect(copy.messages.map((m) => m.text)).toEqual(["hi", "hey"]);
     expect(copy.messages.map((m) => m.role)).toEqual(["user", "assistant"]);

@@ -569,9 +569,14 @@ frontend/              Angular app
                        Delete/Clone)
     user-dialog/       persona edit dialog (name, description, avatar, Delete/Clone)
     model-dialog/      model edit dialog (llmModels entry fields, the reasoning
-                       pick + levels, Delete/Clone)
-    chat-settings-dialog/ the per-chat name + the ID field with its Rename button + the per-chat overrides: temperature /
-                       min-P / repetition penalty + the system-prompt addition
+                       pick + levels, the SAMPLING block of this model —
+                       temperature / top-p / top-k / min-p / repetition penalty,
+                       each with its own hint and each allowed to stay empty,
+                       Delete/Clone)
+    chat-settings-dialog/ the per-chat name + the ID field with its Rename button + the
+                       system-prompt addition + the picture style (no sampling:
+                       how a model reads is a property of the model, not of a
+                       conversation)
     image-lightbox/    a picture enlarged over a dark backdrop (ImageStore
                        .lightbox carries the media URL)
     settings/          settings modal (listen address / the picture prompt model / image generation)
@@ -702,7 +707,20 @@ or through the in-app **Settings** dialog. Paths may use `~` (resolved by `expan
       "contextSize": 200000,
       "supportsImages": true,
       "reasoning": false,               // current reasoning level, false = off
-      "reasoningLevels": ["low", "medium", "high", "xhigh", "max"]  // optional
+      "reasoningLevels": ["low", "medium", "high", "xhigh", "max"],  // optional
+      // How THIS model picks its next token (the model dialog's "Sampling").
+      // Every field is optional and an absent one is NOT SENT, so the provider
+      // keeps its own default — an empty field in the dialog means exactly this,
+      // never 0. The block follows whichever role actually runs: the chat model
+      // replies with it, the vision model captions with it, the picture-prompt
+      // model plans with it. A number written here by hand is sent as written.
+      "sampling": {
+        "temperature": 0.9,
+        "topP": 0.9,          // nucleus: keep words until their probability sums to this
+        "topK": 40,           // keep this many best candidates (llama.cpp/vLLM/OpenRouter)
+        "minP": 0.05,         // drop a word below this fraction of the best one
+        "repetitionPenalty": 1.1
+      }
     }
   },
   // The models are settings of the WHOLE APP, not of a chat (the header's model
@@ -1285,7 +1303,8 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   (`ReplyService.storePictureFor`): the persona's folder for the user's line, the character's for
   hers, the chat's for a neutral card — so the new id never contradicts the line that shows it.
 - **The picture editor's LLM helpers** (`/api/image`, all taking `chatId`; the model work is
-  `TextGenerationService`, the orchestration `ReplyService`, and all of it uses the chat's sampling):
+  `TextGenerationService`, the orchestration `ReplyService`, and each call carrying the sampling of
+  the model that actually runs):
   (the catalog the "from a file" pick fills is the picture browser's
   `GET /api/pictures` — one list, with the row each picture carries);
   `POST /api/image/describe-from-chat` `{ chatId, messageId? }` → `{ description }`, stage one: what
@@ -1376,7 +1395,7 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   the default person is created with id `default` (previously `me`). The active persona's
   `description` (when non-empty) is appended to the system prompt by
   `systemPromptFor(character, person, …)` so the model knows who it is talking to. A chat also
-  carries its own `sampling` overrides and a `systemSuffix` — see "Per-chat settings" below.
+  carries a `systemSuffix` — see "Per-chat settings" below.
 - **An ID is a folder name, and it is the user's to choose.** The ID of a character or a persona is
   the primary key of its catalogs row and the name of its picture folder (`characters/<id>/`,
   `users/<id>/`) at once, so it is not a label the app slaps on
@@ -1560,7 +1579,7 @@ that needs the databases resolves them here — the one place allowed to.
   `"<characters> / <persona> · <last message date>"` (the date is dropped for an empty chat), bound
   as the row's `title` attribute. "Clone chat" (the chat-actions ⋮) calls
   `POST /api/chats/:id/clone` → `{ chat }` (`ChatsService.clone`): a new id, a copy of every message,
-  the participants / persona / model / sampling / systemSuffix, the name suffixed " (copy)" (a
+  the participants / persona / systemSuffix / stylePrompt, the name suffixed " (copy)" (a
   nameless copy stays nameless), and the chat's own picture folder copied into the copy's folder
   with every id under it repointed — in the lines that show them, in the rows' `refs` and with a
   picture row of its own per copied file — so the
@@ -1573,20 +1592,34 @@ that needs the databases resolves them here — the one place allowed to.
   chat, and a pending picture in the copy would poll forever). The frontend opens the copy and refreshes
   the chat list (`ChatStore.cloneCurrentChat`).
 - **Per-chat settings** (the chat-actions ⋮ → "Chat settings…", `chat-settings-dialog`): the chat's
-  **name** plus the
-  sampling overrides of THIS chat — temperature / min-P / repetition penalty — plus a free-text
-  **system-prompt addition** plus the chat's **picture style** (one look for every picture of the
-  conversation, `chat-style-input`). An empty sampling field means "do not override" (the provider default); all
-  three sampling fields empty clear the whole block server-side. Stored on the chat as
-  `Chat.sampling = { temperature?, minP?, repetitionPenalty? }`, `Chat.systemSuffix`,
-  `Chat.stylePrompt` and
-  `Chat.name`, saved with
-  `PATCH /api/chats/:id` (the only place they are set — `POST /api/chats` takes just the
-  participants and the persona; the models are not a field of a chat at all). `ReplyService.appendAssistantReply`
-  appends `systemSuffix` to the system prompt of every reply in the chat, and `sampling` goes into
-  every model call of the chat — the replies and the 📷 picture-planning call alike — as
-  `temperature` / `min_p` / `repetition_penalty`, each sent only when it is set (`requestCompletion`
-  in `TextGenerationService`).
+  **name**, a free-text **system-prompt addition** and the chat's **picture style** (one look for
+  every picture of the conversation, `chat-style-input`). Stored on the chat as `Chat.systemSuffix`,
+  `Chat.stylePrompt` and `Chat.name`, saved with `PATCH /api/chats/:id` (the only place they are set
+  — `POST /api/chats` takes just the participants and the persona; the models are not a field of a
+  chat at all, and neither is sampling). `ReplyService.appendAssistantReply` appends `systemSuffix`
+  to the system prompt of every reply in the chat.
+  **Sampling is NOT here any more** — see the model-entry bullet below: a chat that still carries a
+  stored `sampling` block loses it on the first read (`ChatsService.normalize`).
+- **Sampling belongs to the model entry, not to a chat (`LlmModel.sampling`).** How a provider is to
+  pick the next token is a property of the model being served: a checkpoint is tuned with parameters
+  of its own, and the number that reads well on one is slop on another — so a per-conversation
+  override was a second, chat-shaped copy of a decision that is really the model's. The block is
+  `{ temperature?, topP?, topK?, minP?, repetitionPenalty? }` (`configuration/Sampling.ts`), written
+  by the **model dialog** ("Sampling" section, `model-temperature-input` / `model-topp-input` /
+  `model-topk-input` / `model-minp-input` / `model-reppen-input`) and read by exactly one place,
+  `TextGenerationService.requestCompletion`, which turns it into the OpenAI-compatible payload —
+  `temperature` / `top_p` / `top_k` / `min_p` / `repetition_penalty`, each sent **only when the field
+  is set**. Because the call reads the MODEL it was handed, the block follows whichever role actually
+  runs: the chat model writes replies, the vision model writes captions, the picture-prompt model
+  plans pictures, and each carries its own. **An empty field is not 0 and not a guess — it is the
+  decision to send nothing**, so the server keeps its own default; that is why the dialog opens every
+  field empty, why all five empty omit the whole block, and why `ConfigurationService
+  .normalizeSampling` keeps a hand-written number exactly as written (top_k 0 means "no limit" on one
+  backend and "take the top word" on another — correcting it would be a guess about somebody's
+  server) and drops only junk. Every field of the dialog carries its own printed hint rather than a
+  `?`: these five numbers are meaningless to anyone who has not read what each one cuts.
+  `Chat.sampling` is a retired field — `ChatsService.normalize` strips it from a stored blob like the
+  per-chat model picks before it.
 - **Entity edit dialogs** (character-dialog / user-dialog / model-dialog): one per item, opened from
   the ✎ icons / "+ New" buttons above. They carry **Save/Cancel**, **Delete** (a confirm; only in
   edit mode) and **Clone** (only in edit mode). Models are saved through the config (a rename
@@ -2140,11 +2173,17 @@ that needs the databases resolves them here — the one place allowed to.
   carry the ID field — `char-id-input` with `char-rename` and `user-id-input` with `user-rename`
   (both rename buttons disabled until the field says another folder name); the
   model dialog also
-  has `model-reasoning-select` + `model-reasoning-levels-input`. The per-chat dialog:
+  has `model-reasoning-select` + `model-reasoning-levels-input` and the sampling
+  block of the model — `model-temperature-input` / `model-topp-input` /
+  `model-topk-input` / `model-minp-input` / `model-reppen-input`, every one of
+  them allowed to stay empty (empty = nothing is sent, the provider default
+  applies; all five empty = the entry carries no `sampling` at all). The per-chat dialog:
   `chat-settings-dialog` + `chat-name-input` + the ID field `chat-id-input` with
   `chat-rename` (disabled until the field says another folder name — the chat's
   ID is its folder name, a new one is born `yyyy-mm-dd_hh-mm-ss`) +
-  `chat-temp-input`/`chat-minp-input`/`chat-reppen-input`/
   `chat-sysprompt-input`/`chat-style-input` (the picture style of the whole chat) +
-  `chat-settings-save`.
+  `chat-settings-save`. It holds no sampling fields — they moved to the model
+  dialog, and `app.spec.ts` asserts both halves of that: the five fields round-trip
+  into the config entry and disappear from it when emptied, and the old
+  `chat-temp-input`/`chat-minp-input`/`chat-reppen-input` are gone.
 - The suite captures screenshots into `e2e/screenshots/`.

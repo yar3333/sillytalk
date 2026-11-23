@@ -152,7 +152,6 @@ export class ChatsService {
       createdAt: chat.createdAt,
       characterIds: chat.characterIds,
       userId: chat.userId,
-      sampling: chat.sampling,
       systemSuffix: chat.systemSuffix,
       stylePrompt: chat.stylePrompt,
     });
@@ -430,7 +429,7 @@ export class ChatsService {
 
   // Duplicates a chat: a new id, a copy of every message and a copy of the
   // chat's files/ folder with its picture rows. The participants, the persona,
-  // the model, the sampling overrides and the system-prompt addition are copied;
+  // the system-prompt addition and the picture style are copied;
   // the name gets a " (copy)" suffix (a nameless copy is titled by its own
   // creation date, exactly like the original).
   //
@@ -449,7 +448,6 @@ export class ChatsService {
       createdAt: Date.now(),
       characterIds: [...source.characterIds],
       userId: source.userId,
-      ...(source.sampling ? { sampling: { ...source.sampling } } : {}),
       ...(source.systemSuffix ? { systemSuffix: source.systemSuffix } : {}),
       ...(source.stylePrompt ? { stylePrompt: source.stylePrompt } : {}),
       messages: [],
@@ -1186,34 +1184,17 @@ export class ChatsService {
       chat.userId = "";
       dirty = true;
     }
-    // The per-chat model picks are retired fields (the models are global
-    // settings now): a stored blob that still carries them loses them on the
-    // first read, so a hand-edited database cannot keep a shadow of a setting
-    // that no longer exists.
+    // The per-chat model picks and the per-chat sampling are retired fields: the
+    // models are global settings and their sampling belongs to the model entry
+    // (LlmModel.sampling). A stored blob that still carries them loses them on
+    // the first read, so a hand-edited database cannot keep a shadow of a
+    // setting that no longer exists.
     const legacy = chat as Record<string, unknown>;
-    if ("modelId" in legacy || "visionModelId" in legacy) {
+    if ("modelId" in legacy || "visionModelId" in legacy || "sampling" in legacy) {
       delete legacy.modelId;
       delete legacy.visionModelId;
+      delete legacy.sampling;
       dirty = true;
-    }
-    // sampling: keep only the valid numeric fields (an all-empty object is
-    // dropped entirely so the blob stays small).
-    if (chat.sampling !== undefined) {
-      const s = chat.sampling as Record<string, unknown>;
-      const clean: Record<string, number> = {};
-      for (const [key, range] of [
-        ["temperature", [0, 2]],
-        ["minP", [0, 1]],
-        ["repetitionPenalty", [0, 2]],
-      ] as const) {
-        const v = s[key];
-        if (typeof v === "number" && Number.isFinite(v) && v >= range[0] && v <= range[1]) {
-          clean[key] = v;
-        } else {
-          dirty = true;
-        }
-      }
-      chat.sampling = Object.keys(clean).length > 0 ? (clean as Chat["sampling"]) : undefined;
     }
     // systemSuffix: a trimmed non-empty string or nothing. Emptying it in the
     // dialog is flagged dirty so the cleanup is persisted.

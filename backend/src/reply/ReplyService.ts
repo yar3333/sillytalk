@@ -223,7 +223,6 @@ export class ReplyService {
         "If you have absolutely nothing to add to the conversation, output exactly [SILENT] instead of a reply. " +
         "Keep the reply short: 2–5 sentences, one paragraph.",
       signal,
-      chat.sampling,
     );
 
     // The character may have stayed silent (exactly [SILENT]) — no chat message.
@@ -493,7 +492,6 @@ export class ReplyService {
         maxRefs,
         omittedPictures: material.omitted,
         ...(chat.stylePrompt ? { style: chat.stylePrompt } : {}),
-        sampling: chat.sampling,
       });
       if (!plan) {
         giveUp("The model did not describe a picture to draw");
@@ -589,7 +587,6 @@ export class ReplyService {
         omittedPictures: material.omitted,
         language: this.resolvePictureLanguage(),
         ...(chat.stylePrompt ? { style: chat.stylePrompt } : {}),
-        sampling: chat.sampling,
       });
       if (!description) {
         giveUp("The model did not describe a picture to draw");
@@ -611,7 +608,6 @@ export class ReplyService {
         maxRefs,
         omittedPictures: material.omitted,
         ...(chat.stylePrompt ? { style: chat.stylePrompt } : {}),
-        sampling: chat.sampling,
       });
       if (!plan) {
         giveUp("The model did not describe a picture to draw");
@@ -1231,7 +1227,6 @@ export class ReplyService {
       omittedPictures: material.omitted,
       language: this.resolvePictureLanguage(),
       ...(chat.stylePrompt ? { style: chat.stylePrompt } : {}),
-      sampling: chat.sampling,
     });
   }
 
@@ -1264,7 +1259,6 @@ export class ReplyService {
       maxRefs,
       omittedPictures: material.omitted,
       ...(chat.stylePrompt ? { style: chat.stylePrompt } : {}),
-      sampling: chat.sampling,
     });
     if (!plan) return null;
     const done = await this.finishPlan(chat, plan, material);
@@ -1272,14 +1266,15 @@ export class ReplyService {
   }
 
   // Rewrites a typed prompt for the generator — English + tuned (the "Make it
-  // English" button). The chat model does the work with the chat's sampling;
-  // null when the chat is gone (a model error propagates to the route).
+  // English" button). The chat model does the work with the sampling of its own
+  // model entry; null when the chat is gone (a model error propagates to the
+  // route).
   async tunePicturePrompt(chatId: string, prompt: string): Promise<string | null> {
     const chat = this.chats.get(chatId);
     if (!chat) return null;
     const model = this.resolveChatModel();
     if (!model) throw new Error("No model configured for the chat");
-    return (await this.textGeneration.tunePrompt(model, prompt, chat.sampling)).trim();
+    return (await this.textGeneration.tunePrompt(model, prompt)).trim();
   }
 
   // Describes a picture with the chat's vision model — the "Describe the
@@ -1299,7 +1294,6 @@ export class ReplyService {
       await this.textGeneration.describePicture(
         model,
         { ...input, language: this.resolvePictureLanguage() },
-        chat.sampling,
       )
     ).trim();
   }
@@ -1340,7 +1334,6 @@ export class ReplyService {
         await this.textGeneration.describePicture(
           model,
           { imageId: image, language: this.resolvePictureLanguage() },
-          chat.sampling,
         )
       ).trim();
     } catch {

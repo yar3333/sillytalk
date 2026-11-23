@@ -1,6 +1,5 @@
 import fs from "fs";
 import path from "path";
-import { ChatSampling } from "../chats/Chat";
 import { ChatMessage, isImageMessage } from "../chats/ChatMessage";
 import { Config } from "../configuration/Config";
 import { Model } from "../configuration/Model";
@@ -383,7 +382,7 @@ export class TextGenerationService {
   // button of the picture editor. Unlike translatePrompt this is not a literal
   // translation: the model may reorder and enrich the text (subject first, then
   // setting, light and style) while keeping everything the user asked for.
-  async tunePrompt(model: Model, text: string, sampling?: ChatSampling): Promise<string> {
+  async tunePrompt(model: Model, text: string): Promise<string> {
     return this.requestCompletion(
       model,
       [
@@ -401,7 +400,6 @@ export class TextGenerationService {
         { role: "user", content: text },
       ],
       undefined,
-      sampling,
     );
   }
 
@@ -420,7 +418,6 @@ export class TextGenerationService {
   async describePicture(
     model: Model,
     input: { imageId?: string; dataUrl?: string; language?: string },
-    sampling?: ChatSampling,
   ): Promise<string> {
     if (!model.supportsImages) {
       throw new Error("The model cannot see pictures — choose a model that supports images");
@@ -455,7 +452,6 @@ export class TextGenerationService {
         },
       ],
       undefined,
-      sampling,
     );
     return answer.trim();
   }
@@ -494,7 +490,6 @@ export class TextGenerationService {
       // The look every picture of this chat shares (the chat's style setting).
       style?: string;
       signal?: AbortSignal;
-      sampling?: ChatSampling;
     },
   ): Promise<string> {
     const language = input.language?.trim() || "English";
@@ -526,7 +521,6 @@ export class TextGenerationService {
         },
       ],
       input.signal,
-      input.sampling,
     );
     return answer.trim().replace(/^["“]+|["”]+$/g, "");
   }
@@ -571,7 +565,6 @@ export class TextGenerationService {
       omittedPictures?: number;
       style?: string;
       signal?: AbortSignal;
-      sampling?: ChatSampling;
     },
   ): Promise<ImagePromptPlan | null> {
     const castRefs = new Set((input.cast ?? []).map((c) => c.ref));
@@ -620,7 +613,6 @@ export class TextGenerationService {
         },
       ],
       input.signal,
-      input.sampling,
     );
 
     const plan = TextGenerationService.parseJsonPlan(answer);
@@ -743,7 +735,6 @@ export class TextGenerationService {
     history: ChatMessage[],
     closingNote?: string,
     signal?: AbortSignal,
-    sampling?: ChatSampling,
   ): Promise<string> {
     const toMessages = (withImages: boolean): MessageParam[] => {
       const msgs: MessageParam[] = [
@@ -775,7 +766,7 @@ export class TextGenerationService {
     };
 
     try {
-      return await this.requestCompletion(model, toMessages(true), signal, sampling);
+      return await this.requestCompletion(model, toMessages(true), signal);
     } catch (err) {
       // A model without an mmproj rejects the image — retry with text only so
       // the dialogue is not aborted with a 500 error. A cancel (an aborted
@@ -783,7 +774,7 @@ export class TextGenerationService {
       const sentImages = history.some((m) => (m.images?.length ?? 0) > 0);
       if (!sentImages || !TextGenerationService.IMAGE_REJECT_RE.test((err as Error).message)) throw err;
       try {
-        const reply = await this.requestCompletion(model, toMessages(false), signal, sampling);
+        const reply = await this.requestCompletion(model, toMessages(false), signal);
         return `⚠️ The model rejected the image — the message was sent without it.\n\n${reply}`;
       } catch {
         throw err;
@@ -797,7 +788,6 @@ export class TextGenerationService {
     model: Model,
     messages: MessageParam[],
     signal?: AbortSignal,
-    sampling?: ChatSampling,
   ): Promise<string> {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     const apiKey = this.configuration.resolveApiKey(model);
@@ -823,11 +813,15 @@ export class TextGenerationService {
     } else {
       payload.chat_template_kwargs = { enable_thinking: false };
     }
-    // The per-chat sampling overrides (Chat.sampling): a field left undefined
-    // is not sent — the provider applies its own default. Sent in the common
-    // OpenAI-compatible spellings (temperature / min_p / repetition_penalty —
-    // the last one is understood by llama.cpp, vLLM, Aphrodite and OpenRouter).
+    // How this model is to pick its next token (LlmModel.sampling — the model
+    // dialog). A field the user left empty is not sent at all, so the provider
+    // keeps its own default. The names are the OpenAI-compatible spellings;
+    // top_k and min_p are not OpenAI's own fields but llama.cpp, vLLM, Aphrodite
+    // and OpenRouter read them, and a provider ignores a field it does not know.
+    const sampling = model.sampling;
     if (sampling?.temperature !== undefined) payload.temperature = sampling.temperature;
+    if (sampling?.topP !== undefined) payload.top_p = sampling.topP;
+    if (sampling?.topK !== undefined) payload.top_k = sampling.topK;
     if (sampling?.minP !== undefined) payload.min_p = sampling.minP;
     if (sampling?.repetitionPenalty !== undefined) payload.repetition_penalty = sampling.repetitionPenalty;
 

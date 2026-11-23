@@ -52,6 +52,27 @@ textarea:focus {
   gap: 10px;
 }
 
+/* the sampling block: a heading, then the hint of every knob right under it.
+   The hints ARE the feature — these five numbers mean nothing to anyone who
+   has not read what each one cuts, so they are printed, not hidden behind a ?. */
+.section {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+.hint {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  /* the hint belongs to the field above it, not to the next one */
+  margin-top: -6px;
+}
+.hint b {
+  color: var(--text);
+}
+
 .chk {
   display: inline-flex;
   align-items: center;

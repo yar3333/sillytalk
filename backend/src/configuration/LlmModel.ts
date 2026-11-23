@@ -1,3 +1,5 @@
+import { ModelSampling } from "./Sampling";
+
 // llmModels entry value: the provider connection. The object key is the
 // model's name inside the app (displayed); the id field is the identifier
 // sent to the provider in the request.
@@ -16,4 +18,11 @@ export type LlmModel = {
   // The possible reasoning levels; absent — the default set
   // (low, medium, high, xhigh, max).
   reasoningLevels?: string[];
+  // How this model is to pick its next token (see configuration/Sampling.ts).
+  // A field left out is not sent, so the provider keeps its own default — which
+  // is why the dialog shows every one of them empty rather than a guessed
+  // number. It belongs to the model and not to a chat: whichever model a call
+  // actually resolves to (the chat model, the one that sees pictures, the one
+  // that plans them) carries its own block into that call.
+  sampling?: ModelSampling;
 };

@@ -61,8 +61,8 @@ export class ChatStore {
   // "Regenerating…" state in its bubble; the bottom typing row is hidden).
   readonly regenerating = signal(false);
 
-  // The "Chat settings" dialog (the sampling overrides: temperature / min-p /
-  // repetition penalty).
+  // The "Chat settings" dialog (the chat's name, the system-prompt addition and
+  // the picture style — no sampling: that belongs to the model entry).
   readonly chatSettingsOpen = signal(false);
 
   // ---- derived (chat + catalog from ConfigStore) ----
@@ -707,7 +707,7 @@ export class ChatStore {
     this.newChatOpen.set(false);
   }
 
-  // ---- chat settings (sampling overrides) ----
+  // ---- chat settings (name / system addition / picture style) ----
   openChatSettings(): void {
     this.chatSettingsOpen.set(true);
   }
@@ -717,13 +717,12 @@ export class ChatStore {
   }
 
   // Saves the chat settings of the current chat (a PATCH): its name, the
-  // sampling overrides and the system-prompt addition. An empty name makes the
-  // chat nameless again (its creation date titles it), a fully empty sampling
-  // object and an empty systemSuffix remove the blocks server-side (the provider
-  // defaults apply / nothing is appended).
+  // system-prompt addition and the picture style. An empty name makes the chat
+  // nameless again (its creation date titles it) and an empty systemSuffix or
+  // stylePrompt removes that block server-side. Sampling is not here — it
+  // belongs to the model entry (the model dialog).
   saveChatSettings(settings: {
     name: string;
-    sampling: { temperature?: number; minP?: number; repetitionPenalty?: number };
     systemSuffix: string;
     stylePrompt?: string;
   }): void {
@@ -732,7 +731,6 @@ export class ChatStore {
     this.api
       .patchChat(c.id, {
         name: settings.name.trim(),
-        sampling: settings.sampling,
         systemSuffix: settings.systemSuffix,
         ...(settings.stylePrompt !== undefined ? { stylePrompt: settings.stylePrompt } : {}),
       })

@@ -113,6 +113,39 @@ describe("the reasoning config fields", () => {
   });
 });
 
+describe("the sampling of a model", () => {
+  it("keeps the five numbers the entry names", () => {
+    const cfg = loadConfigWith(
+      base({
+        sampling: { temperature: 0.8, topP: 0.9, topK: 40, minP: 0.05, repetitionPenalty: 1.1 },
+      }),
+    );
+    expect(cfg.llmModels["m"].sampling).toEqual({
+      temperature: 0.8,
+      topP: 0.9,
+      topK: 40,
+      minP: 0.05,
+      repetitionPenalty: 1.1,
+    });
+  });
+
+  it("keeps a number as it was written, even one the providers read differently", () => {
+    // top_k 0 means "no limit" on one backend and "take the top word" on
+    // another; correcting it here would be a guess about somebody's server.
+    const cfg = loadConfigWith(base({ sampling: { temperature: 3, topK: 0 } }));
+    expect(cfg.llmModels["m"].sampling).toEqual({ temperature: 3, topK: 0 });
+  });
+
+  it("drops junk, and a block that ends up saying nothing is no block at all", () => {
+    // An absent field is the thing that tells the provider to keep its own
+    // default, so an empty sampling object must not be carried around.
+    const cfg = loadConfigWith(
+      base({ sampling: { temperature: "hot", minP: null, topP: {}, repetitionPenalty: true } }),
+    );
+    expect(cfg.llmModels["m"]).not.toHaveProperty("sampling");
+  });
+});
+
 describe("prepareLegacyConfig", () => {
   it("extracts the legacy characters and strips the dead fields", () => {
     const raw: Record<string, unknown> = {
