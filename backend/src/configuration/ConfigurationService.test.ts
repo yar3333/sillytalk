@@ -203,7 +203,7 @@ describe("the image generators of the config", () => {
     ]);
   });
 
-  it("keeps the orientation, the model file and the LoRAs a ComfyUI generator states", () => {
+  it("keeps the orientation, the model file, the steps and the LoRAs a ComfyUI generator states", () => {
     const [g] = gens([
       {
         kind: "comfyui",
@@ -211,6 +211,7 @@ describe("the image generators of the config", () => {
         model: "qwen-image-2512",
         orientation: "landscape",
         modelFile: " my-qwen-derivative.safetensors ",
+        steps: 8,
         loras: ["style-a.safetensors", { name: "style-b.safetensors", strength: 0.4 }],
         enabled: false,
       },
@@ -218,9 +219,17 @@ describe("the image generators of the config", () => {
     expect(g).toMatchObject({
       orientation: "landscape",
       modelFile: "my-qwen-derivative.safetensors",
+      steps: 8,
       loras: [{ name: "style-a.safetensors" }, { name: "style-b.safetensors", strength: 0.4 }],
       enabled: false,
     });
+  });
+
+  it("drops a step count that is not a positive whole number", () => {
+    for (const steps of [0, -4, 3.5, "8", null]) {
+      const [g] = gens([{ kind: "comfyui", url: "http://h:8188", model: "m", steps }]);
+      expect(g).not.toHaveProperty("steps", steps);
+    }
   });
 
   it("drops the size and the device of a ComfyUI entry — the plugin on the server decides both", () => {

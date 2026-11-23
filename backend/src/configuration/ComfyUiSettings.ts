@@ -26,6 +26,10 @@ export type ComfyUiSettings = {
   modelFile?: string;
   // LoRAs from the server's models/loras/, applied in this order.
   loras?: ComfyUiLora[];
+  // How many steps the picture is drawn with. Absent means the number the
+  // workflow's own sampler wires; the server validates the range it published
+  // and answers the job with the count it actually ran.
+  steps?: number;
   // The GPU is NOT configured here: the plugin puts every model loader of a run
   // on the card that has room for it at submit time, which is the only moment
   // that can know.

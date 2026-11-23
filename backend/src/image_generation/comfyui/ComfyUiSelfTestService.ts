@@ -423,6 +423,7 @@ export class ComfyUiSelfTestService {
   // proves the request was understood rather than ignored.
   private static usedOf(driver: ComfyUiDriver): string {
     const parts: string[] = [];
+    if (driver.lastSteps) parts.push(`${driver.lastSteps} steps`);
     if (driver.lastModelFile) parts.push(path.basename(driver.lastModelFile));
     for (const lora of driver.lastLoras) {
       parts.push(`${path.basename(lora.name)}@${lora.strength}`);

@@ -290,6 +290,9 @@ export class ConfigurationService {
           // both, from what its model was trained at and what is free now.
           orientation: isComfyUiOrientation(g.orientation) ? g.orientation : "square",
           ...(typeof g.modelFile === "string" && g.modelFile.trim() ? { modelFile: g.modelFile.trim() } : {}),
+          // Absent means "the workflow's own count" — the server answers with the
+          // one it used, and rejects a number outside the range it published.
+          ...(typeof g.steps === "number" && Number.isInteger(g.steps) && g.steps > 0 ? { steps: g.steps } : {}),
           ...(loras.length ? { loras } : {}),
           enabled,
         });

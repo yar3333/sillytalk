@@ -2975,8 +2975,9 @@ describe('Settings — a ComfyUI generator uses the files of its own server', ()
             },
           ],
         },
+        steps: { min: 4, max: 50, default: 25 },
       },
-      { code: 'plain-model', max_refs: 0 },
+      { code: 'plain-model', max_refs: 0, steps: { min: 8, max: 8, default: 8 } },
     ],
   };
   const fakeApi = {
@@ -3027,6 +3028,8 @@ describe('Settings — a ComfyUI generator uses the files of its own server', ()
     [...el.querySelectorAll<HTMLInputElement>('[data-testid=settings-comfy-lora]')];
   const whys = (el: HTMLElement): string[] =>
     [...el.querySelectorAll('[data-testid=settings-comfy-lora-why]')].map((d) => d.textContent?.trim() ?? '');
+  const stepsInput = (el: HTMLElement): HTMLInputElement =>
+    el.querySelector('[data-testid=settings-comfy-steps]') as HTMLInputElement;
 
   const base: ComfyUiSettings = {
     kind: 'comfyui',
@@ -3154,6 +3157,50 @@ describe('Settings — a ComfyUI generator uses the files of its own server', ()
     expect(pick(el, 'settings-comfy-file').value).toBe('my-qwen-derivative.safetensors');
     expect(ticks(el).map((c) => c.checked)).toEqual([false, true, false]);
     expect((el.querySelector('input[type=range]') as HTMLInputElement).value).toBe('0.6');
+  });
+
+  it('offers the step range its server published, with the workflow count as the empty field', async () => {
+    const { el } = await open(base);
+    const input = stepsInput(el);
+    // nothing is sent until the user asks for a count
+    expect(input.value).toBe('');
+    expect(input.min).toBe('4');
+    expect(input.max).toBe('50');
+    expect(input.placeholder).toBe("the workflow's own — 25");
+  });
+
+  it('saves the step count the user typed', async () => {
+    const { el, redraw } = await open(base);
+    const input = stepsInput(el);
+    input.value = '8';
+    input.dispatchEvent(new Event('input'));
+    redraw();
+    expect(await save(el)).toMatchObject({ steps: 8 });
+  });
+
+  it('clears the step count when the field is emptied', async () => {
+    const { el, redraw } = await open({ ...base, steps: 8 });
+    const input = stepsInput(el);
+    input.value = '';
+    input.dispatchEvent(new Event('input'));
+    redraw();
+    expect(await save(el)).not.toHaveProperty('steps');
+  });
+
+  it('clamps the step count to the range of the model that is picked', async () => {
+    const { el, redraw } = await open({ ...base, steps: 25 });
+    const model = pick(el, 'settings-comfy-model');
+    model.value = 'plain-model';
+    model.dispatchEvent(new Event('change'));
+    redraw();
+    expect(stepsInput(el).value).toBe('8');
+    expect((await save(el)).steps).toBe(8);
+  });
+
+  it('drops the step count for a model whose graph owns the sampler', async () => {
+    const { el } = await open({ ...base, model: 'gone-model', steps: 12 });
+    expect(el.querySelector('[data-testid=settings-comfy-steps]')).toBeNull();
+    expect(await save(el)).not.toHaveProperty('steps');
   });
 
   it('drops what another model of the same server cannot load', async () => {

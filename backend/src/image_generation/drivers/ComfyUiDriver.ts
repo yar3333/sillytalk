@@ -36,6 +36,9 @@ export type ComfyUiPluginModel = {
   model_files?: { folder?: string; options: ComfyUiFileOption[] };
   // `max` is how many LoRA slots that model's graph wired (0 = no LoRAs).
   loras?: { max?: number; options: ComfyUiFileOption[] };
+  // Present only when the model lets a request choose the step count. `default`
+  // is the number its graph wires, `min`/`max` what a request may ask for.
+  steps?: { min: number; max: number; default?: number };
 };
 
 // One ComfyUI server's catalogue as the settings dialog receives it: the app
@@ -84,6 +87,7 @@ export type ComfyUiJob = {
   orientation?: ComfyUiOrientation;
   model_file?: string;
   loras?: { name: string; strength: number; node?: string }[];
+  steps?: number;
   seed?: number;
   seconds?: number;
   error?: string;
@@ -205,6 +209,11 @@ export class ComfyUiDriver implements IImageGeneratorDriver {
   /** The LoRAs the last run merged, as the server reported them. */
   get lastLoras(): { name: string; strength: number }[] {
     return this.lastJob?.loras ?? [];
+  }
+
+  /** The step count the last run actually used, as the server reported it. */
+  get lastSteps(): number | undefined {
+    return this.lastJob?.steps;
   }
 
   get maxRefs(): number {
@@ -349,6 +358,7 @@ export class ComfyUiDriver implements IImageGeneratorDriver {
     // was trained at, and the job answers with the ones it used.
     form.append("orientation", this.cfg.orientation || "square");
     if (this.cfg.modelFile) form.append("model_file", this.cfg.modelFile);
+    if (typeof this.cfg.steps === "number") form.append("steps", String(this.cfg.steps));
     const loras = ComfyUiDriver.lorasToSend(this.cfg.loras);
     if (loras.length) form.append("loras", JSON.stringify(loras));
     for (const ref of refPaths) {
@@ -373,7 +383,7 @@ export class ComfyUiDriver implements IImageGeneratorDriver {
     const withLoras = (done.loras ?? []).length ? ` +${(done.loras ?? []).length} lora` : "";
     console.log(
       `[comfyui] ${this.cfg.model}${file}${withLoras}: ${done.seconds ?? "?"}s ` +
-        `${done.width ?? "?"}x${done.height ?? "?"} on ${this.base}${where ? ` (${where})` : ""}`,
+        `${done.width ?? "?"}x${done.height ?? "?"}${done.steps ? `, ${done.steps} steps` : ""} on ${this.base}${where ? ` (${where})` : ""}`,
     );
   }
 

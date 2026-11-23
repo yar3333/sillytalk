@@ -116,6 +116,24 @@ const ORIENTATIONS: ComfyUiOrientation[] = ['square', 'portrait', 'landscape'];
                   </select>
                 </label>
               </div>
+              @if (comfySteps(g)) {
+                <label class="field">
+                  <span>steps</span>
+                  <input
+                    type="number"
+                    data-testid="settings-comfy-steps"
+                    [min]="comfySteps(g)!.min"
+                    [max]="comfySteps(g)!.max"
+                    [placeholder]="comfyStepsHint(g)"
+                    [value]="g.steps ?? ''"
+                    (input)="setComfySteps(i, $event)"
+                  />
+                </label>
+                <div class="hint">
+                  {{ comfySteps(g)!.min }}–{{ comfySteps(g)!.max }} steps on this model; empty means
+                  the workflow's own{{ comfySteps(g)!.default !== undefined ? ' (' + comfySteps(g)!.default + ')' : '' }}.
+                </div>
+              }
               @if (comfyFiles(g).length) {
                 <label class="field">
                   <span>model file</span>
@@ -342,6 +360,18 @@ export class Settings implements OnInit {
     return (this.comfyModel(g)?.model_file ?? '').split('/').pop() ?? '';
   }
 
+  /** The step counts this model's server accepts, or undefined when its graph
+      owns the sampler and a client has no such choice. */
+  comfySteps(g: ComfyUiSettings): ComfyUiPluginModel['steps'] {
+    return this.comfyModel(g)?.steps;
+  }
+
+  /** What an empty step field means: the number the workflow wires. */
+  comfyStepsHint(g: ComfyUiSettings): string {
+    const range = this.comfySteps(g);
+    return range ? `the workflow's own${range.default !== undefined ? ' — ' + range.default : ''}` : '';
+  }
+
   /** The files of the server's models/loras/. */
   comfyLoras(g: ComfyUiSettings): ComfyUiFileOption[] {
     return this.comfyModel(g)?.loras?.options ?? [];
@@ -394,6 +424,7 @@ export class Settings implements OnInit {
     const model = this.comfyModel(gen);
     if (!model?.model_files?.options.some((f) => f.name === gen.modelFile)) delete gen.modelFile;
     this.keepFittingLoras(gen);
+    this.keepFittingSteps(gen);
     if (model?.sizes && !(gen.orientation in model.sizes)) {
       gen.orientation = model.orientation ?? 'square';
     }
@@ -411,6 +442,34 @@ export class Settings implements OnInit {
     });
     if (loras.length) gen.loras = loras.slice(0, this.comfySlots(gen));
     else delete gen.loras;
+  }
+
+  // The step count is the one sampler setting a client may move, and the range
+  // is the server's: an empty field sends nothing (the graph's own number), and
+  // a number is passed as typed so a refusal comes back with the range that is
+  // accepted rather than being silently rounded by the app.
+  private setComfySteps(i: number, e: Event): void {
+    const c = this.m()!;
+    const gen = c.imageGenerators[i];
+    if (!isComfyUiGenerator(gen)) return;
+    const raw = (e.target as HTMLInputElement).value.trim();
+    const value = Math.round(Number(raw));
+    if (raw && Number.isFinite(value) && value > 0) gen.steps = value;
+    else delete gen.steps;
+    this.m.set({ ...c });
+  }
+
+  // A count the newly picked model's server does not accept would be a 400 on
+  // the first draw; a model whose graph owns the sampler has no range at all,
+  // so the field goes with it.
+  private keepFittingSteps(gen: ComfyUiSettings): void {
+    const range = this.comfySteps(gen);
+    if (!range) {
+      delete gen.steps;
+      return;
+    }
+    if (gen.steps === undefined) return;
+    gen.steps = Math.min(range.max, Math.max(range.min, gen.steps));
   }
 
   // "The workflow's own" is a real choice, not an empty field: the file stays
@@ -481,6 +540,12 @@ export class Settings implements OnInit {
 
   save(): void {
     if (this.m()) {
+      // A step count left over from a server that has since changed its range
+      // (or stopped offering one) would be the first thing the next draw is
+      // refused for, so it is brought into line before the config is written.
+      for (const g of this.m()!.imageGenerators) {
+        if (isComfyUiGenerator(g)) this.keepFittingSteps(g);
+      }
       this.configStore.saveSettings(this.m()!);
     }
   }

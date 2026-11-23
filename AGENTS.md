@@ -767,6 +767,9 @@ or through the in-app **Settings** dialog. Paths may use `~` (resolved by `expan
       "modelFile": "my-qwen.safetensors", // optional — a file of the server's
                                         // models/diffusion_models/ to load
                                         // instead of the workflow's own
+      "steps": 8,                       // optional — the server's catalogue
+                                        // publishes the range; absent means the
+                                        // count the workflow's sampler wires
       "loras": [                        // optional, merged in this order
         { "name": "my-style.safetensors", "strength": 0.6 } // strength defaults to 1.0
       ],
@@ -843,21 +846,22 @@ override the individual folders; `SILLYTALK_LISTEN` overrides the listen address
   [`comfyui-sillytalk`](https://github.com/yar3333/comfyui-sillytalk) custom node on the server does
   all of that, and the whole boundary is four requests (see `drivers/ComfyUiDriver.ts`):
   `POST /sillytalk/generate` (multipart: `model`, `prompt`, `orientation`, and one `image` part
-  per reference, sent under its own file name; `model_file` and `loras` — a JSON array of
-  `{name, strength}` — go along when the generator names them, and are left out entirely when it
-  does not) answers 202 with a `job_id`; `GET
+  per reference, sent under its own file name; `model_file`, `steps` and `loras` — a JSON array
+  of `{name, strength}` — go along when the generator names them, and are left out entirely when
+  it does not) answers 202 with a `job_id`; `GET
   /sillytalk/jobs/{id}` is polled every 2 s (10 min cap) until the job is `succeeded`, `failed` or
   `cancelled` — a failed answer carries the server's own reason and becomes the error of the card;
   `GET /sillytalk/jobs/{id}/image` returns the picture bytes, which the driver writes to the target
   file; `DELETE /sillytalk/jobs/{id}` drops a job the user cancelled, so the GPU is free for the
   next one. `GET /sillytalk/models` (the catalogue: `code`, `max_refs`, the `sizes` of each
-  orientation, the model file and the two folder listings) and
+  orientation, the model file, the two folder listings, and — when the model allows a choice —
+  `steps` with `min`, `max` and the graph's own `default`) and
   `GET /sillytalk/health` (versions, the plugin's cards and what is resident on them, the workflows
   it could not load) are the read-only probes the self-test uses. A 404 on any `/sillytalk/…` route
   is reported as the plugin being absent, with the name of the custom node to install.
   **The driver is the only place that knows this dialect**: `baseUrl`, `model`, `offeredModels`,
-  `offeredCatalogue`, `lastModelFile`, `lastLoras` (what the server says the last run drew with —
-  read back off the finished job, so the account cannot drift from what happened),
+  `offeredCatalogue`, `lastModelFile`, `lastLoras`, `lastSteps` (what the server says the last run
+  drew with — read back off the finished job, so the account cannot drift from what happened),
   `unavailableBecause`, `placements` (where the loaders of the last run landed, as the server said),
   `systemStats()`, `pluginHealth()`, `pluginModels()`, `objectInfo()`, `hasNodeClass(name)`. A failed
   connection reports the `cause` code (`ECONNREFUSED`, `ENOTFOUND`, a TLS mismatch) inside its
@@ -1650,7 +1654,11 @@ that needs the databases resolves them here — the one place allowed to.
   names the layers ComfyUI will skip, without greying the row (`loraReason()` shows any reason the
   server sent, `loraBlocked()` only ever blocks a `no`). The row is judged by
   `loraBlocked()` / `loraReason()` against `g.modelFile || model.model_file`, so switching the file
-  switches the verdicts. A model the config names but no server answers with is kept
+  switches the verdicts. A step-count field appears only when the model's catalogue carries `steps`
+  (`min`/`max`, plus the graph's `default` as the empty field's placeholder): an empty field sends
+  nothing, a number is sent as typed, and `keepFittingSteps()` clamps it when another model with a
+  narrower range is picked — a model whose graph owns the sampler drops the field and the value. A
+  model the config names but no server answers with is kept
   in the pick as its own option — otherwise opening the dialog and saving would silently change the
   generator. Picking another model or another file drops the LoRAs it cannot take
   (`keepFittingLoras()`, because the server would answer the run with a 400) and an orientation it

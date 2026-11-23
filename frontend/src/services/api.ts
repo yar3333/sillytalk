@@ -122,6 +122,9 @@ export interface ComfyUiPluginModel {
   model_file?: string | null;
   model_files?: { folder?: string; options: ComfyUiFileOption[] };
   loras?: { max?: number; options: ComfyUiFileOption[] };
+  // Present only when the model lets a request choose the step count. `default`
+  // is the number its graph wires; `min`/`max` are what the server accepts.
+  steps?: { min: number; max: number; default?: number };
 }
 
 // A ComfyUI server running the comfyui-sillytalk plugin, as the backend read it.
@@ -149,6 +152,9 @@ export interface ComfyUiSettings {
   modelFile?: string;
   // LoRAs to merge, applied in this order, from the server's models/loras/.
   loras?: ComfyUiLora[];
+  // How many steps to draw with. Absent: the number the workflow's sampler
+  // wires. The server rejects anything outside the range it published.
+  steps?: number;
   enabled?: boolean; // generator toggle (default true) — a disabled one is never used
 }
 

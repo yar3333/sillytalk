@@ -63,6 +63,7 @@ type MockModel = {
   model_file?: string | null;
   model_files?: { folder: string; options: { name: string; mb?: number }[] };
   loras?: { max: number; options: { name: string; mb?: number }[] };
+  steps?: { min: number; max: number; default?: number };
 };
 
 // The two folders a client may pick from, as one of these mock servers has them.
@@ -159,6 +160,7 @@ function startMockComfy(): Promise<MockComfy> {
         model_file: MOCK_FILES[0].name,
         model_files: { folder: "diffusion_models", options: MOCK_FILES },
         loras: { max: 5, options: MOCK_LORAS },
+        steps: { min: 4, max: 50, default: 25 },
       },
       { code: "qwen-image-2512", max_refs: 2, orientation: "square", sizes: MOCK_SIZES, model_file: null },
       { code: "text-only-model", max_refs: 0, orientation: "square", sizes: { square: [1024, 1024] }, model_file: null },
@@ -393,12 +395,20 @@ describe("ComfyUI generator", () => {
     ]);
   }, 30000);
 
-  it("sends neither a file nor LoRAs when the generator named none", async () => {
+  it("sends the step count the generator was configured with", async () => {
+    const gen = comfyGen(comfy, { steps: 8 });
+    const r = await oneShot(gen, "a red boat at dusk", [], "with-steps.png");
+    expect(r.status).toBe("ok");
+    expect(comfy.jobs[0].fields.steps).toBe("8");
+  }, 30000);
+
+  it("sends neither a file, LoRAs nor steps when the generator named none", async () => {
     const r = await oneShot(comfyGen(comfy), "a red boat at dusk", [], "plain-defaults.png");
     expect(r.status).toBe("ok");
     const fields = comfy.jobs[0].fields;
     expect(fields.model_file).toBeUndefined();
     expect(fields.loras).toBeUndefined();
+    expect(fields.steps).toBeUndefined();
   }, 30000);
 
   it("sends the reference pictures with the job, in the order they were given", async () => {
